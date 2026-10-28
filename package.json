@@ -11,6 +11,7 @@
     "build": "npm run typecheck && electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "screenshot": "node scripts/screenshot.mjs",
+    "smoke": "node scripts/smoke.mjs",
     "pack": "npm run build && npx electron-packager . \"Pi Desktop\" --out=release --overwrite --icon=build/icon.icns --app-bundle-id=dev.pi.desktop --app-version=$(node -p \"require('./package.json').version\") --darwin-dark-mode-support --ignore=\"^/(src|scripts|output|release)\" && node scripts/fix-icon.mjs",
     "dmg": "npm run pack && node scripts/make-dmg.mjs"
   },

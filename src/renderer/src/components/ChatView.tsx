@@ -27,17 +27,17 @@ import { PiLogo } from './PiLogo'
 const SUGGESTIONS = [
   {
     icon: Sparkles,
-    title: 'Explain this codebase',
+    title: '讲讲这个代码库',
     prompt: 'Give me a tour of this codebase: what it does, the main modules, and where I should start.'
   },
   {
     icon: Hammer,
-    title: 'Fix a failing test',
+    title: '修一个失败的测试',
     prompt: 'Run the test suite, find the first failure, and fix it.'
   },
   {
     icon: TerminalSquare,
-    title: 'Review my changes',
+    title: '帮我 review 改动',
     prompt: 'Review my uncommitted changes for bugs, risky patterns, and missing tests.'
   }
 ]
@@ -165,15 +165,15 @@ export function ChatView(): ReactNode {
       ? 'Compacting context…'
       : runningTool
         ? `${runningTool.name}…`
-        : 'Working…'
+        : '运行中…'
 
   if (state.status === 'starting' && state.messages.length === 0) {
     return (
-      <div className="chat-scroll">
+      <div className="chat-scroll" aria-live="polite" aria-relevant="additions text">
         <div className="chat-inner">
           <div className="chat-starting">
             <Spinner size={16} />
-            <span>Starting pi in {baseName(state.workspace)}…</span>
+            <span>正在 {baseName(state.workspace)} 里启动 pi…</span>
           </div>
         </div>
       </div>
@@ -182,15 +182,14 @@ export function ChatView(): ReactNode {
 
   if (state.messages.length === 0) {
     return (
-      <div className="chat-scroll">
+      <div className="chat-scroll" aria-live="polite" aria-relevant="additions text">
         <div className="chat-inner empty-session">
           <div className="empty-mark">
             <PiLogo size={32} />
           </div>
-          <h1>What should we build in {baseName(state.workspace)}?</h1>
+          <h1>在 {baseName(state.workspace)} 里做点什么？</h1>
           <p>
-            Pi can read and edit files, run commands, and search the web. This session is saved once
-            you send the first message.
+            pi 能读写文件、跑命令、搜网页。发出第一条消息后，这个会话就会被保存下来。
           </p>
           <div className="suggestions">
             {SUGGESTIONS.map((suggestion) => {
@@ -215,7 +214,7 @@ export function ChatView(): ReactNode {
   return (
     <div className={clsx('chat-wrap', state.status === 'starting' && 'is-switching')}>
       {state.status === 'starting' && <div className="top-progress" />}
-      <div className="chat-scroll" ref={scrollerRef} onScroll={onScroll} onWheel={onWheel}>
+      <div className="chat-scroll" aria-live="polite" aria-relevant="additions text" ref={scrollerRef} onScroll={onScroll} onWheel={onWheel}>
         <div className="chat-inner" ref={innerRef}>
           {state.messages.map((message, index) => {
             const key = `${message.role}-${(message as { timestamp?: number }).timestamp ?? index}-${index}`
@@ -291,7 +290,7 @@ export function ChatView(): ReactNode {
 
       {showJump && (
         <button className="jump-button" onClick={() => scrollToBottom(true)}>
-          <ArrowDown size={14} /> Jump to latest
+          <ArrowDown size={14} /> 回到最新
         </button>
       )}
     </div>

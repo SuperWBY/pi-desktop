@@ -53,6 +53,8 @@ npm run dmg          # 产物：release/Pi-Desktop-0.1.0-arm64.dmg
   - **外观 / 会话 / 快捷键 / 关于**：主题、存储目录、工作区、快捷键表与版本信息
   - 运行时项（模式、压缩、重试）走 RPC 立即生效；默认值写入 pi 的 `settings.json`，对新会话生效
   - 设置页顶部保留 42px 可拖拽区，关闭按钮固定右上角，`Esc` 也可退出。
+- **诊断与恢复**：侧栏底部状态点打开诊断抽屉（pi 路径 / 版本 / agent 目录 / 最后 60 行 stderr / `models.json` 错误 / 一键复制）；删除会话进 `.trash` 并在提示条里「撤销」；重启后回到上次的会话。
+- **键盘可达**：菜单支持 ↑↓ / Home / End / Enter / Esc，关闭后焦点回到触发器，全局 `:focus-visible` 环。
 - **流畅度**
   - 会话切换复用同一个 pi 进程（`switch_session`），不再重启子进程；最近看过的会话直接命中本地缓存。
   - 流式事件按动画帧合并，消息与工具卡做 memo + 增量渲染，长回复不卡顿。
@@ -104,7 +106,12 @@ npm install
 npm run dev          # electron-vite dev（HMR）
 npm run typecheck    # 主进程 + 渲染层类型检查
 npm run build        # 生产构建到 out/
+npm run smoke        # 启动一次，检查无 pageerror
+npm run e2e          # 交互用例（用 scripts/mock-pi.mjs 假 pi，不烧 token）
 ```
+
+`scripts/mock-pi.mjs` 是 `pi --mode rpc` 的替身，支持 `MOCK_SCENARIO=default|auth-error|catalog-huge|model-switch-fails`，
+可以在没有凭证、没有真 pi 的环境（包括 CI）里跑通界面和失败路径。
 
 pi 路径默认自动探测：
 

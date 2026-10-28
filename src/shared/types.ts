@@ -196,6 +196,7 @@ export interface Settings {
   theme: 'dark' | 'light'
   workspaces: string[]
   lastWorkspace?: string
+  lastSessionPath?: string
   toolCardsExpanded?: boolean
   followStream?: boolean
   windowBounds?: { x?: number; y?: number; width: number; height: number }
@@ -319,6 +320,12 @@ export interface OpenSessionResult {
   error?: string
   sessionPath?: string | null
   cwd?: string
+}
+
+export interface DeletedSession {
+  path: string
+  trashPath: string
+  name: string
 }
 
 export interface SessionListItem {

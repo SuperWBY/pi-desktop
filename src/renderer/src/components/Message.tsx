@@ -116,7 +116,7 @@ export const UserMessageView = memo(function UserMessageView({
   return (
     <div className={clsx('message user-message', optimistic && 'optimistic')}>
       <div className="message-label">
-        <span>You</span>
+        <span>你</span>
         <span className="message-time">{optimistic ? 'sending…' : timeOfDay(message.timestamp)}</span>
       </div>
       <div className="user-card">

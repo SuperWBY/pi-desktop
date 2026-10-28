@@ -435,8 +435,17 @@ export function SettingsPage(): ReactNode {
       list.push({ id: model.id, name: model.name })
       groups.set(model.provider, list)
     }
-    return [...groups.entries()]
-  }, [state.models])
+    // No live session (or it has not answered yet): fall back to pi's own
+    // `--list-models` output so the default model can still be chosen.
+    if (groups.size === 0) {
+      for (const row of piModels ?? []) {
+        const list = groups.get(row.provider) ?? []
+        if (!list.some((model) => model.id === row.id)) list.push({ id: row.id, name: row.id })
+        groups.set(row.provider, list)
+      }
+    }
+    return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
+  }, [state.models, piModels])
 
   if (!open) return null
 

@@ -8,6 +8,7 @@ import { ChatView } from './components/ChatView'
 import { Composer } from './components/Composer'
 import { Welcome } from './components/Welcome'
 import { SettingsPage } from './components/SettingsPage'
+import { Diagnostics } from './components/Diagnostics'
 import { UiRequestDialog } from './components/UiRequestDialog'
 import { Toasts } from './components/Toasts'
 
@@ -56,7 +57,13 @@ function Shell(): ReactNode {
   }, [actions, state.settings.theme, state.settingsOpen])
 
   return (
-    <div className={clsx('app', !state.sidebarOpen && 'sidebar-collapsed')}>
+    <div
+      className={clsx(
+        'app',
+        !state.sidebarOpen && 'sidebar-collapsed',
+        state.diagnosticsOpen && 'drawer-open'
+      )}
+    >
       <Sidebar />
 
       <main className="main">
@@ -86,6 +93,7 @@ function Shell(): ReactNode {
       </main>
 
       <SettingsPage />
+      <Diagnostics />
       <UiRequestDialog />
       <Toasts />
     </div>

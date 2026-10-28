@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   ChevronsUpDown,
   FolderOpen,
@@ -14,7 +14,7 @@ import type { SessionSummary } from '@shared/types'
 import { useApp } from '../store'
 import { baseName, dayLabel, relativeTime, shortenPath, truncate } from '../lib/format'
 import { PiLogo } from './PiLogo'
-import { Modal, Popover } from './ui'
+import { ContextMenu, Modal, Popover } from './ui'
 
 function groupSessions(sessions: SessionSummary[]): { label: string; items: SessionSummary[] }[] {
   const groups: { label: string; items: SessionSummary[] }[] = []
@@ -32,12 +32,67 @@ function groupSessions(sessions: SessionSummary[]): { label: string; items: Sess
   return groups
 }
 
+function SessionMenu({
+  session,
+  close,
+  onRename,
+  onDelete
+}: {
+  session: SessionSummary
+  close: () => void
+  onRename: (value: string) => void
+  onDelete: () => void
+}): ReactNode {
+  const { actions } = useApp()
+  return (
+    <div className="menu">
+      <button
+        className="menu-item"
+        onClick={() => {
+          close()
+          onRename(session.name)
+        }}
+      >
+        重命名
+      </button>
+      <button
+        className="menu-item"
+        onClick={() => {
+          close()
+          actions.revealSession(session.path)
+        }}
+      >
+        在 Finder 中显示
+      </button>
+      <div className="menu-separator" />
+      <button
+        className="menu-item danger"
+        onClick={() => {
+          close()
+          onDelete()
+        }}
+      >
+        <Trash2 size={13} />
+        删除
+      </button>
+    </div>
+  )
+}
+
 export function Sidebar(): ReactNode {
   const { state, actions } = useApp()
   const [query, setQuery] = useState('')
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ session: SessionSummary; x: number; y: number } | null>(null)
+  const [, setTick] = useState(0)
+
+  // Relative timestamps ("2h", "now") should age while the app stays open.
+  useEffect(() => {
+    const timer = window.setInterval(() => setTick((value) => value + 1), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const workspace = state.workspace ?? state.settings.lastWorkspace ?? null
 
@@ -74,7 +129,7 @@ export function Sidebar(): ReactNode {
         <span className="brand-name">Pi</span>
         <button
           className="icon-button brand-action"
-          title="New session (⌘N)"
+          title="新建会话 (⌘N)"
           onClick={() => void actions.newSession()}
         >
           <Plus size={16} />
@@ -90,9 +145,9 @@ export function Sidebar(): ReactNode {
               <FolderOpen size={14} />
             </span>
             <span className="workspace-text">
-              <span className="workspace-name">{workspace ? baseName(workspace) : 'No project'}</span>
+              <span className="workspace-name">{workspace ? baseName(workspace) : '未选择项目'}</span>
               <span className="workspace-path">
-                {workspace ? shortenPath(workspace, state.boot?.home) : 'Choose a folder to start'}
+                {workspace ? shortenPath(workspace, state.boot?.home) : '选择一个文件夹开始'}
               </span>
             </span>
             <ChevronsUpDown size={13} className="workspace-chevron" />
@@ -129,7 +184,7 @@ export function Sidebar(): ReactNode {
               }}
             >
               <FolderOpen size={14} />
-              <span className="menu-item-title">Open folder…</span>
+              <span className="menu-item-title">打开文件夹…</span>
             </button>
           </div>
         )}
@@ -138,7 +193,7 @@ export function Sidebar(): ReactNode {
       <div className="sidebar-actions">
         <button className="new-session" onClick={() => void actions.newSession()}>
           <Plus size={14} />
-          <span>New session</span>
+          <span>新建会话</span>
           <span className="shortcut">⌘N</span>
         </button>
       </div>
@@ -147,7 +202,7 @@ export function Sidebar(): ReactNode {
         <Search size={13} />
         <input
           value={query}
-          placeholder="Search sessions"
+          placeholder="搜索会话"
           onChange={(event) => setQuery(event.target.value)}
         />
         {query && (
@@ -160,7 +215,7 @@ export function Sidebar(): ReactNode {
       <div className="session-list">
         {groups.length === 0 && (
           <div className="session-empty">
-            {query ? 'No sessions match.' : 'No sessions yet. Start one below.'}
+            {query ? '没有匹配的会话。' : '还没有会话，新建一个开始。'}
           </div>
         )}
         {groups.map((group) => (
@@ -190,7 +245,14 @@ export function Sidebar(): ReactNode {
               }
 
               return (
-                <div className={clsx('session-item', active && 'active')} key={session.path}>
+                <div
+                  className={clsx('session-item', active && 'active')}
+                  key={session.path}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    setContextMenu({ session, x: event.clientX, y: event.clientY })
+                  }}
+                >
                   <button
                     className="session-main"
                     onClick={() => void actions.openSession(session.cwd, session.path)}
@@ -200,7 +262,7 @@ export function Sidebar(): ReactNode {
                     <span className="session-meta">
                       {relativeTime(session.updatedAt)}
                       <span className="dot-sep">·</span>
-                      {session.messageCount} msg
+                      {session.messageCount} 条
                       {session.cwd !== workspace && (
                         <>
                           <span className="dot-sep">·</span>
@@ -213,7 +275,7 @@ export function Sidebar(): ReactNode {
                   <Popover
                     width={190}
                     align="right"
-                    trigger={(_open, toggle) => (
+                    trigger={(_open, toggle, expanded) => (
                       <button
                         className="icon-button session-menu-button"
                         onClick={(event) => {
@@ -221,44 +283,22 @@ export function Sidebar(): ReactNode {
                           toggle()
                         }}
                         aria-label="Session actions"
+                        {...expanded}
                       >
                         <MoreHorizontal size={14} />
                       </button>
                     )}
                   >
                     {(close) => (
-                      <div className="menu">
-                        <button
-                          className="menu-item"
-                          onClick={() => {
-                            close()
-                            setRenaming(session.path)
-                            setRenameValue(session.name)
-                          }}
-                        >
-                          Rename
-                        </button>
-                        <button
-                          className="menu-item"
-                          onClick={() => {
-                            close()
-                            actions.revealSession(session.path)
-                          }}
-                        >
-                          Show in Finder
-                        </button>
-                        <div className="menu-separator" />
-                        <button
-                          className="menu-item danger"
-                          onClick={() => {
-                            close()
-                            setPendingDelete(session)
-                          }}
-                        >
-                          <Trash2 size={13} />
-                          Delete
-                        </button>
-                      </div>
+                      <SessionMenu
+                        session={session}
+                        close={close}
+                        onRename={(value) => {
+                          setRenaming(session.path)
+                          setRenameValue(value)
+                        }}
+                        onDelete={() => setPendingDelete(session)}
+                      />
                     )}
                   </Popover>
                 </div>
@@ -269,16 +309,37 @@ export function Sidebar(): ReactNode {
       </div>
 
       <div className="sidebar-footer">
-        <button className="icon-button" onClick={() => actions.openSettings(true)} title="Settings">
+        <button className="icon-button" onClick={() => actions.openSettings(true)} title="设置">
           <Settings size={15} />
         </button>
-        <div className="footer-meta">
+        <button
+          className="footer-meta"
+          onClick={() => actions.openDiagnostics(true)}
+          title="pi 运行状态与诊断"
+        >
           <span className={clsx('status-dot', `is-${state.status}`)} />
           <span>pi {state.boot?.piVersion ?? '—'}</span>
-        </div>
+        </button>
       </div>
 
       </div>
+
+      <ContextMenu
+        position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        onClose={() => setContextMenu(null)}
+      >
+        {contextMenu && (
+          <SessionMenu
+            session={contextMenu.session}
+            close={() => setContextMenu(null)}
+            onRename={(value) => {
+              setRenaming(contextMenu.session.path)
+              setRenameValue(value)
+            }}
+            onDelete={() => setPendingDelete(contextMenu.session)}
+          />
+        )}
+      </ContextMenu>
 
       <Modal
         open={Boolean(pendingDelete)}
@@ -288,7 +349,7 @@ export function Sidebar(): ReactNode {
         footer={
           <>
             <button className="button ghost" onClick={() => setPendingDelete(null)}>
-              Cancel
+              取消
             </button>
             <button
               className="button danger"
@@ -297,15 +358,14 @@ export function Sidebar(): ReactNode {
                 setPendingDelete(null)
               }}
             >
-              Delete
+              删除
             </button>
           </>
         }
       >
         <p className="modal-text">
-          This permanently removes the session transcript from{' '}
-          <code>{shortenPath(state.boot?.sessionsRoot)}</code>. The files pi changed on disk are not
-          affected.
+          会话记录会被移到 <code>{shortenPath(state.boot?.sessionsRoot)}/.trash</code>，24 小时内可在
+          提示条里「撤销」。pi 在磁盘上改过的文件不受影响。
         </p>
       </Modal>
     </aside>

@@ -25,6 +25,17 @@ function Toast({ notice }: { notice: Notice }): ReactNode {
       <div className="toast-content">
         <div className="toast-title">{notice.title}</div>
         {notice.detail && <div className="toast-detail">{notice.detail}</div>}
+        {notice.action && (
+          <button
+            className="toast-action"
+            onClick={() => {
+              notice.action?.run()
+              actions.dismissNotice(notice.id)
+            }}
+          >
+            {notice.action.label}
+          </button>
+        )}
       </div>
       <button
         className="icon-button toast-close"

@@ -78,7 +78,7 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
         <input
           autoFocus
           value={query}
-          placeholder="Search models…"
+          placeholder="搜索模型…"
           onChange={(event) => setQuery(event.target.value)}
         />
       </div>
@@ -101,8 +101,8 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
                   <span className="menu-item-main">
                     <span className="menu-item-title">{model.name}</span>
                     <span className="menu-item-sub">
-                      {model.contextWindow ? `${formatTokens(model.contextWindow)} ctx` : model.id}
-                      {model.reasoning ? ' · reasoning' : ''}
+                      {model.contextWindow ? `${formatTokens(model.contextWindow)} 上下文` : model.id}
+                      {model.reasoning ? ' · 推理' : ''}
                     </span>
                   </span>
                   {active && <Check size={14} />}
@@ -323,7 +323,7 @@ export function Composer(): ReactNode {
       {dragging && (
         <div className="drop-overlay">
           <ImageIcon size={18} />
-          <span>Drop images to attach</span>
+          <span>松手添加图片</span>
         </div>
       )}
 
@@ -388,7 +388,7 @@ export function Composer(): ReactNode {
           rows={1}
           spellCheck={false}
           placeholder={
-            streaming ? 'Steer pi or queue a follow-up…' : 'Ask pi to build, debug, or explain…'
+            streaming ? '插话（steer）或排队一条后续消息…' : '让 pi 帮你写代码、查问题、解释代码…'
           }
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setText(event.target.value)}
           onKeyDown={onKeyDown}
@@ -399,7 +399,7 @@ export function Composer(): ReactNode {
           <div className="composer-left">
             <button
               className="icon-button"
-              title="Attach images"
+              title="添加图片"
               onClick={() => fileRef.current?.click()}
             >
               <Paperclip size={15} />
@@ -418,8 +418,14 @@ export function Composer(): ReactNode {
 
             <Popover
               width={320}
-              trigger={(open, toggle) => (
-                <button className={clsx('chip', open && 'open')} onClick={toggle}>
+              trigger={(open, toggle, expanded) => (
+                <button
+                  className={clsx('chip', open && 'open')}
+                  onClick={toggle}
+                  title={model ? `${model.provider}/${model.id}` : '选择模型'}
+                  aria-label="选择模型"
+                  {...expanded}
+                >
                   <span className="chip-dot" />
                   <span className="chip-label">{model ? model.name : 'Model'}</span>
                   <ChevronDown size={12} />
@@ -431,8 +437,14 @@ export function Composer(): ReactNode {
 
             <Popover
               width={220}
-              trigger={(open, toggle) => (
-                <button className={clsx('chip', open && 'open')} onClick={toggle}>
+              trigger={(open, toggle, expanded) => (
+                <button
+                  className={clsx('chip', open && 'open')}
+                  onClick={toggle}
+                  title="推理强度"
+                  aria-label="推理强度"
+                  {...expanded}
+                >
                   <Brain size={13} />
                   <span className="chip-label">
                     {THINKING_LABELS[state.piState?.thinkingLevel ?? 'off'] ?? 'Off'}
@@ -445,7 +457,7 @@ export function Composer(): ReactNode {
             </Popover>
 
             {streaming && (
-              <div className="mode-toggle" role="group" aria-label="Message mode">
+              <div className="mode-toggle" role="group" aria-label="发送方式">
                 <button
                   className={clsx(state.sendMode === 'steer' && 'active')}
                   onClick={() => actions.setSendMode('steer')}
@@ -511,7 +523,7 @@ export function Composer(): ReactNode {
       <div className="composer-hint">
         {streaming
           ? 'Enter to queue · Esc to stop'
-          : 'Enter to send · Shift+Enter for newline'}
+          : 'Enter 发送 · Shift+Enter 换行'}
       </div>
     </div>
   )

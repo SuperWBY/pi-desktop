@@ -37,6 +37,7 @@ export interface Notice {
   title: string
   detail?: string
   createdAt: number
+  action?: { label: string; run: () => void }
 }
 
 export interface RetryState {
@@ -76,6 +77,8 @@ export interface AppState {
   editorText: { value: string; nonce: number } | null
   sendMode: SendMode
   stderr: string
+  diagnosticsOpen: boolean
+  deletedSession: { path: string; trashPath: string; name: string } | null
 }
 
 const initialSettings: Settings = { theme: 'dark', workspaces: [] }
@@ -109,7 +112,9 @@ export const initialState: AppState = {
   statusText: null,
   editorText: null,
   sendMode: 'steer',
-  stderr: ''
+  stderr: '',
+  diagnosticsOpen: false,
+  deletedSession: null
 }
 
 let noticeSequence = 0
@@ -118,14 +123,16 @@ function addNotice(
   state: AppState,
   level: NoticeLevel,
   title: string,
-  detail?: string
+  detail?: string,
+  action?: { label: string; run: () => void }
 ): AppState {
   const notice: Notice = {
     id: `n${++noticeSequence}`,
     level,
     title,
     detail,
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    action
   }
   return { ...state, notices: [...state.notices, notice].slice(-4) }
 }
@@ -447,7 +454,7 @@ export type Action =
   | { type: 'SET_MESSAGES'; messages: AgentMessage[] }
   | { type: 'STATUS'; status: { status: string; code?: number | null; signal?: string | null } }
   | { type: 'STDERR'; text: string }
-  | { type: 'NOTICE'; level: NoticeLevel; title: string; detail?: string }
+  | { type: 'NOTICE'; level: NoticeLevel; title: string; detail?: string; action?: { label: string; run: () => void } }
   | { type: 'DISMISS_NOTICE'; id: string }
   | { type: 'UI_DONE' }
   | { type: 'SET_NAME'; name: string | null }
@@ -457,6 +464,8 @@ export type Action =
   | { type: 'SET_STREAMING'; streaming: boolean }
   | { type: 'TOGGLE_SIDEBAR' }
   | { type: 'SET_SETTINGS_OPEN'; open: boolean }
+  | { type: 'SET_DIAGNOSTICS_OPEN'; open: boolean }
+  | { type: 'SET_DELETED_SESSION'; deleted: { path: string; trashPath: string; name: string } | null }
   | { type: 'SET_THEME'; theme: 'dark' | 'light' }
   | { type: 'FILL_COMPOSER'; value: string }
 
@@ -586,7 +595,13 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, stderr: (state.stderr + action.text).slice(-4000) }
 
     case 'NOTICE':
-      return addNotice(state, action.level, action.title, action.detail)
+      return addNotice(state, action.level, action.title, action.detail, action.action)
+
+    case 'SET_DIAGNOSTICS_OPEN':
+      return { ...state, diagnosticsOpen: action.open }
+
+    case 'SET_DELETED_SESSION':
+      return { ...state, deletedSession: action.deleted }
 
     case 'DISMISS_NOTICE':
       return { ...state, notices: state.notices.filter((notice) => notice.id !== action.id) }
@@ -651,6 +666,8 @@ interface AppActions {
   setSendMode: (mode: SendMode) => void
   toggleSidebar: () => void
   openSettings: (open: boolean) => void
+  openDiagnostics: (open: boolean) => void
+  undoDelete: () => Promise<void>
   updateSettings: (patch: Partial<Settings>) => Promise<void>
   updatePiSettings: (patch: PiSettings) => Promise<void>
   setSteeringMode: (mode: 'all' | 'one-at-a-time') => Promise<void>
@@ -658,7 +675,12 @@ interface AppActions {
   setAutoCompaction: (enabled: boolean) => Promise<void>
   setAutoRetry: (enabled: boolean) => Promise<void>
   setTheme: (theme: 'dark' | 'light') => Promise<void>
-  notify: (level: NoticeLevel, title: string, detail?: string) => void
+  notify: (
+    level: NoticeLevel,
+    title: string,
+    detail?: string,
+    action?: { label: string; run: () => void }
+  ) => void
   dismissNotice: (id: string) => void
   respondUi: (response: Record<string, unknown>) => void
   refreshMeta: () => Promise<void>
@@ -688,9 +710,12 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   stateRef.current = state
   const messageCache = useRef(new Map<string, AgentMessage[]>())
 
-  const notify = useCallback((level: NoticeLevel, title: string, detail?: string) => {
-    dispatch({ type: 'NOTICE', level, title, detail })
-  }, [])
+  const notify = useCallback(
+    (level: NoticeLevel, title: string, detail?: string, action?: { label: string; run: () => void }) => {
+      dispatch({ type: 'NOTICE', level, title, detail, action })
+    },
+    []
+  )
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -728,7 +753,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       if (!result.ok) {
         const message = result.error ?? 'Could not open the session.'
         dispatch({ type: 'SESSION_ERROR', error: message })
-        notify('error', 'Could not open session', message)
+        notify('error', '无法打开会话', message)
         return false
       }
 
@@ -794,11 +819,11 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     ): Promise<boolean> => {
       const current = stateRef.current
       if (!current.workspace) {
-        notify('warning', 'No project open', 'Choose a folder before sending a message.')
+        notify('warning', '没有打开项目', '先选择一个文件夹再发送。')
         return false
       }
       if (current.status === 'starting') {
-        notify('info', 'Session is starting', 'Give it a moment and try again.')
+        notify('info', '会话正在启动', '稍等一下再发送。')
         return false
       }
 
@@ -822,12 +847,12 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       const response = await safeCommand<{ disposition?: string }>(command, 120_000)
       if (!response) {
         if (optimistic) dispatch({ type: 'REMOVE_OPTIMISTIC' })
-        notify('error', 'Message not sent', 'pi did not respond.')
+        notify('error', '消息未发送', 'pi 没有响应。')
         return false
       }
       if (!response.success) {
         if (optimistic) dispatch({ type: 'REMOVE_OPTIMISTIC' })
-        notify('error', 'Message not sent', response.error)
+        notify('error', '消息未发送', response.error)
         return false
       }
       if (optimistic && response.data?.disposition === 'handled') {
@@ -860,25 +885,45 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         dispatch({ type: 'SET_NAME', name: trimmed || null })
         void refreshSessions()
       } else {
-        notify('error', 'Could not rename session', response?.error)
+        notify('error', '无法重命名会话', response?.error)
       }
     },
     [notify, refreshSessions]
   )
 
+  const undoDelete = useCallback(async () => {
+    const deleted = stateRef.current.deletedSession
+    if (!deleted) return
+    try {
+      await window.pi.restoreSession(deleted.trashPath, deleted.path)
+      dispatch({ type: 'SET_DELETED_SESSION', deleted: null })
+      await refreshSessions()
+      notify('success', '已恢复会话', deleted.name)
+    } catch (error) {
+      notify('error', '恢复失败', error instanceof Error ? error.message : String(error))
+    }
+  }, [notify, refreshSessions])
+
   const deleteSession = useCallback(
     async (path: string) => {
       try {
-        await window.pi.deleteSession(path)
+        const deleted = await window.pi.deleteSession(path)
+        dispatch({ type: 'SET_DELETED_SESSION', deleted })
         await refreshSessions()
         if (stateRef.current.sessionPath === path) {
           await newSession()
         }
+        if (deleted) {
+          notify('info', '已删除会话', deleted.name, {
+            label: '撤销',
+            run: () => void undoDelete()
+          })
+        }
       } catch (error) {
-        notify('error', 'Could not delete session', error instanceof Error ? error.message : String(error))
+        notify('error', '无法删除会话', error instanceof Error ? error.message : String(error))
       }
     },
-    [newSession, notify, refreshSessions]
+    [newSession, notify, refreshSessions, undoDelete]
   )
 
   const setModel = useCallback(
@@ -888,7 +933,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         dispatch({ type: 'SET_MODEL', model })
         void refreshMeta()
       } else {
-        notify('error', 'Could not switch model', response?.error)
+        notify('error', '无法切换模型', response?.error)
       }
     },
     [notify, refreshMeta]
@@ -900,7 +945,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       if (response?.success) {
         dispatch({ type: 'SET_THINKING', level })
       } else {
-        notify('error', 'Could not change thinking level', response?.error)
+        notify('error', '无法修改推理强度', response?.error)
       }
     },
     [notify]
@@ -916,6 +961,10 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
 
   const openSettings = useCallback((open: boolean) => {
     dispatch({ type: 'SET_SETTINGS_OPEN', open })
+  }, [])
+
+  const openDiagnostics = useCallback((open: boolean) => {
+    dispatch({ type: 'SET_DIAGNOSTICS_OPEN', open })
   }, [])
 
   const updateSettings = useCallback(async (patch: Partial<Settings>) => {
@@ -997,12 +1046,12 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   }, [])
 
   const compact = useCallback(async () => {
-    notify('info', 'Compacting context…')
+    notify('info', '正在压缩上下文…')
     const response = await safeCommand({ type: 'compact' }, 600_000)
     if (!response?.success) {
-      notify('error', 'Compaction failed', response?.error)
+      notify('error', '压缩失败', response?.error)
     } else {
-      notify('success', 'Context compacted')
+      notify('success', '上下文已压缩')
       void refreshMeta()
     }
   }, [notify, refreshMeta])
@@ -1029,13 +1078,24 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         dispatch({ type: 'BOOT', boot })
         await refreshSessions()
         const workspace = boot.settings.lastWorkspace
-        if (workspace) await openSession(workspace, null)
-        else dispatch({ type: 'STATUS', status: { status: 'idle' } })
+        if (workspace) {
+          const last = boot.settings.lastSessionPath
+          let restored = false
+          if (last) {
+            const sessions = await window.pi.listSessions().catch(() => [])
+            if (sessions.some((session) => session.path === last)) {
+              restored = await openSession(workspace, last)
+            }
+          }
+          if (!restored) await openSession(workspace, null)
+        } else {
+          dispatch({ type: 'STATUS', status: { status: 'idle' } })
+        }
       } catch (error) {
         if (!cancelled) {
           dispatch({
             type: 'SESSION_ERROR',
-            error: error instanceof Error ? error.message : 'Could not start Pi Desktop.'
+            error: error instanceof Error ? error.message : '无法启动 Pi Desktop。'
           })
         }
       }
@@ -1044,6 +1104,19 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       cancelled = true
     }
   }, [openSession, refreshSessions])
+
+  // pi creates the transcript lazily (first prompt), so the session path can
+  // appear after the process is already running. Persist it whenever it lands;
+  // that is what makes "reopen the app where I left off" work.
+  const currentSessionPath = state.sessionPath
+  useEffect(() => {
+    if (!currentSessionPath) return
+    if (stateRef.current.settings.lastSessionPath === currentSessionPath) return
+    void window.pi
+      .updateSettings({ lastSessionPath: currentSessionPath })
+      .then((settings) => dispatch({ type: 'SET_SETTINGS', settings }))
+      .catch(() => undefined)
+  }, [currentSessionPath])
 
   // Batch high-frequency streaming records to one render per frame.
   useEffect(() => {
@@ -1143,6 +1216,8 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       setSendMode,
       toggleSidebar,
       openSettings,
+      openDiagnostics,
+      undoDelete,
       updateSettings,
       updatePiSettings,
       setSteeringMode,
@@ -1174,6 +1249,8 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       setSendMode,
       toggleSidebar,
       openSettings,
+      openDiagnostics,
+      undoDelete,
       updateSettings,
       updatePiSettings,
       setSteeringMode,

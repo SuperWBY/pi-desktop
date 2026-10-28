@@ -1,6 +1,7 @@
 import type {
   Bootstrap,
   CustomProviderEntry,
+  DeletedSession,
   ModelsConfig,
   OpenSessionResult,
   PiModelRow,
@@ -18,7 +19,8 @@ export interface PiDesktopApi {
   pickFolder(): Promise<string | null>
   pickFile(options?: { title?: string; defaultPath?: string }): Promise<string | null>
   listSessions(): Promise<SessionSummary[]>
-  deleteSession(path: string): Promise<boolean>
+  deleteSession(path: string): Promise<DeletedSession | null>
+  restoreSession(trashPath: string, path: string): Promise<boolean>
   readModelsConfig(): Promise<ModelsConfig>
   saveProvider(id: string, entry: CustomProviderEntry): Promise<ModelsConfig>
   removeProvider(id: string): Promise<ModelsConfig>

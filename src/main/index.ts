@@ -22,7 +22,7 @@ import type {
 } from '@shared/types'
 import { PiProcess } from './pi'
 import { locatePi, piVersion } from './pi-locate'
-import { deleteSession, listSessions, sessionExists, sessionsRoot } from './sessions'
+import { deleteSession, listSessions, restoreSession, sessionExists, sessionsRoot } from './sessions'
 import { loadSettings, saveSettings } from './settings'
 import { agentDir, loadPiSettings, piSettingsFile, savePiSettings } from './pi-settings'
 import {
@@ -82,12 +82,12 @@ async function doOpenSession(options: {
 }): Promise<OpenSessionResult> {
   const requested = options.cwd?.trim()
   if (!requested || !existsSync(requested) || !statSync(requested).isDirectory()) {
-    return { ok: false, error: 'Please choose an existing folder.' }
+    return { ok: false, error: '请选择一个存在的文件夹。' }
   }
   const cwd = realpathSync(requested)
 
   if (options.sessionPath && !(await sessionExists(options.sessionPath))) {
-    return { ok: false, error: 'That session file no longer exists.' }
+    return { ok: false, error: '这个会话文件已经不存在了。' }
   }
 
   const active = proc
@@ -132,8 +132,8 @@ async function doOpenSession(options: {
     return {
       ok: false,
       error: /ENOENT/.test(message)
-        ? `Could not find the pi executable at "${piPath}". Set its path in Settings.`
-        : `Could not start pi: ${message}`
+        ? `找不到 pi 可执行文件："${piPath}"。请在设置里指定路径。`
+        : `无法启动 pi：${message}`
     }
   }
 
@@ -159,7 +159,7 @@ async function doOpenSession(options: {
     process.stop()
     proc = null
     const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, error: `pi did not become ready: ${message}` }
+    return { ok: false, error: `pi 没有就绪：${message}` }
   }
 }
 
@@ -237,6 +237,9 @@ function registerIpc(): void {
 
   ipcMain.handle('sessions:list', () => listSessions())
   ipcMain.handle('sessions:delete', (_event, path: string) => deleteSession(path))
+  ipcMain.handle('sessions:restore', (_event, trashPath: string, path: string) =>
+    restoreSession(trashPath, path)
+  )
   ipcMain.handle('session:close', () => closeSession())
 
   ipcMain.handle(
@@ -250,7 +253,7 @@ function registerIpc(): void {
     async (_event, command: Record<string, unknown>, timeoutMs?: number) => {
       const process = proc
       if (!process) {
-        return { type: 'response', command: String(command.type), success: false, error: 'pi is not running' }
+        return { type: 'response', command: String(command.type), success: false, error: 'pi 没有在运行' }
       }
       try {
         return await process.send(command, timeoutMs ?? commandTimeout(String(command.type)))

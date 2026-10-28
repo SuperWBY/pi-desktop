@@ -1,14 +1,14 @@
 export function relativeTime(timestamp: number): string {
   const diff = Date.now() - timestamp
   const minutes = Math.floor(diff / 60_000)
-  if (minutes < 1) return 'now'
-  if (minutes < 60) return `${minutes}m`
+  if (minutes < 1) return '刚刚'
+  if (minutes < 60) return `${minutes} 分钟`
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h`
+  if (hours < 24) return `${hours} 小时`
   const days = Math.floor(hours / 24)
-  if (days < 7) return `${days}d`
+  if (days < 7) return `${days} 天`
   const weeks = Math.floor(days / 7)
-  if (weeks < 5) return `${weeks}w`
+  if (weeks < 5) return `${weeks} 周`
   return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
@@ -17,10 +17,10 @@ export function dayLabel(timestamp: number): string {
   const today = new Date()
   const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
   const day = 86_400_000
-  if (timestamp >= startOfToday) return 'Today'
-  if (timestamp >= startOfToday - day) return 'Yesterday'
-  if (timestamp >= startOfToday - 7 * day) return 'Previous 7 days'
-  if (timestamp >= startOfToday - 30 * day) return 'Previous 30 days'
+  if (timestamp >= startOfToday) return '今天'
+  if (timestamp >= startOfToday - day) return '昨天'
+  if (timestamp >= startOfToday - 7 * day) return '最近 7 天'
+  if (timestamp >= startOfToday - 30 * day) return '最近 30 天'
   return date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
 }
 

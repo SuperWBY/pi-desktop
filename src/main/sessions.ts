@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import type { SessionSummary } from '@shared/types'
 
 interface CacheEntry {
@@ -94,7 +94,7 @@ async function summarize(file: string): Promise<SessionSummary | null> {
     path: file,
     id: header.id ?? basename(file, '.jsonl'),
     cwd: header.cwd ?? homedir(),
-    name: name || preview || 'Untitled session',
+    name: name || preview || '未命名会话',
     preview,
     updatedAt,
     createdAt: Number.isNaN(createdAt) ? stat.birthtimeMs : createdAt,
@@ -117,6 +117,7 @@ export async function listSessions(): Promise<SessionSummary[]> {
 
   const summaries = await Promise.all(
     dirs.map(async (dirName) => {
+      if (dirName.startsWith('.')) return []
       const dir = join(root, dirName)
       try {
         const stat = await fs.stat(dir)
@@ -137,12 +138,35 @@ export async function listSessions(): Promise<SessionSummary[]> {
     .sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
-export async function deleteSession(file: string): Promise<boolean> {
+export interface DeletedSession {
+  path: string
+  trashPath: string
+  name: string
+}
+
+/** Soft delete: move the transcript into `<sessions>/.trash` so it can be undone. */
+export async function deleteSession(file: string): Promise<DeletedSession | null> {
   const root = resolve(sessionsRoot())
   const target = resolve(file)
   if (!target.startsWith(root + sep)) throw new Error('Session is outside the session directory')
-  await fs.unlink(target)
+  const trashDir = join(root, '.trash')
+  await fs.mkdir(trashDir, { recursive: true })
+  const trashPath = join(trashDir, `${Date.now()}-${basename(target)}`)
+  await fs.rename(target, trashPath)
   cache.delete(target)
+  return { path: target, trashPath, name: basename(target, '.jsonl') }
+}
+
+export async function restoreSession(trashPath: string, target: string): Promise<boolean> {
+  const root = resolve(sessionsRoot())
+  const trashDir = join(root, '.trash')
+  const from = resolve(trashPath)
+  const dest = resolve(target)
+  if (!from.startsWith(trashDir + sep)) throw new Error('Not a trashed session')
+  if (!dest.startsWith(root + sep)) throw new Error('Session is outside the session directory')
+  await fs.mkdir(dirname(dest), { recursive: true })
+  await fs.rename(from, dest)
+  cache.delete(dest)
   return true
 }
 

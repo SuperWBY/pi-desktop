@@ -16,15 +16,15 @@ export function Welcome(): ReactNode {
         </div>
         <h1>Pi Desktop</h1>
         <p className="welcome-sub">
-          A desktop home for pi. Open a project, then ask pi to read, edit, and run code with you.
+          把 pi 装进桌面。打开一个项目，然后让 pi 读代码、改文件、跑命令。
         </p>
 
         {state.error && (
           <div className="welcome-error">
-            <strong>pi is not running</strong>
+            <strong>pi 没有在运行</strong>
             <span>{state.error}</span>
             <button className="button ghost" onClick={() => actions.openSettings(true)}>
-              Check settings
+              检查设置
             </button>
           </div>
         )}
@@ -32,10 +32,10 @@ export function Welcome(): ReactNode {
         <div className="welcome-actions">
           <button className="button primary" onClick={() => void actions.pickFolder()}>
             <FolderOpen size={15} />
-            Open a project
+            打开项目
           </button>
           <button className="button ghost" onClick={() => actions.openSettings(true)}>
-            Settings
+            设置
           </button>
         </div>
 

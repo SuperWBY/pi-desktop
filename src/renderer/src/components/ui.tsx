@@ -1,6 +1,70 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+  type RefObject
+} from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
+
+const ITEM_SELECTOR = '.menu-item:not([disabled])'
+
+/**
+ * Arrow-key navigation shared by every menu-like surface. Menus are plain
+ * buttons, so this only needs to move DOM focus and let the browser handle
+ * Enter/Space activation.
+ */
+function useMenuKeys(
+  open: boolean,
+  close: () => void,
+  ref: RefObject<HTMLDivElement | null>
+): void {
+  useEffect(() => {
+    if (!open) return
+    const node = ref.current
+    if (!node) return
+
+    node.setAttribute('role', 'menu')
+    for (const item of node.querySelectorAll<HTMLElement>(ITEM_SELECTOR)) {
+      item.setAttribute('role', 'menuitem')
+    }
+
+    const items = (): HTMLElement[] => Array.from(node.querySelectorAll<HTMLElement>(ITEM_SELECTOR))
+    const focusAt = (index: number): void => {
+      const list = items()
+      if (!list.length) return
+      const next = (index + list.length) % list.length
+      list[next]?.focus()
+    }
+    const move = (delta: number): void => {
+      const list = items()
+      const current = list.findIndex((item) => item === document.activeElement)
+      focusAt(current === -1 ? (delta > 0 ? 0 : list.length - 1) : current + delta)
+    }
+
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        move(1)
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        move(-1)
+      } else if (event.key === 'Home') {
+        event.preventDefault()
+        focusAt(0)
+      } else if (event.key === 'End') {
+        event.preventDefault()
+        focusAt(items().length - 1)
+      }
+    }
+
+    node.addEventListener('keydown', onKeyDown)
+    return () => node.removeEventListener('keydown', onKeyDown)
+  }, [open, close, ref])
+}
 
 export function Popover({
   trigger,
@@ -9,7 +73,7 @@ export function Popover({
   width = 260,
   className = ''
 }: {
-  trigger: (open: boolean, toggle: () => void) => ReactNode
+  trigger: (open: boolean, toggle: () => void, expanded: Record<string, unknown>) => ReactNode
   children: (close: () => void) => ReactNode
   align?: 'left' | 'right'
   width?: number
@@ -29,11 +93,21 @@ export function Popover({
       Math.max(8, align === 'right' ? rect.right - width : rect.left),
       Math.max(8, window.innerWidth - width - 8)
     )
-    if (rect.bottom > window.innerHeight * 0.66) {
-      setStyle({ bottom: window.innerHeight - rect.top + gap, left, width })
+    const below = window.innerHeight - rect.bottom - gap - 8
+    const above = rect.top - gap - 8
+    const openUp = below < 260 && above > below
+    const maxHeight = Math.max(180, Math.min(460, openUp ? above : below))
+    if (openUp) {
+      setStyle({ bottom: window.innerHeight - rect.top + gap, left, width, maxHeight })
     } else {
-      setStyle({ top: rect.bottom + gap, left, width })
+      setStyle({ top: rect.bottom + gap, left, width, maxHeight })
     }
+  }
+
+  const close = (): void => {
+    setOpen(false)
+    // Return focus to whatever opened the menu so keyboard users keep context.
+    rootRef.current?.querySelector<HTMLElement>('button, [tabindex]')?.focus()
   }
 
   useEffect(() => {
@@ -47,7 +121,7 @@ export function Popover({
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         event.stopPropagation()
-        setOpen(false)
+        close()
       }
     }
     // Keep the popover anchored instead of closing it: scrolling inside the
@@ -76,20 +150,98 @@ export function Popover({
     }
   }, [open])
 
+  useMenuKeys(open, close, menuRef)
+
+  // Focus the first useful control once the portal exists.
+  useEffect(() => {
+    if (!open) return
+    const frame = requestAnimationFrame(() => {
+      const node = menuRef.current
+      if (!node) return
+      const target =
+        node.querySelector<HTMLElement>('.menu-search input') ??
+        node.querySelector<HTMLElement>(ITEM_SELECTOR)
+      target?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [open])
+
   return (
     <div className={`popover-root ${className}`} ref={rootRef}>
       {trigger(open, () => {
         if (!open) place()
         setOpen((value) => !value)
-      })}
+      }, { 'aria-expanded': open, 'aria-haspopup': 'menu' })}
       {open &&
         createPortal(
-          <div className="popover" style={style} ref={menuRef}>
-            {children(() => setOpen(false))}
+          <div
+            className="popover"
+            style={style}
+            ref={menuRef}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            {children(close)}
           </div>,
           document.body
         )}
     </div>
+  )
+}
+
+/** Right-click menu anchored at the cursor. */
+export function ContextMenu({
+  position,
+  onClose,
+  children
+}: {
+  position: { x: number; y: number } | null
+  onClose: () => void
+  children: ReactNode
+}): ReactNode {
+  const menuRef = useRef<HTMLDivElement>(null)
+  useMenuKeys(Boolean(position), onClose, menuRef)
+
+  useEffect(() => {
+    if (!position) return
+    const onPointer = (event: MouseEvent): void => {
+      if (!menuRef.current?.contains(event.target as Node)) onClose()
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', onPointer)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onPointer)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [position, onClose])
+
+  useEffect(() => {
+    if (!position) return
+    const node = menuRef.current
+    if (!node) return
+    const rect = node.getBoundingClientRect()
+    const overflowX = position.x + rect.width + 10 - window.innerWidth
+    const overflowY = position.y + rect.height + 10 - window.innerHeight
+    if (overflowX > 0 || overflowY > 0) {
+      node.style.left = `${Math.max(8, position.x - Math.max(0, overflowX))}px`
+      node.style.top = `${Math.max(8, position.y - Math.max(0, overflowY))}px`
+    }
+  }, [position])
+
+  if (!position) return null
+
+  return createPortal(
+    <div
+      className="menu context-menu"
+      ref={menuRef}
+      style={{ position: 'fixed', left: position.x, top: position.y, zIndex: 60 }}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      {children}
+    </div>,
+    document.body
   )
 }
 
@@ -126,7 +278,7 @@ export function Modal({
       <div
         className="modal"
         style={{ width }}
-        onMouseDown={(event) => event.stopPropagation()}
+        onMouseDown={(event: ReactMouseEvent) => event.stopPropagation()}
         role="dialog"
         aria-modal="true"
       >

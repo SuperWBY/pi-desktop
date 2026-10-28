@@ -16,6 +16,8 @@ const api: PiDesktopApi = {
   pickFile: (options) => ipcRenderer.invoke('dialog:pick-file', options),
   listSessions: () => ipcRenderer.invoke('sessions:list'),
   deleteSession: (path: string) => ipcRenderer.invoke('sessions:delete', path),
+  restoreSession: (trashPath: string, path: string) =>
+    ipcRenderer.invoke('sessions:restore', trashPath, path),
   readModelsConfig: () => ipcRenderer.invoke('models:read'),
   saveProvider: (id: string, entry: CustomProviderEntry) =>
     ipcRenderer.invoke('models:save-provider', id, entry),

@@ -8,9 +8,16 @@ import {
   shell,
   type MenuItemConstructorOptions
 } from 'electron'
-import { existsSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type {
   Bootstrap,
   CustomProviderEntry,
@@ -165,6 +172,49 @@ async function doOpenSession(options: {
   }
 }
 
+const IGNORED_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'out',
+  'release',
+  'output',
+  '.next',
+  '.cache',
+  'coverage',
+  '.venv',
+  '__pycache__'
+])
+
+function runGit(cwd: string, args: string[]): string {
+  const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
+  try {
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      timeout: 15_000,
+      maxBuffer: 16 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+  } catch (error) {
+    const stdout = (error as { stdout?: string }).stdout
+    return typeof stdout === 'string' ? stdout : ''
+  }
+}
+
+function parseNumstat(output: string): Record<string, { additions: number; deletions: number }> {
+  const stats: Record<string, { additions: number; deletions: number }> = {}
+  for (const line of output.split('\n')) {
+    const [additions, deletions, path] = line.split('\t')
+    if (!path) continue
+    stats[path] = {
+      additions: Number(additions) || 0,
+      deletions: Number(deletions) || 0
+    }
+  }
+  return stats
+}
+
 function commandTimeout(type: string): number {
   if (type === 'compact' || type === 'export_html' || type === 'abort' || type === 'abort_bash') {
     return 600_000
@@ -301,6 +351,85 @@ function registerIpc(): void {
   ipcMain.handle('shell:show-item', (_event, path: string) => {
     if (path) shell.showItemInFolder(path)
   })
+
+  ipcMain.handle(
+    'fs:read-dir',
+    (_event, path: string, options?: { showHidden?: boolean }) => {
+      const dir = resolve(path)
+      const entries = readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => options?.showHidden || !entry.name.startsWith('.'))
+        .filter((entry) => !(entry.isDirectory() && IGNORED_DIRS.has(entry.name)))
+        .map((entry) => {
+          const full = join(dir, entry.name)
+          let size = 0
+          try {
+            size = entry.isFile() ? statSync(full).size : 0
+          } catch {
+            size = 0
+          }
+          return { name: entry.name, path: full, isDir: entry.isDirectory(), size }
+        })
+        .sort((a, b) =>
+          a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1
+        )
+      return entries
+    }
+  )
+
+  ipcMain.handle('fs:read-text', (_event, path: string, maxBytes = 200_000) => {
+    try {
+      const stat = statSync(path)
+      if (!stat.isFile()) return { ok: false, error: 'not a file' }
+      const size = Math.min(stat.size, maxBytes)
+      const buffer = readFileSync(path)
+      const slice = buffer.subarray(0, size)
+      return {
+        ok: true,
+        content: slice.toString('utf8'),
+        truncated: buffer.length > size,
+        size: stat.size
+      }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  ipcMain.handle('git:status', (_event, cwd: string) => {
+    const dir = resolve(cwd)
+    const branch = runGit(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).trim()
+    const porcelain = runGit(dir, ['status', '--porcelain=v1'])
+    const unstaged = parseNumstat(runGit(dir, ['diff', '--numstat']))
+    const staged = parseNumstat(runGit(dir, ['diff', '--cached', '--numstat']))
+    const files = porcelain
+      .split('\n')
+      .filter((line) => line.trim().length > 3)
+      .map((line) => {
+        const status = line.slice(0, 2).trim() || '?'
+        const raw = line.slice(3).trim()
+        const path = raw.includes(' -> ') ? raw.split(' -> ').pop() ?? raw : raw
+        const stat = staged[path] ?? unstaged[path] ?? { additions: 0, deletions: 0 }
+        return {
+          path: resolve(dir, path),
+          relative: path,
+          status,
+          staged: line[0] !== ' ' && line[0] !== '?',
+          additions: stat.additions,
+          deletions: stat.deletions
+        }
+      })
+    return { ok: branch.length > 0, branch, files }
+  })
+
+  ipcMain.handle(
+    'git:diff',
+    (_event, cwd: string, path: string, staged?: boolean) => {
+      const dir = resolve(cwd)
+      const args = ['diff', '--no-color']
+      if (staged) args.push('--cached')
+      args.push('--', path)
+      return runGit(dir, args)
+    }
+  )
 
   ipcMain.handle('shell:open-path', async (_event, path: string): Promise<boolean> => {
     if (!path) return false

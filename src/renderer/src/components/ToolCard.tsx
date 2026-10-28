@@ -14,9 +14,10 @@ import {
 import clsx from 'clsx'
 import type { ContentBlock, ToolCallBlock, ToolResultMessage, ToolRun } from '@shared/types'
 import { baseName, formatDuration } from '../lib/format'
-import { contentText, diffParts, editPairs, toolImages, toolMeta } from '../lib/tools'
+import { contentText, editPairs, toolImages, toolMeta } from '../lib/tools'
 import { Spinner } from './ui'
 import { CopyButton } from './Markdown'
+import { DiffView } from './Diff'
 
 /** Reveal / open a path straight from a tool card. */
 function FileActions({ path }: { path: string }): ReactNode {
@@ -97,39 +98,6 @@ function CodeOutput({
             : t('… 还有 {count} 行 · 显示全部').replace('{count}', String(hidden))}
         </button>
       )}
-    </div>
-  )
-}
-
-function DiffView({
-  oldText,
-  newText,
-  context = 3
-}: {
-  oldText: string
-  newText: string
-  context?: number
-}): ReactNode {
-  const parts = diffParts(oldText, newText, context)
-  return (
-    <div className="diff">
-      {parts.map((part, index) => {
-        const marker = part.added ? '+' : part.removed ? '-' : ' '
-        const lines = part.value.replace(/\n$/, '').split('\n')
-        return (
-          <pre
-            key={index}
-            className={clsx('diff-part', part.added && 'added', part.removed && 'removed')}
-          >
-            {lines.map((line, lineIndex) => (
-              <div className="diff-line" key={lineIndex}>
-                <span className="diff-marker">{marker}</span>
-                <span>{line || ' '}</span>
-              </div>
-            ))}
-          </pre>
-        )
-      })}
     </div>
   )
 }

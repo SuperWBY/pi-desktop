@@ -27,6 +27,7 @@ import type {
 } from '@shared/types'
 import type { PiResponse } from '@shared/types'
 import { contentText } from './lib/tools'
+import { buildTurns, turnsToMarkdown } from './lib/turns'
 import { translate } from './i18n/dictionary'
 
 export type SendMode = 'steer' | 'followUp'
@@ -80,6 +81,17 @@ export interface AppState {
   stderr: string
   diagnosticsOpen: boolean
   deletedSession: { path: string; trashPath: string; name: string } | null
+  terminal: TerminalState
+}
+
+export interface TerminalState {
+  id: string | null
+  command: string
+  output: string
+  running: boolean
+  exitCode: number | null
+  excluded: boolean
+  history: { command: string; output: string; exitCode: number | null }[]
 }
 
 const initialSettings: Settings = { theme: 'dark', workspaces: [] }
@@ -115,7 +127,16 @@ export const initialState: AppState = {
   sendMode: 'steer',
   stderr: '',
   diagnosticsOpen: false,
-  deletedSession: null
+  deletedSession: null,
+  terminal: {
+    id: null,
+    command: '',
+    output: '',
+    running: false,
+    exitCode: null,
+    excluded: true,
+    history: []
+  }
 }
 
 let noticeSequence = 0
@@ -466,6 +487,10 @@ export type Action =
   | { type: 'TOGGLE_SIDEBAR' }
   | { type: 'SET_SETTINGS_OPEN'; open: boolean }
   | { type: 'SET_DIAGNOSTICS_OPEN'; open: boolean }
+  | { type: 'BASH_START'; id: string; command: string; excluded: boolean }
+  | { type: 'BASH_OUTPUT'; id: string; delta: string }
+  | { type: 'BASH_DONE'; id: string; output: string; exitCode: number | null }
+  | { type: 'BASH_CLEAR' }
   | { type: 'SET_DELETED_SESSION'; deleted: { path: string; trashPath: string; name: string } | null }
   | { type: 'SET_THEME'; theme: 'dark' | 'light' }
   | { type: 'FILL_COMPOSER'; value: string }
@@ -554,7 +579,19 @@ export function reducer(state: AppState, action: Action): AppState {
       return reduceRecord(state, action.record)
 
     case 'RECORDS':
-      return action.records.reduce((next, record) => reduceRecord(next, record), state)
+      return action.records.reduce((next, record) => {
+        if (record.type === 'bash_execution_update') {
+          const id = typeof record.id === 'string' ? record.id : ''
+          const delta = typeof record.delta === 'string' ? record.delta : ''
+          if (next.terminal.id && next.terminal.id === id && delta) {
+            return {
+              ...next,
+              terminal: { ...next.terminal, output: (next.terminal.output + delta).slice(-400_000) }
+            }
+          }
+        }
+        return reduceRecord(next, record)
+      }, state)
 
     case 'SEND_OPTIMISTIC': {
       const content: ContentBlock[] = []
@@ -597,6 +634,53 @@ export function reducer(state: AppState, action: Action): AppState {
 
     case 'NOTICE':
       return addNotice(state, action.level, action.title, action.detail, action.action)
+
+    case 'BASH_START':
+      return {
+        ...state,
+        terminal: {
+          ...state.terminal,
+          id: action.id,
+          command: action.command,
+          output: '',
+          running: true,
+          exitCode: null,
+          excluded: action.excluded
+        }
+      }
+
+    case 'BASH_OUTPUT': {
+      if (state.terminal.id !== action.id) return state
+      const output = (state.terminal.output + action.delta).slice(-400_000)
+      return { ...state, terminal: { ...state.terminal, output } }
+    }
+
+    case 'BASH_DONE': {
+      if (state.terminal.id !== action.id) return state
+      const output = state.terminal.output || action.output
+      const entry = {
+        command: state.terminal.command,
+        output,
+        exitCode: action.exitCode
+      }
+      return {
+        ...state,
+        terminal: {
+          ...state.terminal,
+          output,
+          running: false,
+          exitCode: action.exitCode,
+          id: null,
+          history: [...state.terminal.history, entry].slice(-30)
+        }
+      }
+    }
+
+    case 'BASH_CLEAR':
+      return {
+        ...state,
+        terminal: { ...state.terminal, output: '', command: '', exitCode: null, id: null, running: false }
+      }
 
     case 'SET_DIAGNOSTICS_OPEN':
       return { ...state, diagnosticsOpen: action.open }
@@ -668,6 +752,7 @@ interface AppActions {
   toggleSidebar: () => void
   openSettings: (open: boolean) => void
   openDiagnostics: (open: boolean) => void
+  toggleWorkPanel: () => void
   undoDelete: () => Promise<void>
   updateSettings: (patch: Partial<Settings>) => Promise<void>
   updatePiSettings: (patch: PiSettings) => Promise<void>
@@ -688,6 +773,9 @@ interface AppActions {
   restartSession: () => Promise<void>
   exportHtml: () => Promise<void>
   exportMarkdown: () => Promise<void>
+  runBash: (command: string, excluded: boolean) => Promise<void>
+  stopBash: () => Promise<void>
+  clearBash: () => void
   compact: () => Promise<void>
   fillComposer: (text: string) => void
   openExternal: (url: string) => void
@@ -828,8 +916,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         filters: [{ name: 'Markdown', extensions: ['md'] }]
       })
       if (!path) return
-      const { buildTurns: build, turnsToMarkdown } = await import('./lib/turns')
-      const turns = build(current.messages, current.toolRuns, {}, -1)
+      const turns = buildTurns(current.messages, current.toolRuns, {}, -1)
       const ok = await window.pi.writeTextFile(path, turnsToMarkdown(turns, name))
       notify(ok ? 'success' : 'error', ok ? '已导出 Markdown' : '导出失败', path)
       if (ok) window.pi.showItem(path)
@@ -837,6 +924,41 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       notify('error', '导出失败', error instanceof Error ? error.message : String(error))
     }
   }, [notify])
+
+  const runBash = useCallback(
+    async (command: string, excluded: boolean) => {
+      const trimmed = command.trim()
+      if (!trimmed) return
+      const id = `ui-bash-${Date.now()}`
+      dispatch({ type: 'BASH_START', id, command: trimmed, excluded })
+      try {
+        const response = await window.pi.command<{ output?: string; exitCode?: number }>(
+          { type: 'bash', id, command: trimmed, excludeFromContext: excluded },
+          600_000
+        )
+        dispatch({
+          type: 'BASH_DONE',
+          id,
+          output: response?.data?.output ?? (response?.success ? '' : response?.error ?? ''),
+          exitCode: response?.data?.exitCode ?? (response?.success ? 0 : 1)
+        })
+      } catch (error) {
+        dispatch({
+          type: 'BASH_DONE',
+          id,
+          output: error instanceof Error ? error.message : String(error),
+          exitCode: 1
+        })
+      }
+    },
+    []
+  )
+
+  const stopBash = useCallback(async () => {
+    await safeCommand({ type: 'abort_bash' }, 30_000)
+  }, [])
+
+  const clearBash = useCallback(() => dispatch({ type: 'BASH_CLEAR' }), [])
 
   const restartSession = useCallback(async () => {
     const current = stateRef.current
@@ -1009,6 +1131,13 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
 
   const openSettings = useCallback((open: boolean) => {
     dispatch({ type: 'SET_SETTINGS_OPEN', open })
+  }, [])
+
+  const toggleWorkPanel = useCallback(() => {
+    const current = stateRef.current.settings.workPanelOpen === true
+    void window.pi.updateSettings({ workPanelOpen: !current }).then((settings) =>
+      dispatch({ type: 'SET_SETTINGS', settings })
+    )
   }, [])
 
   const openDiagnostics = useCallback((open: boolean) => {
@@ -1295,6 +1424,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       toggleSidebar,
       openSettings,
       openDiagnostics,
+      toggleWorkPanel,
       undoDelete,
       updateSettings,
       updatePiSettings,
@@ -1310,6 +1440,9 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       restartSession,
       exportHtml,
       exportMarkdown,
+      runBash,
+      stopBash,
+      clearBash,
       compact,
       fillComposer,
       openExternal,
@@ -1330,6 +1463,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       toggleSidebar,
       openSettings,
       openDiagnostics,
+      toggleWorkPanel,
       undoDelete,
       updateSettings,
       updatePiSettings,
@@ -1345,6 +1479,9 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       restartSession,
       exportHtml,
       exportMarkdown,
+      runBash,
+      stopBash,
+      clearBash,
       compact,
       fillComposer,
       openExternal,

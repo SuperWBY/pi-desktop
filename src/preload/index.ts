@@ -35,6 +35,12 @@ const api: PiDesktopApi = {
   pickSavePath: (options) => ipcRenderer.invoke('dialog:pick-save', options),
   writeTextFile: (path: string, content: string) =>
     ipcRenderer.invoke('fs:write-text', path, content),
+  readDir: (path: string, options) => ipcRenderer.invoke('fs:read-dir', path, options),
+  readText: (path: string, maxBytes?: number) =>
+    ipcRenderer.invoke('fs:read-text', path, maxBytes),
+  gitStatus: (cwd: string) => ipcRenderer.invoke('git:status', cwd),
+  gitDiff: (cwd: string, path: string, staged?: boolean) =>
+    ipcRenderer.invoke('git:diff', cwd, path, staged),
   onRecord: (callback: (record: PiRecord) => void) => subscribe('pi:record', callback),
   onStatus: (callback) => subscribe('pi:status', callback),
   onStderr: (callback) => subscribe('pi:stderr', callback),

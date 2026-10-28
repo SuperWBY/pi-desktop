@@ -2,6 +2,8 @@ import type {
   Bootstrap,
   CustomProviderEntry,
   DeletedSession,
+  DirEntry,
+  GitStatus,
   ModelsConfig,
   OpenSessionResult,
   PiModelRow,
@@ -39,6 +41,13 @@ export interface PiDesktopApi {
     filters?: { name: string; extensions: string[] }[]
   }): Promise<string | null>
   writeTextFile(path: string, content: string): Promise<boolean>
+  readDir(path: string, options?: { showHidden?: boolean }): Promise<DirEntry[]>
+  readText(
+    path: string,
+    maxBytes?: number
+  ): Promise<{ ok: boolean; content?: string; truncated?: boolean; size?: number; error?: string }>
+  gitStatus(cwd: string): Promise<GitStatus>
+  gitDiff(cwd: string, path: string, staged?: boolean): Promise<string>
   onRecord(callback: (record: PiRecord) => void): () => void
   onStatus(
     callback: (status: { status: string; code?: number | null; signal?: string | null }) => void

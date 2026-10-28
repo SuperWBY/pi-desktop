@@ -10,6 +10,7 @@ import { Composer } from './components/Composer'
 import { Welcome } from './components/Welcome'
 import { SettingsPage } from './components/SettingsPage'
 import { Diagnostics } from './components/Diagnostics'
+import { WorkPanel } from './components/WorkPanel'
 import { ImageLightbox, openImage } from './components/ImageLightbox'
 import { UiRequestDialog } from './components/UiRequestDialog'
 import { Toasts } from './components/Toasts'
@@ -29,6 +30,9 @@ function Shell(): ReactNode {
       if (key === 'b' && !event.shiftKey) {
         event.preventDefault()
         actions.toggleSidebar()
+      } else if (key === 'e' && event.shiftKey) {
+        event.preventDefault()
+        actions.toggleWorkPanel()
       } else if (key === 'n' && !event.shiftKey) {
         event.preventDefault()
         void actions.newSession()
@@ -103,6 +107,8 @@ function Shell(): ReactNode {
         {showWelcome ? <Welcome /> : <ChatView />}
         {state.workspace && <Composer />}
       </main>
+
+      <WorkPanel />
 
       <SettingsPage />
       <Diagnostics />

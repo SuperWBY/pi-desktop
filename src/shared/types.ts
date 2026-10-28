@@ -206,6 +206,9 @@ export interface Settings {
   thinkingDisplay?: 'off' | 'summary' | 'full'
   /** Desktop notification when a long run finishes in the background. */
   notifyOnFinish?: boolean
+  workPanelOpen?: boolean
+  workPanelWidth?: number
+  workPanelTab?: 'changes' | 'files' | 'terminal' | 'artifacts'
   toolCardsExpanded?: boolean
   followStream?: boolean
   windowBounds?: { x?: number; y?: number; width: number; height: number }
@@ -329,6 +332,28 @@ export interface OpenSessionResult {
   error?: string
   sessionPath?: string | null
   cwd?: string
+}
+
+export interface DirEntry {
+  name: string
+  path: string
+  isDir: boolean
+  size: number
+}
+
+export interface GitFileChange {
+  path: string
+  relative: string
+  status: string
+  staged: boolean
+  additions: number
+  deletions: number
+}
+
+export interface GitStatus {
+  ok: boolean
+  branch: string
+  files: GitFileChange[]
 }
 
 export interface DeletedSession {

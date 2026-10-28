@@ -183,6 +183,7 @@ function stream(text) {
 
 function handle(command) {
   pendingId = command.id ?? null
+  const command_ = command.command
   switch (command.type) {
     case 'get_state':
       return response('get_state', state())
@@ -243,6 +244,20 @@ function handle(command) {
       return response(command.type, { sessionFile })
     case 'compact':
       return response('compact', {})
+    case 'bash': {
+      const command = String(command_ ?? '')
+      const lines = [
+        `$ ${command}`,
+        'mock-pi: simulated output',
+        'line 3',
+        'line 4',
+        'done'
+      ]
+      for (const line of lines) {
+        write({ type: 'bash_execution_update', id: pendingId, delta: `${line}\n` })
+      }
+      return response('bash', { output: `${lines.join('\n')}\n`, exitCode: 0, cancelled: false, truncated: false })
+    }
     default:
       return response(command.type, {})
   }

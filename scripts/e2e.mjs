@@ -154,6 +154,62 @@ async function caseMenuScrollAndKeyboard() {
   await app.close()
 }
 
+async function caseWorkPanel() {
+  const dirs = freshDirs('panel')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+  )
+  const { app, page } = await launch(dirs, 'default', {
+    MOCK_TRANSCRIPT: '3',
+    MOCK_TOOLS: '2',
+    MOCK_EDIT: '1'
+  })
+
+  const closed = await page.locator('.work-panel').count()
+  await page.keyboard.press('Meta+Shift+E')
+  await page.waitForSelector('.work-panel')
+  check('⌘⇧E 打开右侧工作面板', closed === 0)
+
+  const changes = await page.evaluate(() => ({
+    files: document.querySelectorAll('.work-file').length,
+    summary: document.querySelector('.work-summary')?.textContent ?? ''
+  }))
+  check('变更 tab 列出本会话改动', changes.files >= 1 && /\+\d+/.test(changes.summary), JSON.stringify(changes))
+
+  await page.locator('.work-file-head').first().click()
+  await page.waitForTimeout(400)
+  const diffLines = await page.locator('.work-file-body .diff-line').count()
+  check('变更 tab 能展开 diff', diffLines > 0, `lines=${diffLines}`)
+
+  await page.locator('.work-tab-button', { hasText: '文件' }).click()
+  await page.waitForSelector('.tree-row')
+  const tree = await page.locator('.tree-row').count()
+  check('文件 tab 渲染目录树', tree > 1, `rows=${tree}`)
+
+  await page.locator('.work-tab-button', { hasText: '终端' }).click()
+  await page.locator('.terminal-input input').fill('echo panel')
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(1200)
+  const terminal = await page.evaluate(() => ({
+    output: document.querySelector('.terminal-output')?.textContent ?? '',
+    exit: document.querySelector('.terminal-exit')?.textContent ?? ''
+  }))
+  check('终端 tab 通过 pi 执行命令', terminal.output.includes('mock-pi') && terminal.exit.includes('0'), JSON.stringify(terminal))
+
+  await page.locator('.work-tab-button', { hasText: '产物' }).click()
+  await page.waitForTimeout(300)
+  const artifacts = await page.evaluate(
+    () => document.querySelector('.work-empty')?.textContent ?? ''
+  )
+  check('产物 tab 有空状态', artifacts.length > 0, artifacts.slice(0, 30))
+
+  await page.keyboard.press('Meta+Shift+E')
+  await page.waitForTimeout(400)
+  check('⌘⇧E 再次关闭面板', (await page.locator('.work-panel').count()) === 0)
+  await app.close()
+}
+
 async function casePolish() {
   const dirs = freshDirs('polish')
   const exportDir = join(dirs.base, 'exports')
@@ -680,6 +736,8 @@ try {
   await caseLanguage()
   await caseComposerSafety()
   await caseMenuScrollAndKeyboard()
+  console.log('\nwork panel')
+  await caseWorkPanel()
   console.log('\npolish: files / export / lightbox')
   await casePolish()
   console.log('\nvirtualization')

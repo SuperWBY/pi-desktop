@@ -139,7 +139,13 @@
 
 合计约 5–6 天。建议顺序同表：先"变更"，因为它直接解决"这轮到底改了哪些文件"。
 
-## 五、需要拍板
+## 五、落地结果（v0.1.6）
+
+已实现 P0–P4 的全部内容：右栏骨架（`⌘⇧E`、可拖拽宽度、tab 记忆）、变更 tab（本会话 / 工作区 git 双数据源、逐文件 hunk diff、`±3`/全文、跳过测试、打开/Finder/定位轮次）、文件 tab（懒加载树 + 预览）、终端 tab（pi `bash` RPC、流式 `bash_execution_update`、`excludeFromContext` 默认开、历史）、产物 tab（图片 lightbox、HTML sandbox 预览、打开/Finder）。
+
+PDF 与飞书导出按你的要求暂不做；`docs/right-panel-and-exports-plan.md` 里保留设计，随时可以按 0.5 天/项补上。
+
+## 六、需要拍板
 
 1. 右栏**默认展开还是收起**？（建议默认收起，`⌘⇧E` 打开；有 diff 时自动弹出一行提示）
 2. 变更 tab 默认数据源：**本会话**（快、只看 agent 改的）还是**工作区**（全量、含手改）？

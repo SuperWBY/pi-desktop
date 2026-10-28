@@ -50,12 +50,25 @@ export function Popover({
         setOpen(false)
       }
     }
-    const onScroll = (): void => setOpen(false)
+    // Keep the popover anchored instead of closing it: scrolling inside the
+    // menu (model list, long session menu) used to dismiss the whole popover
+    // on the first wheel tick of a trackpad.
+    let frame = 0
+    const onScroll = (event: Event): void => {
+      const target = event.target
+      if (target instanceof Node && menuRef.current?.contains(target)) return
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        place()
+      })
+    }
     document.addEventListener('mousedown', onPointer)
     document.addEventListener('keydown', onKey)
     window.addEventListener('resize', place)
     window.addEventListener('scroll', onScroll, true)
     return () => {
+      if (frame) cancelAnimationFrame(frame)
       document.removeEventListener('mousedown', onPointer)
       document.removeEventListener('keydown', onKey)
       window.removeEventListener('resize', place)

@@ -1,4 +1,5 @@
 import { useTranslation } from '../i18n'
+import { useApp } from '../store'
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, Brain } from 'lucide-react'
 import clsx from 'clsx'
@@ -13,6 +14,7 @@ import type {
 import { formatCost, formatTokens, timeOfDay } from '../lib/format'
 import { Markdown, CopyButton } from './Markdown'
 import { ToolCard } from './ToolCard'
+import { ToolGroup } from './ToolGroup'
 
 /**
  * Streaming text arrives much faster than needed for a readable typewriter
@@ -66,18 +68,20 @@ function ThinkingBlock({
   defaultOpen: boolean
 }): ReactNode {
   const t = useTranslation()
-  const [open, setOpen] = useState(defaultOpen || streaming)
+  const { state } = useApp()
+  const mode = state.settings.thinkingDisplay ?? 'summary'
+  const [open, setOpen] = useState(mode === 'full' || defaultOpen || streaming)
   const manual = useRef(false)
 
   useEffect(() => {
     if (streaming) {
-      setOpen(true)
+      setOpen(mode !== 'summary')
     } else if (!manual.current) {
-      setOpen(false)
+      setOpen(mode === 'full')
     }
-  }, [streaming])
+  }, [streaming, mode])
 
-  if (!text.trim()) return null
+  if (!text.trim() || mode === 'off') return null
 
   return (
     <div className={clsx('thinking', open && 'open')}>
@@ -150,13 +154,16 @@ interface AssistantProps {
   toolRuns: Record<string, ToolRun>
   results: Record<string, ToolResultMessage>
   streaming: boolean
+  /** Hide the model/time header (consecutive assistant blocks in the transcript). */
+  hideHeader?: boolean
 }
 
 function AssistantMessageViewImpl({
   message,
   toolRuns,
   results,
-  streaming
+  streaming,
+  hideHeader
 }: AssistantProps): ReactNode {
   const blocks = message.content ?? []
   const usage = message.usage
@@ -168,21 +175,79 @@ function AssistantMessageViewImpl({
     .map((block) => block.text)
     .join('\n\n')
 
+  // 「read × 5」这种连续同类调用合成一组，避免一轮刷出十几张卡。
+  type Segment =
+    | { kind: 'block'; block: ContentBlock; index: number }
+    | { kind: 'group'; calls: ToolCallBlock[] }
+
+  const segments: Segment[] = []
+  let pending: { name: string; calls: ToolCallBlock[]; indexes: number[] } | null = null
+
+  const flush = (): void => {
+    if (!pending) return
+    if (pending.calls.length >= 3) {
+      segments.push({ kind: 'group', calls: pending.calls })
+    } else {
+      pending.calls.forEach((call, offset) => {
+        segments.push({ kind: 'block', block: call, index: pending?.indexes[offset] ?? 0 })
+      })
+    }
+    pending = null
+  }
+
+  blocks.forEach((block, index) => {
+    if (block.type === 'toolCall') {
+      const call = block as ToolCallBlock
+      // Diffs stay one-per-card; bursts of reads/greps are the noisy ones.
+      const groupable = call.name !== 'edit' && call.name !== 'write'
+      if (!groupable) {
+        flush()
+        segments.push({ kind: 'block', block, index })
+        return
+      }
+      if (pending && pending.name === call.name) {
+        pending.calls.push(call)
+        pending.indexes.push(index)
+        return
+      }
+      flush()
+      pending = { name: call.name, calls: [call], indexes: [index] }
+      return
+    }
+    flush()
+    segments.push({ kind: 'block', block, index })
+  })
+  flush()
+
   return (
     <div className={clsx('message assistant-message', streaming && 'is-streaming')}>
-      <div className="message-label">
-        <span className="assistant-mark">π</span>
-        <span>{model ? model.split('/').pop() : 'pi'}</span>
-        <span className="message-time">{timeOfDay(message.timestamp)}</span>
-        {text && !streaming && (
-          <span className="message-actions">
-            <CopyButton text={text} />
-          </span>
-        )}
-      </div>
+      {!hideHeader && (
+        <div className="message-label">
+          <span className="assistant-mark">π</span>
+          <span>{model ? model.split('/').pop() : 'pi'}</span>
+          <span className="message-time">{timeOfDay(message.timestamp)}</span>
+          {text && !streaming && (
+            <span className="message-actions">
+              <CopyButton text={text} />
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="assistant-body">
-        {blocks.map((block, index) => {
+        {segments.map((segment, segmentIndex) => {
+          if (segment.kind === 'group') {
+            return (
+              <ToolGroup
+                key={`group-${segmentIndex}`}
+                calls={segment.calls}
+                toolRuns={toolRuns}
+                results={results}
+              />
+            )
+          }
+          const block = segment.block
+          const index = segment.index
           if (block.type === 'text') {
             return <TextBlockView key={index} text={block.text} streaming={streaming} />
           }
@@ -246,6 +311,31 @@ function areMessagePropsEqual(prev: AssistantProps, next: AssistantProps): boole
   }
   return true
 }
+
+/** The final answer of a folded turn: text only, with a copy button. */
+export const AnswerOnly = memo(function AnswerOnly({
+  text,
+  model
+}: {
+  text: string
+  model?: string
+}): ReactNode {
+  if (!text.trim()) return null
+  return (
+    <div className="message assistant-message folded-answer">
+      <div className="message-label">
+        <span className="assistant-mark">π</span>
+        <span>{model ? model.split('/').pop() : 'pi'}</span>
+        <span className="message-actions">
+          <CopyButton text={text} />
+        </span>
+      </div>
+      <div className="assistant-body">
+        <TextBlockView text={text} streaming={false} />
+      </div>
+    </div>
+  )
+})
 
 export const CustomMessageView = memo(function CustomMessageView({
   content,

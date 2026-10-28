@@ -11,19 +11,15 @@ import {
 } from 'react'
 import { ArrowDown, Hammer, Sparkles, TerminalSquare } from 'lucide-react'
 import clsx from 'clsx'
-import type {
-  AssistantMessage,
-  ToolCallBlock,
-  ToolResultMessage,
-  UserMessage
-} from '@shared/types'
+import type { AssistantMessage, ToolResultMessage } from '@shared/types'
 import { useApp } from '../store'
-import { baseName } from '../lib/format'
-import { AssistantMessageView, CustomMessageView, UserMessageView } from './Message'
-import { ToolCard } from './ToolCard'
 import { Spinner } from './ui'
-import { contentText } from '../lib/tools'
+import { baseName } from '../lib/format'
 import { PiLogo } from './PiLogo'
+import { TurnView, OlderTurnsRow } from './TurnView'
+import { TranscriptView } from './TranscriptView'
+import { buildTurns } from '../lib/turns'
+import { useTurnFolds, type FoldLevel } from '../lib/turn-fold'
 
 const SUGGESTIONS = [
   {
@@ -65,17 +61,6 @@ export function ChatView(): ReactNode {
       }
     }
     return map
-  }, [state.messages])
-
-  const renderedCalls = useMemo(() => {
-    const ids = new Set<string>()
-    for (const message of state.messages) {
-      if (message.role !== 'assistant') continue
-      for (const block of (message as AssistantMessage).content ?? []) {
-        if (block.type === 'toolCall') ids.add((block as ToolCallBlock).id)
-      }
-    }
-    return ids
   }, [state.messages])
 
   const lastAssistantIndex = useMemo(() => {
@@ -152,6 +137,105 @@ export function ChatView(): ReactNode {
     setShowJump(distance >= 80 && state.messages.length > 0)
   }
 
+  const streamingIndex = state.streaming ? lastAssistantIndex : -1
+  const turns = useMemo(
+    () => buildTurns(state.messages, state.toolRuns, results, streamingIndex),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.messages, state.toolRuns, results, streamingIndex]
+  )
+
+  const folds = useTurnFolds(state.sessionPath, turns, {
+    autoFold: state.settings.turnAutoFold !== false,
+    aggregateAfter: state.settings.turnAggregate ?? 5,
+    defaultLevel: 1
+  })
+
+  const [transcriptOpen, setTranscriptOpen] = useState(false)
+  const [olderOpen, setOlderOpen] = useState(false)
+  const [activeTurn, setActiveTurn] = useState<string | null>(null)
+
+  useEffect(() => {
+    setOlderOpen(false)
+    setTranscriptOpen(false)
+  }, [state.sessionPath])
+
+  /** Fold/unfold without letting the transcript jump under the cursor. */
+  const changeLevel = useCallback(
+    (turnKey: string, level: FoldLevel) => {
+      const scroller = scrollerRef.current
+      const node = scroller?.querySelector<HTMLElement>(`[data-turn-key="${turnKey}"]`)
+      const before = node?.getBoundingClientRect().top
+      folds.setLevel(
+        turns.find((turn) => turn.key === turnKey) ?? turns[turns.length - 1],
+        level
+      )
+      if (!node || before === undefined || !scroller) return
+      programmatic.current = true
+      requestAnimationFrame(() => {
+        const after = node.getBoundingClientRect().top
+        scroller.scrollTop += after - before
+        requestAnimationFrame(() => {
+          programmatic.current = false
+        })
+      })
+    },
+    [folds, turns]
+  )
+
+  const jumpTurn = useCallback(
+    (direction: -1 | 1) => {
+      const scroller = scrollerRef.current
+      if (!scroller) return
+      const nodes = Array.from(scroller.querySelectorAll<HTMLElement>('[data-turn-key]'))
+      if (!nodes.length) return
+      const top = scroller.getBoundingClientRect().top + 80
+      const index = nodes.findIndex((node) => node.getBoundingClientRect().bottom > top)
+      const current = index === -1 ? nodes.length - 1 : index
+      const next = Math.min(nodes.length - 1, Math.max(0, current + direction))
+      const node = nodes[next]
+      if (!node) return
+      programmatic.current = true
+      node.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      setActiveTurn(node.dataset.turnKey ?? null)
+      window.setTimeout(() => {
+        programmatic.current = false
+      }, 400)
+    },
+    []
+  )
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      const meta = event.metaKey || event.ctrlKey
+      if (!meta || event.altKey) return
+      const key = event.key.toLowerCase()
+      const period = event.code === 'Period' || key === '.'
+      if (period && !event.shiftKey) {
+        event.preventDefault()
+        folds.collapseAll()
+      } else if (period && event.shiftKey) {
+        event.preventDefault()
+        folds.expandAll()
+      } else if (key === 'o' && event.shiftKey) {
+        event.preventDefault()
+        setTranscriptOpen((value) => !value)
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        jumpTurn(-1)
+      } else if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        jumpTurn(1)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [folds, jumpTurn])
+
+  const aggregateAfter = state.settings.turnAggregate ?? 5
+  const olderTurns =
+    olderOpen || turns.length <= aggregateAfter ? [] : turns.slice(0, turns.length - aggregateAfter)
+  const visibleTurns = olderTurns.length ? turns.slice(turns.length - aggregateAfter) : turns
+
   const streamingMessage =
     lastAssistantIndex >= 0 ? (state.messages[lastAssistantIndex] as AssistantMessage) : null
   const thinkingLive = Boolean(
@@ -214,65 +298,43 @@ export function ChatView(): ReactNode {
   return (
     <div className={clsx('chat-wrap', state.status === 'starting' && 'is-switching')}>
       {state.status === 'starting' && <div className="top-progress" />}
-      <div className="chat-scroll" aria-live="polite" aria-relevant="additions text" ref={scrollerRef} onScroll={onScroll} onWheel={onWheel}>
+      <div
+        className="chat-scroll"
+        aria-live="polite"
+        aria-relevant="additions text"
+        ref={scrollerRef}
+        onScroll={onScroll}
+        onWheel={onWheel}
+      >
         <div className="chat-inner" ref={innerRef}>
-          {state.messages.map((message, index) => {
-            const key = `${message.role}-${(message as { timestamp?: number }).timestamp ?? index}-${index}`
+          {olderTurns.length > 0 && (
+            <OlderTurnsRow
+              count={olderTurns.length}
+              first={olderTurns[0]}
+              onExpand={() => setOlderOpen(true)}
+              onOpenTranscript={() => setTranscriptOpen(true)}
+            />
+          )}
 
-            if (message.role === 'user') {
-              return (
-                <UserMessageView
-                  key={key}
-                  message={message as UserMessage}
-                  optimistic={Boolean((message as { __optimistic?: boolean }).__optimistic)}
-                />
-              )
-            }
-
-            if (message.role === 'assistant') {
-              return (
-                <AssistantMessageView
-                  key={key}
-                  message={message as AssistantMessage}
-                  toolRuns={state.toolRuns}
-                  results={results}
-                  streaming={state.streaming && index === lastAssistantIndex}
-                />
-              )
-            }
-
-            if (message.role === 'toolResult') {
-              const result = message as ToolResultMessage
-              if (renderedCalls.has(result.toolCallId)) return null
-              return (
-                <ToolCard
-                  key={key}
-                  call={{
-                    type: 'toolCall',
-                    id: result.toolCallId,
-                    name: result.toolName,
-                    arguments: {}
-                  }}
-                  result={result}
-                  defaultOpen={state.settings.toolCardsExpanded}
-                />
-              )
-            }
-
-            if (message.role === 'custom') {
-              const custom = message as unknown as { content?: unknown; display?: boolean; customType?: string }
-              if (custom.display === false) return null
-              return (
-                <CustomMessageView
-                  key={key}
-                  label={custom.customType ?? 'note'}
-                  content={contentText(custom.content)}
-                />
-              )
-            }
-
-            return null
-          })}
+          {visibleTurns.map((turn) => (
+            <TurnView
+              key={turn.key}
+              turn={turn}
+              level={folds.levelOf(turn)}
+              onLevel={(level) => changeLevel(turn.key, level)}
+              onOpenTranscript={() => setTranscriptOpen(true)}
+              onRetry={
+                turn.userText
+                  ? () => {
+                      void actions.sendMessage(turn.userText, [])
+                    }
+                  : undefined
+              }
+              toolRuns={state.toolRuns}
+              results={results}
+              busy={state.streaming}
+            />
+          ))}
 
           {state.streaming && !thinkingLive && (
             <div className="activity">
@@ -288,10 +350,43 @@ export function ChatView(): ReactNode {
         </div>
       </div>
 
+      {turns.length >= 4 && (
+        <div className="turn-rail" aria-hidden="true">
+          {visibleTurns.map((turn) => (
+            <button
+              key={turn.key}
+              className={clsx(
+                'turn-rail-tick',
+                turn.failed && 'has-error',
+                turn.streaming && 'is-live',
+                activeTurn === turn.key && 'is-active'
+              )}
+              onClick={() => {
+                const node = scrollerRef.current?.querySelector<HTMLElement>(
+                  `[data-turn-key="${turn.key}"]`
+                )
+                node?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+              }}
+              title={turn.userText ? turn.userText.slice(0, 80) : ''}
+            />
+          ))}
+        </div>
+      )}
+
       {showJump && (
         <button className="jump-button" onClick={() => scrollToBottom(true)}>
-          <ArrowDown size={14} />{t("回到最新")}</button>
+          <ArrowDown size={14} />
+          {t('回到最新')}
+        </button>
       )}
+
+      <TranscriptView
+        open={transcriptOpen}
+        onClose={() => setTranscriptOpen(false)}
+        messages={state.messages}
+        toolRuns={state.toolRuns}
+        results={results}
+      />
     </div>
   )
 }

@@ -27,30 +27,42 @@ const ICONS = {
 function CodeOutput({
   text,
   lineNumbers = false,
-  maxLines = 240
+  maxLines = 20,
+  tail = false
 }: {
   text: string
   lineNumbers?: boolean
   maxLines?: number
+  /** bash output is most useful at the end: show the tail instead of the head. */
+  tail?: boolean
 }): ReactNode {
   const t = useTranslation()
   const [showAll, setShowAll] = useState(false)
   const lines = text.replace(/\n$/, '').split('\n')
-  const visible = showAll ? lines : lines.slice(0, maxLines)
+  const hidden = Math.max(0, lines.length - maxLines)
+  const visible = showAll ? lines : tail ? lines.slice(-maxLines) : lines.slice(0, maxLines)
+  const offset = showAll || !tail ? 0 : hidden
 
   return (
     <div className="output">
+      {hidden > 0 && !showAll && tail && (
+        <div className="output-more">
+          {t('… 前面省略 {count} 行').replace('{count}', String(hidden))}
+        </div>
+      )}
       <pre className={clsx('output-pre', lineNumbers && 'with-lines')}>
         {visible.map((line, index) => (
           <div className="output-line" key={index}>
-            {lineNumbers && <span className="line-number">{index + 1}</span>}
+            {lineNumbers && <span className="line-number">{offset + index + 1}</span>}
             <span className="line-text">{line || ' '}</span>
           </div>
         ))}
       </pre>
-      {lines.length > maxLines && (
+      {hidden > 0 && (
         <button className="more-button" onClick={() => setShowAll((value) => !value)}>
-          {showAll ? t("收起") : t('Show all {count} lines').replace('{count}', String(lines.length))}
+          {showAll
+            ? t('只看前几行')
+            : t('… 还有 {count} 行 · 显示全部').replace('{count}', String(hidden))}
         </button>
       )}
     </div>
@@ -158,7 +170,7 @@ export const ToolCard = memo(function ToolCard({
                 <code>{String(args.command ?? '')}</code>
               </div>
               {(resultText || run?.partialText) && (
-                <CodeOutput text={resultText || run?.partialText || ''} maxLines={400} />
+                <CodeOutput text={resultText || run?.partialText || ''} maxLines={20} tail />
               )}
               {running && !resultText && !run?.partialText && (
                 <div className="bash-running">
@@ -174,7 +186,7 @@ export const ToolCard = memo(function ToolCard({
                 </div>
               )}
               {resultText ? (
-                <CodeOutput text={resultText} lineNumbers maxLines={200} />
+                <CodeOutput text={resultText} lineNumbers maxLines={24} />
               ) : (
                 <div className="muted-line">{t("读取中…")}</div>
               )}
@@ -188,7 +200,7 @@ export const ToolCard = memo(function ToolCard({
                 </div>
               )}
               {typeof args.content === 'string' ? (
-                <CodeOutput text={args.content} lineNumbers maxLines={80} />
+                <CodeOutput text={args.content} lineNumbers maxLines={24} />
               ) : (
                 <div className="muted-line">{t("写入中…")}</div>
               )}

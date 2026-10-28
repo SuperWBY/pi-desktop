@@ -3823,3 +3823,318 @@ button.footer-meta:hover {
 .app.drawer-open .toasts {
   right: calc(min(470px, 100vw) + 16px);
 }
+
+/* ---------------- Turns (conversation folding) ---------------- */
+
+.turn {
+  position: relative;
+}
+
+.turn + .turn {
+  margin-top: 6px;
+}
+
+.turn-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 6px;
+  min-height: 26px;
+  border-radius: 8px;
+  padding: 0 4px 0 2px;
+  transition: background 0.14s ease;
+}
+
+.turn-summary:hover {
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+}
+
+.turn-summary.is-live .turn-summary-text {
+  color: var(--accent-strong);
+}
+
+.turn-summary-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  padding: 4px 6px;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: left;
+}
+
+.turn-summary-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turn-summary.has-error .turn-summary-text {
+  color: color-mix(in srgb, var(--red) 78%, var(--text-faint));
+}
+
+.turn-summary-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 10px;
+}
+
+.turn-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+
+.turn-summary:hover .turn-summary-actions,
+.turn-summary:focus-within .turn-summary-actions {
+  opacity: 1;
+}
+
+.turn-action {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--text-faint);
+}
+
+.turn-action:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.turn-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.turn-copied {
+  font-size: 10px;
+  color: var(--green);
+}
+
+.folded-answer {
+  margin-top: 2px;
+}
+
+/* Older turns aggregated into one row */
+.older-turns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 14px;
+  padding: 7px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.older-turns-text {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.older-turns-action {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.older-turns-action:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* Turn rail (right edge) */
+.turn-rail {
+  position: absolute;
+  top: 64px;
+  bottom: 120px;
+  right: 6px;
+  width: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  opacity: 0.45;
+  transition: opacity 0.15s ease;
+}
+
+.chat-wrap:hover .turn-rail {
+  opacity: 0.9;
+}
+
+.turn-rail-tick {
+  flex: 1;
+  min-height: 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-faint) 45%, transparent);
+}
+
+.turn-rail-tick:hover {
+  background: var(--text-dim);
+}
+
+.turn-rail-tick.has-error {
+  background: var(--red);
+}
+
+.turn-rail-tick.is-live {
+  background: var(--accent);
+}
+
+.turn-rail-tick.is-active {
+  background: var(--accent-strong);
+}
+
+/* Tool group (bursts of identical calls) */
+.tool-group {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  margin: 6px 0;
+  overflow: hidden;
+}
+
+.tool-group .tool-head {
+  border-radius: 10px;
+}
+
+.tool-group-body {
+  border-top: 1px solid var(--border);
+  padding: 4px 6px 6px;
+}
+
+.tool-group-body .tool-card {
+  border: none;
+  background: transparent;
+}
+
+/* ---------------- Transcript overlay ---------------- */
+
+.transcript-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 34px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(3px);
+  animation: fade-in 0.14s ease-out;
+}
+
+.transcript {
+  display: flex;
+  flex-direction: column;
+  width: min(920px, 100%);
+  border-radius: 14px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.transcript-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.transcript-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.transcript-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-side);
+  color: var(--text-faint);
+}
+
+.transcript-search input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.transcript-count {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.transcript-nav {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--text-dim);
+}
+
+.transcript-nav:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.transcript-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.transcript-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 18px 40px;
+}
+
+.transcript-item {
+  border-radius: 10px;
+  padding: 2px 8px;
+  margin: 0 -8px 10px;
+  transition: background 0.14s ease, box-shadow 0.14s ease;
+}
+
+.transcript-item.is-hit {
+  background: color-mix(in srgb, var(--yellow) 8%, transparent);
+}
+
+.transcript-item.is-current {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent-soft);
+}
+
+.transcript-empty {
+  padding: 30px 4px;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}

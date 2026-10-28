@@ -1032,6 +1032,62 @@ export function SettingsPage(): ReactNode {
           />
         </Row>
       </Block>
+
+      <Block
+        title={t("对话显示")}
+        query={query}
+        terms={['折叠', '收起', '轮次', '思考', '摘要', 'turn', 'fold']}
+      >
+        <Row
+          title={t("结论出现后收起过程")}
+          desc={t("每一步工具调用仍可展开；收起状态会按会话记住。")}
+          query={query}
+        >
+          <Switch
+            label={t("结论出现后收起过程")}
+            checked={state.settings.turnAutoFold !== false}
+            onChange={(value) => void actions.updateSettings({ turnAutoFold: value })}
+          />
+        </Row>
+        <Row
+          title={t("更早的轮次聚合")}
+          desc={t("主视图只保留最近几轮，更早的收成一行。")}
+          query={query}
+        >
+          <Select
+            label={t("更早的轮次聚合")}
+            value={String(state.settings.turnAggregate ?? 5)}
+            onChange={(value) => void actions.updateSettings({ turnAggregate: Number(value) })}
+            options={[
+              { value: '3', label: t('3 轮') },
+              { value: '5', label: t('5 轮') },
+              { value: '8', label: t('8 轮') },
+              { value: '12', label: t('12 轮') },
+              { value: '200', label: t('不聚合') }
+            ]}
+          />
+        </Row>
+        <Row
+          title={t("思考内容")}
+          desc={t("summary 折叠成一行，full 直接展开，off 完全不显示。")}
+          query={query}
+        >
+          <Select
+            label={t("思考内容")}
+            value={state.settings.thinkingDisplay ?? 'summary'}
+            onChange={(value) =>
+              void actions.updateSettings({
+                thinkingDisplay: value as 'off' | 'summary' | 'full'
+              })
+            }
+            options={[
+              { value: 'summary', label: t('折叠显示') },
+              { value: 'full', label: t('总是展开') },
+              { value: 'off', label: t('完全隐藏') }
+            ]}
+          />
+        </Row>
+      </Block>
     </>
   )
 

@@ -43,22 +43,55 @@ let model = MODELS[0]
 let thinkingLevel = 'medium'
 let streamingTimer = null
 const transcriptSize = Number(process.env.MOCK_TRANSCRIPT ?? 0)
+const toolBurst = Number(process.env.MOCK_TOOLS ?? 0)
 const now = Date.now()
-let messages = Array.from({ length: transcriptSize }, (_, i) => [
-  {
-    role: 'user',
-    timestamp: now - (transcriptSize - i) * 60_000,
-    content: [{ type: 'text', text: `seeded question ${i}` }]
-  },
-  {
-    role: 'assistant',
-    timestamp: now - (transcriptSize - i) * 60_000 + 1000,
-    content: [
-      { type: 'text', text: `seeded answer ${i}: ${'lorem ipsum dolor sit amet '.repeat(20)}` }
-    ],
-    usage: { input: 100, output: 200, totalTokens: 300, cost: { total: 0.0002 } }
-  }
-]).flat()
+
+function seededTurn(i) {
+  const calls = toolBurst
+    ? Array.from({ length: i === transcriptSize - 1 ? Math.max(toolBurst, 5) : toolBurst }, (_, k) => ({
+        type: 'toolCall',
+        id: `call-${i}-${k}`,
+        name: 'read',
+        arguments: { path: `src/module-${i}-${k}.ts` }
+      }))
+    : []
+  const parts = [
+    {
+      role: 'user',
+      timestamp: now - (transcriptSize - i) * 60_000,
+      content: [{ type: 'text', text: `seeded question ${i}` }]
+    },
+    {
+      role: 'assistant',
+      timestamp: now - (transcriptSize - i) * 60_000 + 1000,
+      content: [
+        { type: 'text', text: `looking at module ${i}` },
+        ...calls
+      ],
+      usage: { input: 80, output: 40, totalTokens: 120, cost: { total: 0.0001 } }
+    },
+    ...calls.map((call) => ({
+      role: 'toolResult',
+      toolCallId: call.id,
+      toolName: call.name,
+      timestamp: now - (transcriptSize - i) * 60_000 + 1200,
+      content: [
+        { type: 'text', text: Array.from({ length: 60 }, (_, n) => `line ${n + 1} of ${call.arguments.path}`).join('\n') }
+      ]
+    })),
+    {
+      role: 'assistant',
+      timestamp: now - (transcriptSize - i) * 60_000 + 2000,
+      content: [
+        { type: 'text', text: `seeded answer ${i}: ${'lorem ipsum dolor sit amet '.repeat(14)}` }
+      ],
+      usage: { input: 100, output: 200, totalTokens: 300, cost: { total: 0.0002 } }
+    }
+  ]
+  return parts
+}
+
+let messages = Array.from({ length: transcriptSize }, (_, i) => seededTurn(i)).flat()
 
 function write(record) {
   process.stdout.write(`${JSON.stringify(record)}\n`)

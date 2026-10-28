@@ -154,6 +154,175 @@ async function caseMenuScrollAndKeyboard() {
   await app.close()
 }
 
+async function caseTurnsFold() {
+  const dirs = freshDirs('turns')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+  )
+  const { app, page, errors } = await launch(dirs, 'default', {
+    MOCK_TRANSCRIPT: '8',
+    MOCK_TOOLS: '3',
+    MOCK_SCENARIO: 'default'
+  })
+
+  const before = await page.evaluate(() => ({
+    turns: document.querySelectorAll('.turn').length,
+    summaries: document.querySelectorAll('.turn-summary').length,
+    cards: document.querySelectorAll('.tool-card').length,
+    groups: document.querySelectorAll('.tool-group').length,
+    older: document.querySelector('.older-turns')?.textContent ?? ''
+  }))
+  check('每轮都渲染折叠摘要', before.turns === 5 && before.summaries === 5, JSON.stringify(before))
+  check('折叠后不再渲染工具卡/分组', before.cards === 0 && before.groups === 0, JSON.stringify(before))
+  check('更早的轮次聚合成一行', /更早的 3 轮|3 earlier turns/.test(before.older), before.older)
+
+  // expand one turn -> answer + summary collapse, tool cards appear
+  await page.locator('.turn').last().locator('.turn-summary-main').click()
+  await page.waitForTimeout(400)
+  const expanded = await page.evaluate(() => {
+    const turns = document.querySelectorAll('.turn')
+    const last = turns[turns.length - 1]
+    return {
+      cards: last.querySelectorAll('.tool-card').length,
+      groups: last.querySelectorAll('.tool-group').length
+    }
+  })
+  check(
+    '展开后出现分组（5 个连续 read 合成一组）',
+    expanded.groups === 1 || expanded.cards >= 3,
+    JSON.stringify(expanded)
+  )
+
+  // open the group, then one card, to reach the truncated output
+  await page.locator('.turn').last().locator('.tool-group .tool-head').first().click()
+  await page.locator('.turn').last().locator('.tool-card .tool-head').first().click()
+  await page.waitForTimeout(300)
+  const truncation = await page.evaluate(() => {
+    const turns = document.querySelectorAll('.turn')
+    const last = turns[turns.length - 1]
+    const more = last.querySelector('.more-button')
+    return {
+      lines: last.querySelectorAll('.output-line').length,
+      more: more?.textContent ?? ''
+    }
+  })
+  check(
+    '工具输出按行截断（默认 24 行 + 还有 N 行）',
+    truncation.lines > 0 && truncation.lines <= 24 && /还有|more/.test(truncation.more),
+    JSON.stringify(truncation)
+  )
+
+  // collapse again and compare the anchor position
+  const anchor = await page.evaluate(() => {
+    const turn = document.querySelectorAll('.turn')[2]
+    return turn.getBoundingClientRect().top
+  })
+  await page.locator('.turn').last().locator('.turn-summary-main').click()
+  await page.waitForTimeout(400)
+  const anchorAfter = await page.evaluate(() => {
+    const turn = document.querySelectorAll('.turn')[2]
+    return turn.getBoundingClientRect().top
+  })
+  check(
+    '折叠/展开保持滚动锚点',
+    Math.abs(anchor - anchorAfter) < 8,
+    `${Math.round(anchor)} → ${Math.round(anchorAfter)}`
+  )
+
+  // batch shortcuts
+  await page.locator('.chat-scroll').click()
+  await page.keyboard.press('Meta+Shift+Period')
+  await page.waitForTimeout(300)
+  const expandedAll = await page.evaluate(
+    () => document.querySelectorAll('.tool-card, .tool-group').length
+  )
+  check('⇧⌘. 全部展开', expandedAll > 0, `cards/groups=${expandedAll}`)
+  await page.keyboard.press('Meta+Period')
+  await page.waitForTimeout(300)
+  const collapsedAll = await page.evaluate(
+    () => document.querySelectorAll('.tool-card, .tool-group').length
+  )
+  check('⌘. 全部收起', collapsedAll === 0, `cards/groups=${collapsedAll}`)
+
+  // transcript overlay
+  await page.keyboard.press('Meta+Shift+O')
+  await page.waitForSelector('.transcript')
+  const transcript = await page.evaluate(() => ({
+    items: document.querySelectorAll('.transcript-item').length,
+    cards: document.querySelectorAll('.transcript .tool-card').length
+  }))
+  check('⌘⇧O 打开完整记录（含全部消息）', transcript.items >= 20, JSON.stringify(transcript))
+
+  await page.locator('.transcript-search input').fill('answer 7')
+  await page.waitForTimeout(300)
+  const matches = await page.locator('.transcript-count').innerText()
+  check('完整记录里可以搜索', /[1-9]/.test(matches), matches)
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
+  check('Esc 关闭完整记录', (await page.locator('.transcript').count()) === 0)
+
+  check('无 JS 异常', errors.length === 0, errors.join(' | '))
+  await app.close()
+}
+
+async function caseFoldPersistence() {
+  const dirs = freshDirs('fold-persist')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+  )
+  let { app, page } = await launch(dirs, 'default', { MOCK_TRANSCRIPT: '6', MOCK_TOOLS: '2' })
+  await page.locator('.turn').last().locator('.turn-summary-main').click()
+  await page.waitForTimeout(500)
+  const cardsBefore = await page.evaluate(() => {
+    const turns = document.querySelectorAll('.turn')
+    const last = turns[turns.length - 1]
+    return last.querySelectorAll('.tool-card, .tool-group').length
+  })
+  check('手动展开生效', cardsBefore > 0, `cards=${cardsBefore}`)
+  await page.waitForTimeout(400)
+  await app.close()
+
+  ;({ app, page } = await launch(dirs, 'default', { MOCK_TRANSCRIPT: '6', MOCK_TOOLS: '2' }))
+  const cardsAfter = await page.evaluate(() => {
+    const turns = document.querySelectorAll('.turn')
+    const last = turns[turns.length - 1]
+    return last.querySelectorAll('.tool-card, .tool-group').length
+  })
+  check('折叠状态重启后保留', cardsAfter > 0, `cards=${cardsAfter}`)
+  await app.close()
+}
+
+async function caseAutoFoldOnAnswer() {
+  const dirs = freshDirs('autofold')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+  )
+  const { app, page } = await launch(dirs)
+  await page.locator('.composer-input').fill('hello there')
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(150)
+  const during = await page.evaluate(() => ({
+    liveSummary: document.querySelectorAll('.turn.is-streaming .turn-summary.is-live').length,
+    foldedAnswer: document.querySelectorAll('.turn.is-streaming .folded-answer').length,
+    actions: document.querySelectorAll('.turn.is-streaming .turn-summary-actions').length
+  }))
+  check(
+    '流式中的轮次保持展开（只有运行中摘要，无折叠按钮）',
+    during.liveSummary === 1 && during.foldedAnswer === 0,
+    JSON.stringify(during)
+  )
+  await page.waitForTimeout(3500)
+  const after = await page.evaluate(() => ({
+    summaries: document.querySelectorAll('.turn-summary').length,
+    cards: document.querySelectorAll('.tool-card').length
+  }))
+  check('结论落地后自动收起过程', after.summaries === 1, JSON.stringify(after))
+  await app.close()
+}
+
 async function caseWheelIsolation() {
   const dirs = freshDirs('wheel')
   seedSession(dirs.sessions, 'mock-session', 'Mock session', 30)
@@ -410,6 +579,12 @@ try {
   await caseLanguage()
   await caseComposerSafety()
   await caseMenuScrollAndKeyboard()
+  console.log('\nturns / folding')
+  await caseTurnsFold()
+  console.log('\nfold persistence')
+  await caseFoldPersistence()
+  console.log('\nauto fold on answer')
+  await caseAutoFoldOnAnswer()
   console.log('\nwheel isolation')
   await caseWheelIsolation()
   console.log('\nmenu typing')

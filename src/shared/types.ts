@@ -198,6 +198,12 @@ export interface Settings {
   workspaces: string[]
   lastWorkspace?: string
   lastSessionPath?: string
+  /** Fold the process away once the final answer of a turn lands. */
+  turnAutoFold?: boolean
+  /** How many recent turns stay in the main view before older ones aggregate. */
+  turnAggregate?: number
+  /** off | summary | full */
+  thinkingDisplay?: 'off' | 'summary' | 'full'
   toolCardsExpanded?: boolean
   followStream?: boolean
   windowBounds?: { x?: number; y?: number; width: number; height: number }

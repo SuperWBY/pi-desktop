@@ -4,21 +4,16 @@
       <stop offset="0" stop-color="#1b1d22"/>
       <stop offset="1" stop-color="#0c0d0f"/>
     </linearGradient>
-    <linearGradient id="fg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f6c39d"/>
-      <stop offset="1" stop-color="#df8f5f"/>
-    </linearGradient>
-    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
-      <feGaussianBlur stdDeviation="26" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
   </defs>
-  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#bg)"/>
-  <rect x="33" y="33" width="958" height="958" rx="223" fill="none" stroke="#ffffff" stroke-opacity="0.09" stroke-width="2"/>
-  <text x="512" y="512" text-anchor="middle" dominant-baseline="central"
-        font-family="'SF Pro Display', 'Helvetica Neue', Helvetica, Arial, sans-serif"
-        font-size="600" font-weight="500" fill="url(#fg)" filter="url(#glow)">π</text>
+
+  <!-- macOS app-icon canvas: 824pt squircle centered in 1024 -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="2"/>
+
+  <!-- pi mark, centered: viewBox 800 scaled to 760, bbox center 400 -> canvas 512 -->
+  <g transform="translate(132 132) scale(0.95)">
+    <path fill="#F09082" d="M165.29 165.29H517.36V400H400V282.65H165.29Z"/>
+    <path fill="#4D9ABF" d="M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z"/>
+    <path fill="#F1BE58" d="M517.36 400H634.72V634.72H517.36Z"/>
+  </g>
 </svg>

@@ -192,15 +192,16 @@ textarea {
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   border-radius: 7px;
-  background: var(--accent-soft);
-  color: var(--accent-strong);
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 1;
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  flex: none;
+}
+
+.brand-mark svg {
+  display: block;
 }
 
 .brand-name {
@@ -710,10 +711,8 @@ textarea {
   display: grid;
   place-items: center;
   border-radius: 14px;
-  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
-  background: var(--accent-soft);
-  color: var(--accent-strong);
-  font-size: 26px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
   margin-bottom: 18px;
 }
 
@@ -2397,11 +2396,8 @@ textarea {
   display: grid;
   place-items: center;
   border-radius: 18px;
-  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
-  background: var(--accent-soft);
-  color: var(--accent-strong);
-  font-size: 34px;
-  line-height: 1;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
 }
 
 .welcome h1 {

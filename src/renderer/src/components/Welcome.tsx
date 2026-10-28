@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { FolderOpen, Plus } from 'lucide-react'
 import { useApp } from '../store'
 import { baseName, shortenPath } from '../lib/format'
+import { PiLogo } from './PiLogo'
 
 export function Welcome(): ReactNode {
   const { state, actions } = useApp()
@@ -10,7 +11,9 @@ export function Welcome(): ReactNode {
   return (
     <div className="welcome">
       <div className="welcome-inner">
-        <div className="welcome-mark">π</div>
+        <div className="welcome-mark">
+          <PiLogo size={44} />
+        </div>
         <h1>Pi Desktop</h1>
         <p className="welcome-sub">
           A desktop home for pi. Open a project, then ask pi to read, edit, and run code with you.

@@ -22,6 +22,7 @@ import { AssistantMessageView, CustomMessageView, UserMessageView } from './Mess
 import { ToolCard } from './ToolCard'
 import { Spinner } from './ui'
 import { contentText } from '../lib/tools'
+import { PiLogo } from './PiLogo'
 
 const SUGGESTIONS = [
   {
@@ -183,7 +184,9 @@ export function ChatView(): ReactNode {
     return (
       <div className="chat-scroll">
         <div className="chat-inner empty-session">
-          <div className="empty-mark">π</div>
+          <div className="empty-mark">
+            <PiLogo size={32} />
+          </div>
           <h1>What should we build in {baseName(state.workspace)}?</h1>
           <p>
             Pi can read and edit files, run commands, and search the web. This session is saved once

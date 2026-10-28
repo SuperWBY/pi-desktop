@@ -13,6 +13,7 @@ import clsx from 'clsx'
 import type { SessionSummary } from '@shared/types'
 import { useApp } from '../store'
 import { baseName, dayLabel, relativeTime, shortenPath, truncate } from '../lib/format'
+import { PiLogo } from './PiLogo'
 import { Modal, Popover } from './ui'
 
 function groupSessions(sessions: SessionSummary[]): { label: string; items: SessionSummary[] }[] {
@@ -67,7 +68,9 @@ export function Sidebar(): ReactNode {
       <div className="sidebar-drag" />
 
       <div className="sidebar-brand">
-        <span className="brand-mark">π</span>
+        <span className="brand-mark">
+          <PiLogo size={17} />
+        </span>
         <span className="brand-name">Pi</span>
         <button
           className="icon-button brand-action"

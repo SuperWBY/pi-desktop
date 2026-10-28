@@ -1,0 +1,44 @@
+{
+  "name": "pi-desktop",
+  "version": "0.1.0",
+  "description": "A desktop client for pi",
+  "main": "./out/main/index.js",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "build": "npm run typecheck && electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "screenshot": "node scripts/screenshot.mjs",
+    "pack": "npm run build && npx electron-packager . \"Pi Desktop\" --out=release --overwrite --icon=build/icon.icns --app-bundle-id=dev.pi.desktop --app-version=0.1.0 --darwin-dark-mode-support --ignore=\"^/(src|scripts|output|release)\" && node scripts/fix-icon.mjs",
+    "dmg": "npm run pack && node scripts/make-dmg.mjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "@types/diff": "^7.0.2",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "clsx": "^2.1.1",
+    "diff": "^9.0.0",
+    "electron": "^45.1.0",
+    "electron-vite": "^6.0.0",
+    "highlight.js": "^11.12.0",
+    "lucide-react": "^1.62.0",
+    "playwright": "^1.64.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  },
+  "productName": "Pi Desktop",
+  "author": "Pi Desktop",
+  "dependencies": {
+    "remark-breaks": "^4.0.0"
+  }
+}

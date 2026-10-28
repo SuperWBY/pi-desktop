@@ -1918,6 +1918,7 @@ textarea {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  overscroll-behavior: contain;
   position: fixed;
   z-index: 100;
   animation: pop-in 0.14s cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -3522,6 +3523,25 @@ kbd {
 .menu-item:focus-visible {
   outline-offset: -2px;
   background: var(--hover);
+}
+
+/* Keyboard cursor (model picker keeps focus in the search field) */
+.menu-item.highlight {
+  background: var(--hover);
+}
+
+.menu-item.current {
+  color: var(--accent-strong);
+}
+
+.chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.chip:disabled:hover {
+  background: transparent;
+  border-color: var(--border);
 }
 
 /* ---------------- Menu layout ---------------- */

@@ -48,7 +48,7 @@ function CodeOutput({
       </pre>
       {lines.length > maxLines && (
         <button className="more-button" onClick={() => setShowAll((value) => !value)}>
-          {showAll ? 'Show less' : `Show all ${lines.length} lines`}
+          {showAll ? '收起' : `展开全部 ${lines.length} 行`}
         </button>
       )}
     </div>
@@ -174,7 +174,7 @@ export const ToolCard = memo(function ToolCard({
               {resultText ? (
                 <CodeOutput text={resultText} lineNumbers maxLines={200} />
               ) : (
-                <div className="muted-line">Reading…</div>
+                <div className="muted-line">读取中…</div>
               )}
             </div>
           ) : meta.kind === 'write' ? (
@@ -188,18 +188,18 @@ export const ToolCard = memo(function ToolCard({
               {typeof args.content === 'string' ? (
                 <CodeOutput text={args.content} lineNumbers maxLines={80} />
               ) : (
-                <div className="muted-line">Writing…</div>
+                <div className="muted-line">写入中…</div>
               )}
             </div>
           ) : (
             <div className="generic-body">
               <div className="generic-section">
-                <div className="section-label">Arguments</div>
+                <div className="section-label">参数</div>
                 <pre className="json-block">{JSON.stringify(args, null, 2)}</pre>
               </div>
               {resultText && (
                 <div className="generic-section">
-                  <div className="section-label">Result</div>
+                  <div className="section-label">结果</div>
                   <CodeOutput text={resultText} maxLines={120} />
                 </div>
               )}

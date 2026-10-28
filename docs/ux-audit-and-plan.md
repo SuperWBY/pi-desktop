@@ -244,7 +244,20 @@ PI_DESKTOP_PI_PATH=./scripts/mock-pi.mjs SCENARIO=auth-error npm run dev
 
 仍未做（见上表 P1–P3）：模型选择器「最近使用 / ⌘K 命令面板 / 切换中态 / streaming 保护」、对话 retry/regenerate/编辑重发、fork 分支、设置连接测试、视觉回归、系统通知、自动更新与签名公证。
 
-## 六、建议的落地顺序
+## 六、0.1.3 补充（滚动/菜单手感）
+
+| 问题 | 根因 | 修法 |
+| --- | --- | --- |
+| 选模型滚轮时对话跟着滚 | 弹层是 React portal：DOM 上挂在 body，但**事件仍沿 React 树冒泡**到 `.composer-wrap` 的 `onWheel`（它把滚轮转发给 `.chat-scroll`），所以 `overscroll-behavior` 完全拦不住 | 弹层/右键菜单/模态框内部 `onWheel` 直接 `stopPropagation()`；Composer 侧再加 `.popover/.context-menu/.modal-overlay/.drawer` 白名单 |
+| ↓ 之后没法继续输入搜索 | 键盘导航是"移动焦点"，焦点离开输入框后打字无处可去 | 模型菜单改成 **焦点留在搜索框 + 高亮索引**（`aria-activedescendant`），↑↓/Home/End 移动高亮、Enter 选、hover 同步、自动 scrollIntoView |
+| 流式中切模型行为未定义 | 无状态约束 | 流式输出期间 chip 禁用并提示"本轮结束后可切换" |
+| 弹层可能溢出窗口 | 只看 `innerHeight * 0.66` 阈值，没夹取高度 | 计算上下可用空间并夹取 `maxHeight`，不足时上翻 |
+| 菜单/工具卡/应用菜单语言混杂 | 未做统一 | 工具卡（参数/结果/读取中/展开全部）、macOS 应用菜单、附件错误提示全部中文化 |
+| 重命名失焦即丢弃 | `onBlur` 直接取消 | 失焦时提交（有改动才写） |
+
+新增 e2e 断言：滚轮不带动对话区（模型菜单 + 推理菜单各一条）、弹层不溢出窗口、↓ 后焦点仍在搜索框且能继续过滤、Enter 选中过滤后的项、流式中 chip 禁用并在结束后恢复。当前 **31/31 通过**。
+
+## 七、建议的落地顺序
 
 1. **本周**：P0 五项（滚动已修、键盘导航、恢复上次会话、诊断抽屉、默认模型数据源）+ mock pi + 用例 1/2/5
 2. **下周**：P1 全量（模型选择器重做是重点）+ 用例 3/4/9

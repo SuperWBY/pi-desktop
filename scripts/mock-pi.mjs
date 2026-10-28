@@ -42,7 +42,23 @@ const LEVELS = ['off', 'low', 'medium', 'high', 'max']
 let model = MODELS[0]
 let thinkingLevel = 'medium'
 let streamingTimer = null
-let messages = []
+const transcriptSize = Number(process.env.MOCK_TRANSCRIPT ?? 0)
+const now = Date.now()
+let messages = Array.from({ length: transcriptSize }, (_, i) => [
+  {
+    role: 'user',
+    timestamp: now - (transcriptSize - i) * 60_000,
+    content: [{ type: 'text', text: `seeded question ${i}` }]
+  },
+  {
+    role: 'assistant',
+    timestamp: now - (transcriptSize - i) * 60_000 + 1000,
+    content: [
+      { type: 'text', text: `seeded answer ${i}: ${'lorem ipsum dolor sit amet '.repeat(20)}` }
+    ],
+    usage: { input: 100, output: 200, totalTokens: 300, cost: { total: 0.0002 } }
+  }
+]).flat()
 
 function write(record) {
   process.stdout.write(`${JSON.stringify(record)}\n`)
@@ -156,7 +172,8 @@ function handle(command) {
       messages.push({ role: 'user', content: [{ type: 'text', text }] })
       write({ type: 'message_start', message: { role: 'user', content: command.message } })
       write({ type: 'message_end', message: { role: 'user', content: command.message } })
-      setTimeout(() => stream(`mock reply ${messages.length}: ${text}`), 30)
+      const body = `mock reply ${messages.length}: ${text} ${'— streaming padding '.repeat(30)}`
+      setTimeout(() => stream(body), 30)
       return response('prompt', { disposition: 'started' })
     }
     case 'abort':
@@ -180,8 +197,9 @@ function handle(command) {
 if (scenario === 'auth-error') {
   process.stderr.write('mock-pi: no credentials for provider "mock"\n')
 }
-if (scenario === 'catalog-huge') {
-  for (let i = 0; i < 300; i++) {
+const bulk = Number(process.env.MOCK_BULK ?? (scenario === 'catalog-huge' ? 300 : 0))
+if (bulk > 0) {
+  for (let i = 0; i < bulk; i++) {
     MODELS.push({
       id: `mock-bulk-${i}`,
       name: `Mock Bulk ${i}`,

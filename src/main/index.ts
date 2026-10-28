@@ -311,7 +311,7 @@ function buildMenu(): void {
               { role: 'about' as const },
               { type: 'separator' as const },
               {
-                label: 'Settings…',
+                label: '设置…',
                 accelerator: 'CmdOrCtrl+,',
                 registerAccelerator: false,
                 click: () => send('app:event', { name: 'settings' })
@@ -332,13 +332,13 @@ function buildMenu(): void {
       label: 'File',
       submenu: [
         {
-          label: 'New Session',
+          label: '新建会话',
           accelerator: 'CmdOrCtrl+N',
           registerAccelerator: false,
           click: () => send('app:event', { name: 'new-session' })
         },
         {
-          label: 'Open Project…',
+          label: '打开项目…',
           accelerator: 'CmdOrCtrl+O',
           registerAccelerator: false,
           click: () => send('app:event', { name: 'open-folder' })
@@ -363,13 +363,13 @@ function buildMenu(): void {
       label: 'View',
       submenu: [
         {
-          label: 'Toggle Sidebar',
+          label: '收起/展开侧栏',
           accelerator: 'CmdOrCtrl+B',
           registerAccelerator: false,
           click: () => send('app:event', { name: 'toggle-sidebar' })
         },
         {
-          label: 'Toggle Theme',
+          label: '切换主题',
           accelerator: 'CmdOrCtrl+Shift+L',
           registerAccelerator: false,
           click: () => send('app:event', { name: 'toggle-theme' })
@@ -393,7 +393,7 @@ function buildMenu(): void {
       role: 'help',
       submenu: [
         {
-          label: 'pi documentation',
+          label: 'pi 文档',
           click: () => shell.openExternal('https://pi.dev')
         }
       ]

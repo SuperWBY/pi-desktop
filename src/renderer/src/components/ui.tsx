@@ -71,13 +71,15 @@ export function Popover({
   children,
   align = 'left',
   width = 260,
-  className = ''
+  className = '',
+  keyboardNav = true
 }: {
   trigger: (open: boolean, toggle: () => void, expanded: Record<string, unknown>) => ReactNode
   children: (close: () => void) => ReactNode
   align?: 'left' | 'right'
   width?: number
   className?: string
+  keyboardNav?: boolean
 }): ReactNode {
   const [open, setOpen] = useState(false)
   const [style, setStyle] = useState<CSSProperties>({})
@@ -150,7 +152,7 @@ export function Popover({
     }
   }, [open])
 
-  useMenuKeys(open, close, menuRef)
+  useMenuKeys(open && keyboardNav, close, menuRef)
 
   // Focus the first useful control once the portal exists.
   useEffect(() => {
@@ -179,6 +181,10 @@ export function Popover({
             style={style}
             ref={menuRef}
             onContextMenu={(event) => event.preventDefault()}
+            // React portals keep bubbling through the React tree, so a wheel
+            // inside the menu would otherwise reach the composer and scroll
+            // the conversation behind it.
+            onWheel={(event) => event.stopPropagation()}
           >
             {children(close)}
           </div>,
@@ -238,6 +244,7 @@ export function ContextMenu({
       ref={menuRef}
       style={{ position: 'fixed', left: position.x, top: position.y, zIndex: 60 }}
       onContextMenu={(event) => event.preventDefault()}
+      onWheel={(event) => event.stopPropagation()}
     >
       {children}
     </div>,
@@ -274,7 +281,11 @@ export function Modal({
   if (!open) return null
 
   return (
-    <div className="modal-overlay" onMouseDown={onClose}>
+    <div
+      className="modal-overlay"
+      onMouseDown={onClose}
+      onWheel={(event) => event.stopPropagation()}
+    >
       <div
         className="modal"
         style={{ width }}

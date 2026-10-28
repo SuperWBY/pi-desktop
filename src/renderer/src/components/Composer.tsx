@@ -55,13 +55,15 @@ function readImage(file: File): Promise<Attachment> {
 function ModelMenu({ close }: { close: () => void }): ReactNode {
   const { state, actions } = useApp()
   const [query, setQuery] = useState('')
+  const [highlight, setHighlight] = useState(0)
+  const listRef = useRef<HTMLDivElement>(null)
   const current = state.piState?.model
 
   const grouped = useMemo(() => {
+    const text = query.trim().toLowerCase()
     const filtered = state.models.filter((model) => {
-      if (!query.trim()) return true
-      const haystack = `${model.name} ${model.id} ${model.provider}`.toLowerCase()
-      return haystack.includes(query.toLowerCase())
+      if (!text) return true
+      return `${model.name} ${model.id} ${model.provider}`.toLowerCase().includes(text)
     })
     const map = new Map<string, ModelInfo[]>()
     for (const model of filtered) {
@@ -72,31 +74,94 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b))
   }, [state.models, query])
 
+  // Flat order shared by keyboard movement and rendering.
+  const flat = useMemo(() => grouped.flatMap(([, models]) => models), [grouped])
+
+  useEffect(() => {
+    // Start on the model that is actually in use, so ↓/Enter is a no-op.
+    const index = flat.findIndex(
+      (model) => model.provider === current?.provider && model.id === current?.id
+    )
+    setHighlight(index >= 0 ? index : 0)
+  }, [flat, current?.provider, current?.id])
+
+  useEffect(() => {
+    listRef.current
+      ?.querySelector<HTMLElement>('.menu-item.highlight')
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [highlight])
+
+  const pick = (model: ModelInfo): void => {
+    void actions.setModel(model)
+    close()
+  }
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (!flat.length) return
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      setHighlight((value) => (value + 1) % flat.length)
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      setHighlight((value) => (value - 1 + flat.length) % flat.length)
+    } else if (event.key === 'Home') {
+      event.preventDefault()
+      setHighlight(0)
+    } else if (event.key === 'End') {
+      event.preventDefault()
+      setHighlight(flat.length - 1)
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      const model = flat[highlight]
+      if (model) pick(model)
+    }
+  }
+
+  let index = -1
+
   return (
-    <div className="menu">
+    <div className="menu" onKeyDown={onKeyDown}>
       <div className="menu-search">
         <input
           autoFocus
           value={query}
           placeholder="搜索模型…"
-          onChange={(event) => setQuery(event.target.value)}
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="model-menu-list"
+          aria-activedescendant={flat[highlight] ? `model-opt-${highlight}` : undefined}
+          onChange={(event) => {
+            setQuery(event.target.value)
+            setHighlight(0)
+          }}
         />
       </div>
-      <div className="menu-list">
-        {grouped.length === 0 && <div className="menu-empty">No models found</div>}
+      <div className="menu-list" id="model-menu-list" role="listbox" ref={listRef}>
+        {grouped.length === 0 && (
+          <div className="menu-empty">
+            {state.models.length === 0 ? 'pi 还没就绪，稍等一下…' : '没有匹配的模型'}
+          </div>
+        )}
         {grouped.map(([provider, models]) => (
           <div key={provider} className="menu-group">
             <div className="menu-group-label">{provider}</div>
             {models.map((model) => {
-              const active = current?.provider === model.provider && current?.id === model.id
+              index += 1
+              const itemIndex = index
+              const isCurrent = current?.provider === model.provider && current?.id === model.id
               return (
                 <button
                   key={`${model.provider}/${model.id}`}
-                  className={clsx('menu-item', active && 'active')}
-                  onClick={() => {
-                    void actions.setModel(model)
-                    close()
-                  }}
+                  id={`model-opt-${itemIndex}`}
+                  role="option"
+                  aria-selected={isCurrent}
+                  className={clsx(
+                    'menu-item',
+                    isCurrent && 'current',
+                    itemIndex === highlight && 'highlight'
+                  )}
+                  onMouseEnter={() => setHighlight(itemIndex)}
+                  onClick={() => pick(model)}
                 >
                   <span className="menu-item-main">
                     <span className="menu-item-title">{model.name}</span>
@@ -105,7 +170,7 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
                       {model.reasoning ? ' · 推理' : ''}
                     </span>
                   </span>
-                  {active && <Check size={14} />}
+                  {isCurrent && <Check size={14} />}
                 </button>
               )
             })}
@@ -193,17 +258,22 @@ export function Composer(): ReactNode {
   const addFiles = useCallback(
     async (files: FileList | File[]) => {
       const images = Array.from(files).filter((file) => file.type.startsWith('image/'))
-      if (!images.length) return
+      if (!images.length) {
+        if (files.length) {
+          actions.notify('info', '暂时只能附加图片', '拖进来的是文件，pi 的图片输入只接受图片。')
+        }
+        return
+      }
       const next: Attachment[] = []
       for (const file of images.slice(0, 6)) {
         if (file.size > 8 * 1024 * 1024) {
-          actions.notify('warning', 'Image skipped', `${file.name} is larger than 8 MB.`)
+          actions.notify('warning', '已跳过这张图片', `${file.name} 超过 8 MB。`)
           continue
         }
         try {
           next.push(await readImage(file))
         } catch {
-          actions.notify('error', 'Could not read image', file.name)
+          actions.notify('error', '无法读取图片', file.name)
         }
       }
       setAttachments((current) => [...current, ...next].slice(0, 6))
@@ -293,9 +363,11 @@ export function Composer(): ReactNode {
     if (event.dataTransfer.files.length) void addFiles(event.dataTransfer.files)
   }
 
-  // Wheel over the composer should still move the conversation.
+  // Wheel over the composer should still move the conversation — but never
+  // when the pointer is over a menu, modal or drawer sitting on top of it.
   const onWheel = (event: ReactWheelEvent<HTMLDivElement>): void => {
     const target = event.target as HTMLElement
+    if (target.closest('.popover, .context-menu, .modal-overlay, .drawer, .drawer-overlay')) return
     const textarea = target.closest('textarea')
     if (textarea && textarea.scrollHeight > textarea.clientHeight) return
     const scroller = document.querySelector('.chat-scroll') as HTMLElement | null
@@ -418,11 +490,19 @@ export function Composer(): ReactNode {
 
             <Popover
               width={320}
+              keyboardNav={false}
               trigger={(open, toggle, expanded) => (
                 <button
                   className={clsx('chip', open && 'open')}
                   onClick={toggle}
-                  title={model ? `${model.provider}/${model.id}` : '选择模型'}
+                  disabled={streaming}
+                  title={
+                    streaming
+                      ? '本轮结束后可切换模型'
+                      : model
+                        ? `${model.provider}/${model.id}`
+                        : '选择模型'
+                  }
                   aria-label="选择模型"
                   {...expanded}
                 >
@@ -441,7 +521,8 @@ export function Composer(): ReactNode {
                 <button
                   className={clsx('chip', open && 'open')}
                   onClick={toggle}
-                  title="推理强度"
+                  disabled={streaming}
+                  title={streaming ? '本轮结束后可切换推理强度' : '推理强度'}
                   aria-label="推理强度"
                   {...expanded}
                 >

@@ -231,7 +231,11 @@ export function Sidebar(): ReactNode {
                       className="rename-input"
                       value={renameValue}
                       onChange={(event) => setRenameValue(event.target.value)}
-                      onBlur={() => setRenaming(null)}
+                      onBlur={() => {
+                        const next = renameValue.trim()
+                        if (next && next !== session.name) void actions.renameSession(next)
+                        setRenaming(null)
+                      }}
                       onKeyDown={(event) => {
                         if (event.key === 'Enter') {
                           void actions.renameSession(renameValue)

@@ -174,6 +174,9 @@ function handle(command) {
       write({ type: 'message_end', message: { role: 'user', content: command.message } })
       const body = `mock reply ${messages.length}: ${text} ${'— streaming padding '.repeat(30)}`
       setTimeout(() => stream(body), 30)
+      if (process.env.MOCK_PROMPT_DELAY) {
+        return setTimeout(() => response('prompt', { disposition: 'started' }), Number(process.env.MOCK_PROMPT_DELAY))
+      }
       return response('prompt', { disposition: 'started' })
     }
     case 'abort':

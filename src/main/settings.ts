@@ -5,6 +5,7 @@ import type { Settings } from '@shared/types'
 
 const defaults: Settings = {
   theme: 'dark',
+  language: 'zh-CN',
   workspaces: [],
   toolCardsExpanded: false,
   followStream: true
@@ -24,6 +25,7 @@ export function loadSettings(): Settings {
     cached = {
       ...defaults,
       ...parsed,
+      language: parsed.language === 'en' ? 'en' : 'zh-CN',
       workspaces: Array.from(
         new Set((parsed.workspaces ?? []).filter((value) => typeof value === 'string' && value))
       )
@@ -39,6 +41,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     ...loadSettings(),
     ...patch
   }
+  if (next.language !== 'en') next.language = 'zh-CN'
   if (patch.workspaces) {
     next.workspaces = Array.from(new Set(patch.workspaces.filter(Boolean)))
   }

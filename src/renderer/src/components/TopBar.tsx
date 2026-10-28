@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Archive, Moon, PanelLeft, Plus, Settings, Sun } from 'lucide-react'
 import clsx from 'clsx'
@@ -6,6 +7,7 @@ import { baseName, formatTokens, shortenPath, truncate } from '../lib/format'
 import { contentText } from '../lib/tools'
 
 export function TopBar(): ReactNode {
+  const t = useTranslation()
   const { state, actions } = useApp()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
@@ -13,13 +15,13 @@ export function TopBar(): ReactNode {
   const firstUser = state.messages.find((message) => message.role === 'user')
   const fallbackTitle = firstUser
     ? truncate(contentText((firstUser as { content?: unknown }).content), 56)
-    : baseName(state.workspace) || 'Session'
+    : baseName(state.workspace) || t('Session')
   const title =
     state.sessionName ??
     (state.messages.length > 0
       ? fallbackTitle
       : state.workspace
-        ? 'New session'
+        ? t('New session')
         : 'Pi Desktop')
   const percent = state.stats?.contextUsage?.percent ?? 0
 
@@ -39,7 +41,7 @@ export function TopBar(): ReactNode {
         <button
           className={clsx('icon-button', state.sidebarOpen && 'subtle')}
           onClick={actions.toggleSidebar}
-          title={state.sidebarOpen ? 'Hide sidebar (⌘B)' : 'Show sidebar (⌘B)'}
+          title={state.sidebarOpen ? t("Hide sidebar (⌘B)") : t("Show sidebar (⌘B)")}
         >
           <PanelLeft size={15} />
         </button>
@@ -63,19 +65,19 @@ export function TopBar(): ReactNode {
                 setValue(state.sessionName ?? '')
                 setEditing(true)
               }}
-              title="Rename session"
+              title={t("Rename session")}
             >
               {title}
             </button>
           )}
           <div className="topbar-sub">
             <span className="topbar-path" title={state.workspace ?? ''}>
-              {shortenPath(state.workspace, state.boot?.home) || 'No project'}
+              {shortenPath(state.workspace, state.boot?.home) || t("No project")}
             </span>
             {state.sessionPath && (
               <>
                 <span className="dot-sep">·</span>
-                <span>{state.messages.length} messages</span>
+                <span>{t('{count} messages').replace('{count}', String(state.messages.length))}</span>
               </>
             )}
           </div>
@@ -84,7 +86,7 @@ export function TopBar(): ReactNode {
 
       <div className="topbar-right">
         {(state.stats?.tokens?.total ?? 0) > 0 && (
-          <div className="token-pill" title="Session token usage">
+          <div className="token-pill" title={t("Session token usage")}>
             {formatTokens(state.stats?.tokens?.total)} tokens
           </div>
         )}
@@ -92,22 +94,22 @@ export function TopBar(): ReactNode {
           <button
             className={clsx('icon-button', percent > 80 && 'warn')}
             onClick={() => void actions.compact()}
-            title={`Compact context (${Math.round(percent)}% used)`}
+            title={t('Compact context ({percent}% used)').replace('{percent}', String(Math.round(percent)))}
           >
             <Archive size={15} />
           </button>
         )}
-        <button className="icon-button" onClick={() => void actions.newSession()} title="New session (⌘N)">
+        <button className="icon-button" onClick={() => void actions.newSession()} title={t("New session (⌘N)")}>
           <Plus size={16} />
         </button>
         <button
           className="icon-button"
           onClick={() => void actions.setTheme(state.settings.theme === 'dark' ? 'light' : 'dark')}
-          title="Toggle theme (⌘⇧L)"
+          title={t("Toggle theme (⌘⇧L)")}
         >
           {state.settings.theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
         </button>
-        <button className="icon-button" onClick={() => actions.openSettings(true)} title="Settings">
+        <button className="icon-button settings-entry" onClick={() => actions.openSettings(true)} title={t("Settings")} aria-label={t("Settings")}>
           <Settings size={15} />
         </button>
       </div>

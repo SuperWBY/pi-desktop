@@ -80,14 +80,15 @@ async function doOpenSession(options: {
   cwd: string
   sessionPath?: string | null
 }): Promise<OpenSessionResult> {
+  const english = loadSettings().language === 'en'
   const requested = options.cwd?.trim()
   if (!requested || !existsSync(requested) || !statSync(requested).isDirectory()) {
-    return { ok: false, error: '请选择一个存在的文件夹。' }
+    return { ok: false, error: english ? 'Please choose an existing folder.' : '请选择一个存在的文件夹。' }
   }
   const cwd = realpathSync(requested)
 
   if (options.sessionPath && !(await sessionExists(options.sessionPath))) {
-    return { ok: false, error: '这个会话文件已经不存在了。' }
+    return { ok: false, error: english ? 'This session file no longer exists.' : '这个会话文件已经不存在了。' }
   }
 
   const active = proc
@@ -132,8 +133,8 @@ async function doOpenSession(options: {
     return {
       ok: false,
       error: /ENOENT/.test(message)
-        ? `找不到 pi 可执行文件："${piPath}"。请在设置里指定路径。`
-        : `无法启动 pi：${message}`
+        ? english ? `Pi executable not found: "${piPath}". Set its path in Settings.` : `找不到 pi 可执行文件："${piPath}"。请在设置里指定路径。`
+        : english ? `Could not start pi: ${message}` : `无法启动 pi：${message}`
     }
   }
 
@@ -159,7 +160,7 @@ async function doOpenSession(options: {
     process.stop()
     proc = null
     const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, error: `pi 没有就绪：${message}` }
+    return { ok: false, error: english ? `Pi is not ready: ${message}` : `pi 没有就绪：${message}` }
   }
 }
 
@@ -209,7 +210,9 @@ function registerIpc(): void {
   )
 
   ipcMain.handle('app:update-settings', (_event, patch: Partial<Settings>): Settings => {
-    return saveSettings(patch)
+    const settings = saveSettings(patch)
+    if (patch.language !== undefined) buildMenu()
+    return settings
   })
 
   ipcMain.handle('dialog:pick-folder', async (): Promise<string | null> => {
@@ -301,6 +304,7 @@ function registerIpc(): void {
 
 function buildMenu(): void {
   const isMac = process.platform === 'darwin'
+  const english = loadSettings().language === 'en'
 
   const template: MenuItemConstructorOptions[] = [
     ...(isMac
@@ -311,7 +315,7 @@ function buildMenu(): void {
               { role: 'about' as const },
               { type: 'separator' as const },
               {
-                label: '设置…',
+                label: english ? 'Settings…' : '设置…',
                 accelerator: 'CmdOrCtrl+,',
                 registerAccelerator: false,
                 click: () => send('app:event', { name: 'settings' })
@@ -329,16 +333,16 @@ function buildMenu(): void {
         ]
       : []),
     {
-      label: 'File',
+      label: english ? 'File' : '文件',
       submenu: [
         {
-          label: '新建会话',
+          label: english ? 'New session' : '新建会话',
           accelerator: 'CmdOrCtrl+N',
           registerAccelerator: false,
           click: () => send('app:event', { name: 'new-session' })
         },
         {
-          label: '打开项目…',
+          label: english ? 'Open project…' : '打开项目…',
           accelerator: 'CmdOrCtrl+O',
           registerAccelerator: false,
           click: () => send('app:event', { name: 'open-folder' })
@@ -348,7 +352,7 @@ function buildMenu(): void {
       ]
     },
     {
-      label: 'Edit',
+      label: english ? 'Edit' : '编辑',
       submenu: [
         { role: 'undo' },
         { role: 'redo' },
@@ -360,16 +364,16 @@ function buildMenu(): void {
       ]
     },
     {
-      label: 'View',
+      label: english ? 'View' : '显示',
       submenu: [
         {
-          label: '收起/展开侧栏',
+          label: english ? 'Toggle sidebar' : '收起/展开侧栏',
           accelerator: 'CmdOrCtrl+B',
           registerAccelerator: false,
           click: () => send('app:event', { name: 'toggle-sidebar' })
         },
         {
-          label: '切换主题',
+          label: english ? 'Toggle theme' : '切换主题',
           accelerator: 'CmdOrCtrl+Shift+L',
           registerAccelerator: false,
           click: () => send('app:event', { name: 'toggle-theme' })
@@ -386,14 +390,14 @@ function buildMenu(): void {
       ]
     },
     {
-      label: 'Window',
+      label: english ? 'Window' : '窗口',
       submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
     },
     {
       role: 'help',
       submenu: [
         {
-          label: 'pi 文档',
+          label: english ? 'Pi documentation' : 'pi 文档',
           click: () => shell.openExternal('https://pi.dev')
         }
       ]

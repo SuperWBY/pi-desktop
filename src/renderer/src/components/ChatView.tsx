@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import {
   useCallback,
   useEffect,
@@ -43,6 +44,7 @@ const SUGGESTIONS = [
 ]
 
 export function ChatView(): ReactNode {
+  const t = useTranslation()
   const { state, actions } = useApp()
   const scrollerRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
@@ -160,12 +162,12 @@ export function ChatView(): ReactNode {
   )
   const runningTool = Object.values(state.toolRuns).find((run) => run.status === 'running')
   const activity = state.retry
-    ? `Retrying ${state.retry.attempt}/${state.retry.maxAttempts}${state.retry.errorMessage ? ` — ${state.retry.errorMessage}` : ''}`
+    ? `${t('Retrying {attempt}/{max}').replace('{attempt}', String(state.retry.attempt)).replace('{max}', String(state.retry.maxAttempts))}${state.retry.errorMessage ? ` — ${state.retry.errorMessage}` : ''}`
     : state.compacting
-      ? 'Compacting context…'
+      ? t('Compacting context…')
       : runningTool
         ? `${runningTool.name}…`
-        : '运行中…'
+        : t('运行中…')
 
   if (state.status === 'starting' && state.messages.length === 0) {
     return (
@@ -173,7 +175,7 @@ export function ChatView(): ReactNode {
         <div className="chat-inner">
           <div className="chat-starting">
             <Spinner size={16} />
-            <span>正在 {baseName(state.workspace)} 里启动 pi…</span>
+            <span>{state.settings.language === 'en' ? `Starting pi in ${baseName(state.workspace)}…` : `正在 ${baseName(state.workspace)} 里启动 pi…`}</span>
           </div>
         </div>
       </div>
@@ -187,10 +189,8 @@ export function ChatView(): ReactNode {
           <div className="empty-mark">
             <PiLogo size={32} />
           </div>
-          <h1>在 {baseName(state.workspace)} 里做点什么？</h1>
-          <p>
-            pi 能读写文件、跑命令、搜网页。发出第一条消息后，这个会话就会被保存下来。
-          </p>
+          <h1>{state.settings.language === 'en' ? `What would you like to do in ${baseName(state.workspace)}?` : `在 ${baseName(state.workspace)} 里做点什么？`}</h1>
+          <p>{t("pi 能读写文件、跑命令、搜网页。发出第一条消息后，这个会话就会被保存下来。")}</p>
           <div className="suggestions">
             {SUGGESTIONS.map((suggestion) => {
               const Icon = suggestion.icon
@@ -198,10 +198,10 @@ export function ChatView(): ReactNode {
                 <button
                   key={suggestion.title}
                   className="suggestion"
-                  onClick={() => actions.fillComposer(suggestion.prompt)}
+                  onClick={() => actions.fillComposer(t(suggestion.prompt))}
                 >
                   <Icon size={15} />
-                  <span>{suggestion.title}</span>
+                  <span>{t(suggestion.title)}</span>
                 </button>
               )
             })}
@@ -290,8 +290,7 @@ export function ChatView(): ReactNode {
 
       {showJump && (
         <button className="jump-button" onClick={() => scrollToBottom(true)}>
-          <ArrowDown size={14} /> 回到最新
-        </button>
+          <ArrowDown size={14} />{t("回到最新")}</button>
       )}
     </div>
   )

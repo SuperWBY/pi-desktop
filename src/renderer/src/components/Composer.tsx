@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import {
   useCallback,
   useEffect,
@@ -53,6 +54,7 @@ function readImage(file: File): Promise<Attachment> {
 }
 
 function ModelMenu({ close }: { close: () => void }): ReactNode {
+  const t = useTranslation()
   const { state, actions } = useApp()
   const [query, setQuery] = useState('')
   const [highlight, setHighlight] = useState(0)
@@ -125,7 +127,7 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
         <input
           autoFocus
           value={query}
-          placeholder="搜索模型…"
+          placeholder={t("搜索模型…")}
           role="combobox"
           aria-expanded="true"
           aria-controls="model-menu-list"
@@ -139,7 +141,7 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
       <div className="menu-list" id="model-menu-list" role="listbox" ref={listRef}>
         {grouped.length === 0 && (
           <div className="menu-empty">
-            {state.models.length === 0 ? 'pi 还没就绪，稍等一下…' : '没有匹配的模型'}
+            {state.models.length === 0 ? t("pi 还没就绪，稍等一下…") : t("没有匹配的模型")}
           </div>
         )}
         {grouped.map(([provider, models]) => (
@@ -166,8 +168,8 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
                   <span className="menu-item-main">
                     <span className="menu-item-title">{model.name}</span>
                     <span className="menu-item-sub">
-                      {model.contextWindow ? `${formatTokens(model.contextWindow)} 上下文` : model.id}
-                      {model.reasoning ? ' · 推理' : ''}
+                      {model.contextWindow ? `${formatTokens(model.contextWindow)} ${t('上下文')}` : model.id}
+                      {model.reasoning ? t(" · 推理") : ''}
                     </span>
                   </span>
                   {isCurrent && <Check size={14} />}
@@ -182,12 +184,13 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
 }
 
 function ThinkingMenu({ close }: { close: () => void }): ReactNode {
+  const t = useTranslation()
   const { state, actions } = useApp()
   const levels = state.levels.length ? state.levels : (['off'] as ThinkingLevel[])
   return (
     <div className="menu">
       <div className="menu-group">
-        <div className="menu-group-label">Reasoning effort</div>
+        <div className="menu-group-label">{t("Reasoning effort")}</div>
         {levels.map((level) => (
           <button
             key={level}
@@ -197,7 +200,7 @@ function ThinkingMenu({ close }: { close: () => void }): ReactNode {
               close()
             }}
           >
-            <span className="menu-item-title">{THINKING_LABELS[level] ?? level}</span>
+            <span className="menu-item-title">{t(THINKING_LABELS[level] ?? level)}</span>
             {state.piState?.thinkingLevel === level && <Check size={14} />}
           </button>
         ))}
@@ -207,6 +210,7 @@ function ThinkingMenu({ close }: { close: () => void }): ReactNode {
 }
 
 export function Composer(): ReactNode {
+  const t = useTranslation()
   const { state, actions } = useApp()
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -260,32 +264,36 @@ export function Composer(): ReactNode {
       const images = Array.from(files).filter((file) => file.type.startsWith('image/'))
       if (!images.length) {
         if (files.length) {
-          actions.notify('info', '暂时只能附加图片', '拖进来的是文件，pi 的图片输入只接受图片。')
+          actions.notify('info', t('暂时只能附加图片'), t('拖进来的是文件，pi 的图片输入只接受图片。'))
         }
         return
       }
+      const available = Math.max(0, 6 - attachments.length)
+      if (images.length > available) {
+        actions.notify('warning', t('最多添加 6 张图片'), state.settings.language === 'en' ? `${images.length - available} images were not added.` : `本次有 ${images.length - available} 张图片未添加。`)
+      }
       const next: Attachment[] = []
-      for (const file of images.slice(0, 6)) {
+      for (const file of images.slice(0, available)) {
         if (file.size > 8 * 1024 * 1024) {
-          actions.notify('warning', '已跳过这张图片', `${file.name} 超过 8 MB。`)
+          actions.notify('warning', t('已跳过这张图片'), state.settings.language === 'en' ? `${file.name} exceeds 8 MB.` : `${file.name} 超过 8 MB。`)
           continue
         }
         try {
           next.push(await readImage(file))
         } catch {
-          actions.notify('error', '无法读取图片', file.name)
+          actions.notify('error', t('无法读取图片'), file.name)
         }
       }
       setAttachments((current) => [...current, ...next].slice(0, 6))
     },
-    [actions]
+    [actions, attachments.length, state.settings.language, t]
   )
 
   const submit = useCallback(async () => {
     const value = text.trim()
     if ((!value && attachments.length === 0) || sending) return
     if (state.status !== 'ready') {
-      actions.notify('warning', 'Not connected', 'Wait for the session to finish starting.')
+      actions.notify('warning', t('Not connected'), t('Wait for the session to finish starting.'))
       return
     }
 
@@ -298,10 +306,11 @@ export function Composer(): ReactNode {
     const ok = await actions.sendMessage(value, images)
     setSending(false)
     if (ok) {
-      setText('')
-      setAttachments([])
+      setText((current) => (current === text ? '' : current))
+      const sentIds = new Set(attachments.map((attachment) => attachment.id))
+      setAttachments((current) => current.filter((attachment) => !sentIds.has(attachment.id)))
     }
-  }, [actions, attachments, sending, state.status, text])
+  }, [actions, attachments, sending, state.status, text, t])
 
   const stop = useCallback(async () => {
     if (stopping) return
@@ -311,11 +320,12 @@ export function Composer(): ReactNode {
     const queued = cleared ? [...cleared.steering, ...cleared.followUp].join('\n\n') : ''
     if (queued) {
       setText((current) => (current ? `${queued}\n\n${current}` : queued))
-      actions.notify('info', 'Stopped', 'Queued messages were returned to the composer.')
+      actions.notify('info', t('Stopped'), t('Queued messages were returned to the composer.'))
     }
-  }, [actions, stopping])
+  }, [actions, stopping, t])
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
     if (commandMatches.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -395,13 +405,13 @@ export function Composer(): ReactNode {
       {dragging && (
         <div className="drop-overlay">
           <ImageIcon size={18} />
-          <span>松手添加图片</span>
+          <span>{t("松手添加图片")}</span>
         </div>
       )}
 
       {(state.queue.steering.length > 0 || state.queue.followUp.length > 0) && (
         <div className="queue-strip">
-          <span className="queue-label">Queued</span>
+          <span className="queue-label">{t("Queued")}</span>
           {[...state.queue.steering, ...state.queue.followUp].map((item, index) => (
             <span className="queue-item" key={index}>
               {truncate(item, 80)}
@@ -459,8 +469,9 @@ export function Composer(): ReactNode {
           value={text}
           rows={1}
           spellCheck={false}
+          aria-label={t("输入消息")}
           placeholder={
-            streaming ? '插话（steer）或排队一条后续消息…' : '让 pi 帮你写代码、查问题、解释代码…'
+            streaming ? t("插话（steer）或排队一条后续消息…") : t("让 pi 帮你写代码、查问题、解释代码…")
           }
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setText(event.target.value)}
           onKeyDown={onKeyDown}
@@ -471,7 +482,7 @@ export function Composer(): ReactNode {
           <div className="composer-left">
             <button
               className="icon-button"
-              title="添加图片"
+              title={t("添加图片")}
               onClick={() => fileRef.current?.click()}
             >
               <Paperclip size={15} />
@@ -498,12 +509,12 @@ export function Composer(): ReactNode {
                   disabled={streaming}
                   title={
                     streaming
-                      ? '本轮结束后可切换模型'
+                      ? t("本轮结束后可切换模型")
                       : model
                         ? `${model.provider}/${model.id}`
-                        : '选择模型'
+                        : t("选择模型")
                   }
-                  aria-label="选择模型"
+                  aria-label={t("选择模型")}
                   {...expanded}
                 >
                   <span className="chip-dot" />
@@ -522,13 +533,13 @@ export function Composer(): ReactNode {
                   className={clsx('chip', open && 'open')}
                   onClick={toggle}
                   disabled={streaming}
-                  title={streaming ? '本轮结束后可切换推理强度' : '推理强度'}
-                  aria-label="推理强度"
+                  title={streaming ? t("本轮结束后可切换推理强度") : t("推理强度")}
+                  aria-label={t("推理强度")}
                   {...expanded}
                 >
                   <Brain size={13} />
                   <span className="chip-label">
-                    {THINKING_LABELS[state.piState?.thinkingLevel ?? 'off'] ?? 'Off'}
+                    {t(THINKING_LABELS[state.piState?.thinkingLevel ?? 'off'] ?? 'Off')}
                   </span>
                   <ChevronDown size={12} />
                 </button>
@@ -538,21 +549,17 @@ export function Composer(): ReactNode {
             </Popover>
 
             {streaming && (
-              <div className="mode-toggle" role="group" aria-label="发送方式">
+              <div className="mode-toggle" role="group" aria-label={t("发送方式")}>
                 <button
                   className={clsx(state.sendMode === 'steer' && 'active')}
                   onClick={() => actions.setSendMode('steer')}
-                  title="Deliver after the current tool calls"
-                >
-                  Steer
-                </button>
+                  title={t("Deliver after the current tool calls")}
+                >{t("Steer")}</button>
                 <button
                   className={clsx(state.sendMode === 'followUp' && 'active')}
                   onClick={() => actions.setSendMode('followUp')}
-                  title="Deliver after pi finishes"
-                >
-                  Follow-up
-                </button>
+                  title={t("Deliver after pi finishes")}
+                >{t("Follow-up")}</button>
               </div>
             )}
           </div>
@@ -574,7 +581,7 @@ export function Composer(): ReactNode {
                     transform="rotate(-90 10 10)"
                   />
                 </svg>
-                <span>{Math.round(percent)}%</span>
+                <span>{t("上下文")} {Math.round(percent)}%</span>
               </div>
             ) : null}
 
@@ -583,7 +590,7 @@ export function Composer(): ReactNode {
                 className="send-button stop"
                 onClick={() => void stop()}
                 disabled={stopping}
-                title="Stop (Esc)"
+                title={t("Stop (Esc)")}
               >
                 {stopping ? <Spinner size={14} /> : <Square size={12} fill="currentColor" />}
               </button>
@@ -592,7 +599,7 @@ export function Composer(): ReactNode {
                 className="send-button"
                 onClick={() => void submit()}
                 disabled={!canSend}
-                title="Send (Enter)"
+                title={t("Send (Enter)")}
               >
                 {sending ? <Spinner size={14} /> : <ArrowUp size={16} />}
               </button>
@@ -604,7 +611,7 @@ export function Composer(): ReactNode {
       <div className="composer-hint">
         {streaming
           ? 'Enter to queue · Esc to stop'
-          : 'Enter 发送 · Shift+Enter 换行'}
+          : t("Enter 发送 · Shift+Enter 换行")}
       </div>
     </div>
   )

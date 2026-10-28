@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import { memo, useEffect, useState, type ReactNode } from 'react'
 import {
   ChevronDown,
@@ -32,6 +33,7 @@ function CodeOutput({
   lineNumbers?: boolean
   maxLines?: number
 }): ReactNode {
+  const t = useTranslation()
   const [showAll, setShowAll] = useState(false)
   const lines = text.replace(/\n$/, '').split('\n')
   const visible = showAll ? lines : lines.slice(0, maxLines)
@@ -48,7 +50,7 @@ function CodeOutput({
       </pre>
       {lines.length > maxLines && (
         <button className="more-button" onClick={() => setShowAll((value) => !value)}>
-          {showAll ? '收起' : `展开全部 ${lines.length} 行`}
+          {showAll ? t("收起") : t('Show all {count} lines').replace('{count}', String(lines.length))}
         </button>
       )}
     </div>
@@ -91,6 +93,7 @@ export const ToolCard = memo(function ToolCard({
   result?: ToolResultMessage
   defaultOpen?: boolean
 }): ReactNode {
+  const t = useTranslation()
   const args = run?.args && Object.keys(run.args).length ? run.args : (call.arguments ?? {})
   const meta = toolMeta(call.name, args)
   const status = run?.status ?? (result ? ((result as { isError?: boolean }).isError ? 'error' : 'done') : 'running')
@@ -122,7 +125,7 @@ export const ToolCard = memo(function ToolCard({
         <span className={clsx('tool-icon', `kind-${meta.kind}`)}>
           <Icon size={13} />
         </span>
-        <span className="tool-title">{meta.title}</span>
+        <span className="tool-title">{meta.kind === 'tool' ? meta.title : t(meta.title)}</span>
         <span className="tool-subtitle" title={meta.subtitle}>
           {meta.subtitle}
         </span>
@@ -132,7 +135,7 @@ export const ToolCard = memo(function ToolCard({
           ) : (
             run?.durationMs && <span className="tool-duration">{formatDuration(run.durationMs)}</span>
           )}
-          {status === 'error' && <span className="tool-failed">failed</span>}
+          {status === 'error' && <span className="tool-failed">{t("failed")}</span>}
         </span>
       </button>
 
@@ -143,7 +146,7 @@ export const ToolCard = memo(function ToolCard({
               <div className="diff-block" key={index}>
                 <div className="diff-head">
                   <span>{baseName(path) || 'file'}</span>
-                  {pairs.length > 1 && <span className="diff-count">change {index + 1}</span>}
+                  {pairs.length > 1 && <span className="diff-count">{t('change {count}').replace('{count}', String(index + 1))}</span>}
                 </div>
                 <DiffView oldText={pair.oldText} newText={pair.newText} />
               </div>
@@ -159,8 +162,7 @@ export const ToolCard = memo(function ToolCard({
               )}
               {running && !resultText && !run?.partialText && (
                 <div className="bash-running">
-                  <Spinner size={11} /> running…
-                </div>
+                  <Spinner size={11} />{t("running…")}</div>
               )}
             </div>
           ) : meta.kind === 'read' ? (
@@ -174,7 +176,7 @@ export const ToolCard = memo(function ToolCard({
               {resultText ? (
                 <CodeOutput text={resultText} lineNumbers maxLines={200} />
               ) : (
-                <div className="muted-line">读取中…</div>
+                <div className="muted-line">{t("读取中…")}</div>
               )}
             </div>
           ) : meta.kind === 'write' ? (
@@ -188,18 +190,18 @@ export const ToolCard = memo(function ToolCard({
               {typeof args.content === 'string' ? (
                 <CodeOutput text={args.content} lineNumbers maxLines={80} />
               ) : (
-                <div className="muted-line">写入中…</div>
+                <div className="muted-line">{t("写入中…")}</div>
               )}
             </div>
           ) : (
             <div className="generic-body">
               <div className="generic-section">
-                <div className="section-label">参数</div>
+                <div className="section-label">{t("参数")}</div>
                 <pre className="json-block">{JSON.stringify(args, null, 2)}</pre>
               </div>
               {resultText && (
                 <div className="generic-section">
-                  <div className="section-label">结果</div>
+                  <div className="section-label">{t("结果")}</div>
                   <CodeOutput text={resultText} maxLines={120} />
                 </div>
               )}

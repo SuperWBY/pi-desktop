@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import {
   useEffect,
   useRef,
@@ -29,7 +30,7 @@ function useMenuKeys(
 
     node.setAttribute('role', 'menu')
     for (const item of node.querySelectorAll<HTMLElement>(ITEM_SELECTOR)) {
-      item.setAttribute('role', 'menuitem')
+      if (!item.hasAttribute('role')) item.setAttribute('role', 'menuitem')
     }
 
     const items = (): HTMLElement[] => Array.from(node.querySelectorAll<HTMLElement>(ITEM_SELECTOR))
@@ -162,6 +163,7 @@ export function Popover({
       if (!node) return
       const target =
         node.querySelector<HTMLElement>('.menu-search input') ??
+        node.querySelector<HTMLElement>('.menu-item[aria-checked="true"]') ??
         node.querySelector<HTMLElement>(ITEM_SELECTOR)
       target?.focus()
     })
@@ -269,6 +271,7 @@ export function Modal({
   footer?: ReactNode
   width?: number
 }): ReactNode {
+  const t = useTranslation()
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent): void => {
@@ -298,7 +301,7 @@ export function Modal({
             <h2>{title}</h2>
             {subtitle && <p>{subtitle}</p>}
           </div>
-          <button className="icon-button" onClick={onClose} aria-label="Close">
+          <button className="icon-button" onClick={onClose} aria-label={t("Close")}>
             <X size={16} />
           </button>
         </div>

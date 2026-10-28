@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import { memo, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -17,12 +18,13 @@ function nodeText(node: ReactNode): string {
 }
 
 export function CopyButton({ text, label }: { text: string; label?: string }): ReactNode {
+  const t = useTranslation()
   const [copied, setCopied] = useState(false)
   return (
     <button
       type="button"
       className="copy-button"
-      aria-label={label ?? 'Copy'}
+      aria-label={label ?? t('Copy')}
       onClick={() => {
         void navigator.clipboard.writeText(text)
         setCopied(true)
@@ -30,7 +32,7 @@ export function CopyButton({ text, label }: { text: string; label?: string }): R
       }}
     >
       {copied ? <Check size={13} /> : <Copy size={13} />}
-      {label && <span>{copied ? 'Copied' : label}</span>}
+      {label && <span>{copied ? t("Copied") : label}</span>}
     </button>
   )
 }

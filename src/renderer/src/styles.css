@@ -247,6 +247,12 @@ textarea {
   color: var(--yellow);
 }
 
+.icon-button.settings-entry {
+  width: 36px;
+  height: 36px;
+  border-radius: 5px;
+}
+
 .workspace-popover {
   margin: 0 10px 8px;
 }
@@ -1610,6 +1616,11 @@ textarea {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
 }
 
+.composer:has(.composer-input:focus-visible) {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-md), 0 0 0 2px var(--accent-soft);
+}
+
 .composer-input {
   display: block;
   width: 100%;
@@ -1624,6 +1635,10 @@ textarea {
 
 .composer-input::placeholder {
   color: var(--text-faint);
+}
+
+.composer-input:focus-visible {
+  outline: none;
 }
 
 .composer-bar {
@@ -1766,7 +1781,9 @@ textarea {
 }
 
 .send-button:disabled {
-  opacity: 0.35;
+  background: var(--panel-2);
+  color: var(--text-faint);
+  opacity: 0.6;
   cursor: default;
 }
 
@@ -2725,8 +2742,15 @@ textarea {
   background: var(--bg-side);
 }
 
+.settings-nav-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px 4px;
+}
+
 .settings-nav h1 {
-  margin: 2px 0 16px 8px;
+  margin: 0;
   font-size: 21px;
   font-weight: 650;
   letter-spacing: -0.02em;
@@ -2854,16 +2878,13 @@ textarea {
 }
 
 .settings-close {
-  position: fixed;
-  top: 12px;
-  right: 16px;
-  z-index: 4;
   display: grid;
   place-items: center;
   width: 28px;
   height: 28px;
-  border-radius: 50%;
-  color: var(--text-faint);
+  flex: none;
+  border-radius: 7px;
+  color: var(--text-dim);
   -webkit-app-region: no-drag;
   transition:
     background 0.14s ease,
@@ -3265,7 +3286,7 @@ textarea {
   width: 100%;
 }
 
-.form-field .settings-select select {
+.form-field .settings-select-button {
   width: 100%;
 }
 
@@ -3340,10 +3361,14 @@ textarea {
   align-items: center;
 }
 
-.settings-select select {
-  appearance: none;
+.settings-select-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  max-width: 240px;
   height: 29px;
-  padding: 0 28px 0 11px;
+  padding: 0 10px 0 11px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--panel-2);
@@ -3352,13 +3377,19 @@ textarea {
   cursor: pointer;
 }
 
-.settings-select select:hover {
+.settings-select-button:hover,
+.settings-select-button[aria-expanded='true'] {
   border-color: var(--border-strong);
 }
 
-.settings-select svg {
-  position: absolute;
-  right: 9px;
+.settings-select-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-select-button svg {
+  flex: none;
   color: var(--text-faint);
   pointer-events: none;
 }

@@ -193,6 +193,7 @@ export interface SessionSummary {
 
 export interface Settings {
   piPath?: string
+  language?: 'zh-CN' | 'en'
   theme: 'dark' | 'light'
   workspaces: string[]
   lastWorkspace?: string

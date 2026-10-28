@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   ChevronsUpDown,
@@ -16,12 +17,12 @@ import { baseName, dayLabel, relativeTime, shortenPath, truncate } from '../lib/
 import { PiLogo } from './PiLogo'
 import { ContextMenu, Modal, Popover } from './ui'
 
-function groupSessions(sessions: SessionSummary[]): { label: string; items: SessionSummary[] }[] {
+function groupSessions(sessions: SessionSummary[], language: 'zh-CN' | 'en'): { label: string; items: SessionSummary[] }[] {
   const groups: { label: string; items: SessionSummary[] }[] = []
   let current: { label: string; items: SessionSummary[] } | null = null
 
   for (const session of sessions) {
-    const label = dayLabel(session.updatedAt)
+    const label = dayLabel(session.updatedAt, language)
     if (!current || current.label !== label) {
       current = { label, items: [] }
       groups.push(current)
@@ -43,6 +44,7 @@ function SessionMenu({
   onRename: (value: string) => void
   onDelete: () => void
 }): ReactNode {
+  const t = useTranslation()
   const { actions } = useApp()
   return (
     <div className="menu">
@@ -52,18 +54,14 @@ function SessionMenu({
           close()
           onRename(session.name)
         }}
-      >
-        重命名
-      </button>
+      >{t("重命名")}</button>
       <button
         className="menu-item"
         onClick={() => {
           close()
           actions.revealSession(session.path)
         }}
-      >
-        在 Finder 中显示
-      </button>
+      >{t("在 Finder 中显示")}</button>
       <div className="menu-separator" />
       <button
         className="menu-item danger"
@@ -72,14 +70,13 @@ function SessionMenu({
           onDelete()
         }}
       >
-        <Trash2 size={13} />
-        删除
-      </button>
+        <Trash2 size={13} />{t("删除")}</button>
     </div>
   )
 }
 
 export function Sidebar(): ReactNode {
+  const t = useTranslation()
   const { state, actions } = useApp()
   const [query, setQuery] = useState('')
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -109,7 +106,8 @@ export function Sidebar(): ReactNode {
     return filtered.slice(0, 200)
   }, [state.sessions, workspace, query])
 
-  const groups = useMemo(() => groupSessions(workspaceSessions), [workspaceSessions])
+  const language = state.settings.language ?? 'zh-CN'
+  const groups = useMemo(() => groupSessions(workspaceSessions, language), [workspaceSessions, language])
 
   const workspaces = useMemo(() => {
     const set = new Set(state.settings.workspaces)
@@ -129,7 +127,7 @@ export function Sidebar(): ReactNode {
         <span className="brand-name">Pi</span>
         <button
           className="icon-button brand-action"
-          title="新建会话 (⌘N)"
+          title={t("新建会话 (⌘N)")}
           onClick={() => void actions.newSession()}
         >
           <Plus size={16} />
@@ -145,9 +143,9 @@ export function Sidebar(): ReactNode {
               <FolderOpen size={14} />
             </span>
             <span className="workspace-text">
-              <span className="workspace-name">{workspace ? baseName(workspace) : '未选择项目'}</span>
+              <span className="workspace-name">{workspace ? baseName(workspace) : t("未选择项目")}</span>
               <span className="workspace-path">
-                {workspace ? shortenPath(workspace, state.boot?.home) : '选择一个文件夹开始'}
+                {workspace ? shortenPath(workspace, state.boot?.home) : t("选择一个文件夹开始")}
               </span>
             </span>
             <ChevronsUpDown size={13} className="workspace-chevron" />
@@ -157,8 +155,8 @@ export function Sidebar(): ReactNode {
         {(close) => (
           <div className="menu">
             <div className="menu-group">
-              <div className="menu-group-label">Projects</div>
-              {workspaces.length === 0 && <div className="menu-empty">No recent projects</div>}
+              <div className="menu-group-label">{t("Projects")}</div>
+              {workspaces.length === 0 && <div className="menu-empty">{t("No recent projects")}</div>}
               {workspaces.map((path) => (
                 <button
                   key={path}
@@ -184,7 +182,7 @@ export function Sidebar(): ReactNode {
               }}
             >
               <FolderOpen size={14} />
-              <span className="menu-item-title">打开文件夹…</span>
+              <span className="menu-item-title">{t("打开文件夹…")}</span>
             </button>
           </div>
         )}
@@ -193,7 +191,7 @@ export function Sidebar(): ReactNode {
       <div className="sidebar-actions">
         <button className="new-session" onClick={() => void actions.newSession()}>
           <Plus size={14} />
-          <span>新建会话</span>
+          <span>{t("新建会话")}</span>
           <span className="shortcut">⌘N</span>
         </button>
       </div>
@@ -202,11 +200,11 @@ export function Sidebar(): ReactNode {
         <Search size={13} />
         <input
           value={query}
-          placeholder="搜索会话"
+          placeholder={t("搜索会话")}
           onChange={(event) => setQuery(event.target.value)}
         />
         {query && (
-          <button className="search-clear" onClick={() => setQuery('')} aria-label="Clear search">
+          <button className="search-clear" onClick={() => setQuery('')} aria-label={t("Clear search")}>
             <X size={11} />
           </button>
         )}
@@ -215,7 +213,7 @@ export function Sidebar(): ReactNode {
       <div className="session-list">
         {groups.length === 0 && (
           <div className="session-empty">
-            {query ? '没有匹配的会话。' : '还没有会话，新建一个开始。'}
+            {query ? t("没有匹配的会话。") : t("还没有会话，新建一个开始。")}
           </div>
         )}
         {groups.map((group) => (
@@ -264,9 +262,9 @@ export function Sidebar(): ReactNode {
                   >
                     <span className="session-title">{truncate(session.name, 52)}</span>
                     <span className="session-meta">
-                      {relativeTime(session.updatedAt)}
+                      {relativeTime(session.updatedAt, language)}
                       <span className="dot-sep">·</span>
-                      {session.messageCount} 条
+                      {state.settings.language === 'en' ? `${session.messageCount} messages` : `${session.messageCount} 条`}
                       {session.cwd !== workspace && (
                         <>
                           <span className="dot-sep">·</span>
@@ -286,7 +284,7 @@ export function Sidebar(): ReactNode {
                           event.stopPropagation()
                           toggle()
                         }}
-                        aria-label="Session actions"
+                        aria-label={t("Session actions")}
                         {...expanded}
                       >
                         <MoreHorizontal size={14} />
@@ -313,13 +311,13 @@ export function Sidebar(): ReactNode {
       </div>
 
       <div className="sidebar-footer">
-        <button className="icon-button" onClick={() => actions.openSettings(true)} title="设置">
+        <button className="icon-button settings-entry" onClick={() => actions.openSettings(true)} title={t("设置")} aria-label={t("设置")}>
           <Settings size={15} />
         </button>
         <button
           className="footer-meta"
           onClick={() => actions.openDiagnostics(true)}
-          title="pi 运行状态与诊断"
+          title={t("pi 运行状态与诊断")}
         >
           <span className={clsx('status-dot', `is-${state.status}`)} />
           <span>pi {state.boot?.piVersion ?? '—'}</span>
@@ -347,29 +345,26 @@ export function Sidebar(): ReactNode {
 
       <Modal
         open={Boolean(pendingDelete)}
-        title="Delete session?"
+        title={t("Delete session?")}
         subtitle={pendingDelete?.name}
         onClose={() => setPendingDelete(null)}
         footer={
           <>
-            <button className="button ghost" onClick={() => setPendingDelete(null)}>
-              取消
-            </button>
+            <button className="button ghost" onClick={() => setPendingDelete(null)}>{t("取消")}</button>
             <button
               className="button danger"
               onClick={() => {
                 if (pendingDelete) void actions.deleteSession(pendingDelete.path)
                 setPendingDelete(null)
               }}
-            >
-              删除
-            </button>
+            >{t("删除")}</button>
           </>
         }
       >
         <p className="modal-text">
-          会话记录会被移到 <code>{shortenPath(state.boot?.sessionsRoot)}/.trash</code>，24 小时内可在
-          提示条里「撤销」。pi 在磁盘上改过的文件不受影响。
+          {state.settings.language === 'en' ? 'The session will be moved to ' : '会话记录会被移到 '}
+          <code>{shortenPath(state.boot?.sessionsRoot)}/.trash</code>
+          {state.settings.language === 'en' ? '. You can undo this from the notification within 24 hours. Files changed by pi are not affected.' : '，24 小时内可在提示条里「撤销」。pi 在磁盘上改过的文件不受影响。'}
         </p>
       </Modal>
     </aside>

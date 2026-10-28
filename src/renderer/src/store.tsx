@@ -27,6 +27,7 @@ import type {
 } from '@shared/types'
 import type { PiResponse } from '@shared/types'
 import { contentText } from './lib/tools'
+import { translate } from './i18n/dictionary'
 
 export type SendMode = 'steer' | 'followUp'
 export type NoticeLevel = 'info' | 'success' | 'warning' | 'error'
@@ -712,7 +713,8 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
 
   const notify = useCallback(
     (level: NoticeLevel, title: string, detail?: string, action?: { label: string; run: () => void }) => {
-      dispatch({ type: 'NOTICE', level, title, detail, action })
+      const language = stateRef.current.settings.language ?? 'zh-CN'
+      dispatch({ type: 'NOTICE', level, title: translate(language, title), detail, action: action ? { ...action, label: translate(language, action.label) } : undefined })
     },
     []
   )
@@ -819,11 +821,11 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     ): Promise<boolean> => {
       const current = stateRef.current
       if (!current.workspace) {
-        notify('warning', '没有打开项目', '先选择一个文件夹再发送。')
+        notify('warning', '没有打开项目', translate(current.settings.language ?? 'zh-CN', '先选择一个文件夹再发送。'))
         return false
       }
       if (current.status === 'starting') {
-        notify('info', '会话正在启动', '稍等一下再发送。')
+        notify('info', '会话正在启动', translate(current.settings.language ?? 'zh-CN', '稍等一下再发送。'))
         return false
       }
 
@@ -847,7 +849,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       const response = await safeCommand<{ disposition?: string }>(command, 120_000)
       if (!response) {
         if (optimistic) dispatch({ type: 'REMOVE_OPTIMISTIC' })
-        notify('error', '消息未发送', 'pi 没有响应。')
+        notify('error', '消息未发送', translate(current.settings.language ?? 'zh-CN', 'pi 没有响应。'))
         return false
       }
       if (!response.success) {
@@ -1178,6 +1180,10 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     const theme = state.settings.theme
     document.documentElement.dataset.theme = theme
   }, [state.settings.theme])
+
+  useEffect(() => {
+    document.documentElement.lang = state.settings.language === 'en' ? 'en' : 'zh-CN'
+  }, [state.settings.language])
 
   useEffect(() => {
     localStorage.setItem('pi.sidebar', state.sidebarOpen ? 'open' : 'closed')

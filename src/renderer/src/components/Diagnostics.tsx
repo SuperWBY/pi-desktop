@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Check, Copy, FolderOpen, RotateCw, X } from 'lucide-react'
 import clsx from 'clsx'
@@ -9,6 +10,7 @@ import { shortenPath } from '../lib/format'
  * but never surfaced, which made auth/model-config failures invisible.
  */
 export function Diagnostics(): ReactNode {
+  const t = useTranslation()
   const { state, actions } = useApp()
   const open = state.diagnosticsOpen
   const [copied, setCopied] = useState(false)
@@ -51,7 +53,7 @@ export function Diagnostics(): ReactNode {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1600)
     } catch {
-      actions.notify('error', '复制失败', '剪贴板不可用')
+      actions.notify('error', t('复制失败'), t('剪贴板不可用'))
     }
   }
 
@@ -61,17 +63,17 @@ export function Diagnostics(): ReactNode {
         className="drawer"
         onMouseDown={(event) => event.stopPropagation()}
         role="dialog"
-        aria-label="诊断"
+        aria-label={t("诊断")}
       >
         <header className="drawer-head">
           <div>
-            <h2>诊断</h2>
-            <p>pi 的运行状态与最后 60 行 stderr</p>
+            <h2>{t("诊断")}</h2>
+            <p>{t("pi 的运行状态与最后 60 行 stderr")}</p>
           </div>
           <button
             className="icon-button"
             onClick={() => actions.openDiagnostics(false)}
-            aria-label="关闭"
+            aria-label={t("关闭")}
           >
             <X size={16} />
           </button>
@@ -79,7 +81,7 @@ export function Diagnostics(): ReactNode {
 
         <div className="drawer-body">
           <section className="diagnostics-grid">
-            <Row label="状态">
+            <Row label={t("状态")}>
               <span className={clsx('settings-pill', state.status === 'ready' ? 'ok' : 'warn')}>
                 {state.status}
               </span>
@@ -90,15 +92,15 @@ export function Diagnostics(): ReactNode {
                 {shortenPath(state.boot?.piPath ?? '', state.boot?.home)}
               </span>
             </Row>
-            <Row label="Agent 目录">
+            <Row label={t("Agent 目录")}>
               <span className="mono">{shortenPath(state.boot?.agentDir ?? '', state.boot?.home)}</span>
             </Row>
-            <Row label="会话目录">
+            <Row label={t("会话目录")}>
               <span className="mono">
                 {shortenPath(state.boot?.sessionsRoot ?? '', state.boot?.home)}
               </span>
             </Row>
-            <Row label="当前会话">
+            <Row label={t("当前会话")}>
               <span className="mono" title={state.sessionPath ?? ''}>
                 {state.sessionPath ? shortenPath(state.sessionPath, state.boot?.home) : '—'}
               </span>
@@ -107,7 +109,7 @@ export function Diagnostics(): ReactNode {
 
           {modelsError && (
             <section className="diagnostics-error">
-              <strong>models.json 有问题</strong>
+              <strong>{t("models.json 有问题")}</strong>
               <pre>{modelsError}</pre>
             </section>
           )}
@@ -115,10 +117,10 @@ export function Diagnostics(): ReactNode {
           <section className="diagnostics-log">
             <div className="diagnostics-log-head">
               <span>stderr</span>
-              <span className="diagnostics-count">{stderrTail.length} 行</span>
+              <span className="diagnostics-count">{stderrTail.length} {state.settings.language === 'en' ? 'lines' : '行'}</span>
             </div>
             {stderrTail.length === 0 ? (
-              <div className="diagnostics-empty">没有输出，一切正常。</div>
+              <div className="diagnostics-empty">{t("没有输出，一切正常。")}</div>
             ) : (
               <pre>{stderrTail.join('\n')}</pre>
             )}
@@ -127,14 +129,13 @@ export function Diagnostics(): ReactNode {
 
         <footer className="drawer-foot">
           <button className="settings-button primary" onClick={() => void copy(report)}>
-            {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? '已复制' : '复制诊断信息'}
+            {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? t("已复制") : t("复制诊断信息")}
           </button>
           <button
             className="settings-button"
             onClick={() => state.boot?.sessionsRoot && actions.revealSession(state.boot.sessionsRoot)}
           >
-            <FolderOpen size={12} /> 会话目录
-          </button>
+            <FolderOpen size={12} />{t("会话目录")}</button>
           <button
             className="settings-button"
             onClick={() => {
@@ -142,8 +143,7 @@ export function Diagnostics(): ReactNode {
               void actions.restartSession()
             }}
           >
-            <RotateCw size={12} /> 重启会话
-          </button>
+            <RotateCw size={12} />{t("重启会话")}</button>
         </footer>
       </aside>
     </div>

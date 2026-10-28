@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, Brain } from 'lucide-react'
 import clsx from 'clsx'
@@ -64,6 +65,7 @@ function ThinkingBlock({
   streaming: boolean
   defaultOpen: boolean
 }): ReactNode {
+  const t = useTranslation()
   const [open, setOpen] = useState(defaultOpen || streaming)
   const manual = useRef(false)
 
@@ -87,8 +89,8 @@ function ThinkingBlock({
         }}
       >
         <Brain size={13} />
-        <span>{streaming ? 'Thinking…' : 'Thought process'}</span>
-        <span className="thinking-lines">{text.trim().split('\n').length} lines</span>
+        <span>{streaming ? t("Thinking…") : t("Thought process")}</span>
+        <span className="thinking-lines">{t('{count} lines').replace('{count}', String(text.trim().split('\n').length))}</span>
       </button>
       {open && <div className="thinking-body fade-in">{text}</div>}
     </div>
@@ -102,6 +104,7 @@ export const UserMessageView = memo(function UserMessageView({
   message: UserMessage
   optimistic?: boolean
 }): ReactNode {
+  const t = useTranslation()
   const content = message.content
   const blocks: ContentBlock[] =
     typeof content === 'string' ? [{ type: 'text', text: content }] : (content ?? [])
@@ -116,8 +119,8 @@ export const UserMessageView = memo(function UserMessageView({
   return (
     <div className={clsx('message user-message', optimistic && 'optimistic')}>
       <div className="message-label">
-        <span>你</span>
-        <span className="message-time">{optimistic ? 'sending…' : timeOfDay(message.timestamp)}</span>
+        <span>{t("你")}</span>
+        <span className="message-time">{optimistic ? t('sending…') : timeOfDay(message.timestamp)}</span>
       </div>
       <div className="user-card">
         {images.length > 0 && (

@@ -1,5 +1,7 @@
+import { useTranslation } from '../i18n'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
+  ArrowLeft,
   ArrowUpRight,
   Check,
   ChevronDown,
@@ -28,6 +30,7 @@ import type {
 } from '@shared/types'
 import { useApp } from '../store'
 import { shortenPath } from '../lib/format'
+import { Popover } from './ui'
 
 const SHORTCUTS: { keys: string; label: string }[] = [
   { keys: '⌘N', label: '新建会话' },
@@ -196,7 +199,7 @@ const NAV: {
         id: 'general',
         label: '常规',
         icon: SlidersHorizontal,
-        keywords: ['pi', '路径', '版本', '重启', 'steering', 'follow', '压缩', '重试', '自动', '运行时']
+        keywords: ['pi', '路径', '版本', '重启', 'steering', 'follow', '压缩', '重试', '自动', '运行时', '语言', 'language']
       },
       {
         id: 'models',
@@ -297,21 +300,66 @@ function Switch({
 function Select({
   value,
   onChange,
-  children,
+  options,
   label
 }: {
   value: string
   onChange: (value: string) => void
-  children: ReactNode
+  options: { value: string; label: string; group?: string }[]
   label: string
 }): ReactNode {
+  const selected = options.find((option) => option.value === value)
+  const menuWidth = useMemo(() => {
+    const canvas = document.createElement('canvas')
+    const context = canvas.getContext('2d')
+    if (!context) return 180
+    context.font = `12.2px ${getComputedStyle(document.body).fontFamily}`
+    const widest = Math.max(0, ...options.map((option) => Math.max(
+      context.measureText(option.label).width,
+      option.group ? context.measureText(option.group).width : 0
+    )))
+    return Math.min(320, Math.max(140, Math.ceil(widest + 64)))
+  }, [options])
   return (
-    <span className="settings-select">
-      <select value={value} aria-label={label} onChange={(event) => onChange(event.target.value)}>
-        {children}
-      </select>
-      <ChevronDown size={13} />
-    </span>
+    <Popover
+      align="right"
+      width={menuWidth}
+      className="settings-select"
+      trigger={(_open, toggle, expanded) => (
+        <button type="button" className="settings-select-button" aria-label={label} title={selected?.label} onClick={toggle} {...expanded}>
+          <span>{selected?.label ?? value}</span>
+          <ChevronDown size={13} />
+        </button>
+      )}
+    >
+      {(close) => (
+        <div className="menu">
+          <div className="menu-list">
+            {options.map((option, index) => (
+              <div key={`${option.group ?? ''}:${option.value}`}>
+                {option.group && option.group !== options[index - 1]?.group && (
+                  <div className="menu-group-label">{option.group}</div>
+                )}
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={option.value === value}
+                  title={option.label}
+                  className={clsx('menu-item', option.value === value && 'active')}
+                  onClick={() => {
+                    if (option.value !== value) onChange(option.value)
+                    close()
+                  }}
+                >
+                  <span className="menu-item-main"><span className="menu-item-title">{option.label}</span></span>
+                  {option.value === value && <Check size={14} />}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Popover>
   )
 }
 
@@ -359,6 +407,7 @@ function Block({
 }
 
 export function SettingsPage(): ReactNode {
+  const t = useTranslation()
   const { state, actions } = useApp()
   const open = state.settingsOpen
   const [query, setQuery] = useState('')
@@ -381,9 +430,9 @@ export function SettingsPage(): ReactNode {
     () =>
       NAV.map((group) => ({
         ...group,
-        items: group.items.filter((item) => matches(query, item.label, ...item.keywords))
+        items: group.items.filter((item) => matches(query, item.label, t(item.label), ...item.keywords))
       })).filter((group) => group.items.length > 0),
-    [query]
+    [query, t]
   )
 
   useEffect(() => {
@@ -463,7 +512,7 @@ export function SettingsPage(): ReactNode {
     })
     if (!file) return
     await actions.updateSettings({ piPath: file })
-    actions.notify('success', '已更新 pi 路径', '重启会话后生效。')
+    actions.notify('success', t('已更新 pi 路径'), t('重启会话后生效。'))
   }
 
   const restart = async (): Promise<void> => {
@@ -476,7 +525,7 @@ export function SettingsPage(): ReactNode {
     if (!value) return
     const [provider, id] = value.split('\u0000')
     await actions.updatePiSettings({ defaultProvider: provider, defaultModel: id })
-    actions.notify('success', '已更新默认模型', '新建会话时生效。')
+    actions.notify('success', t('已更新默认模型'), t('新建会话时生效。'))
   }
 
   const modelValue =
@@ -490,7 +539,7 @@ export function SettingsPage(): ReactNode {
       const result = await window.pi.refreshModelCatalog()
       actions.notify(
         result.ok ? 'success' : 'error',
-        result.ok ? '模型目录已更新' : '模型目录更新失败',
+        result.ok ? t('模型目录已更新') : t('模型目录更新失败'),
         result.output.slice(0, 240) || undefined
       )
       await loadModels()
@@ -501,7 +550,7 @@ export function SettingsPage(): ReactNode {
 
   const saveProviderDraft = async (): Promise<void> => {
     if (!draft.id.trim()) {
-      actions.notify('error', '缺少服务商 ID', '例如 ollama、my-gateway。')
+      actions.notify('error', t('缺少服务商 ID'), t('例如 ollama、my-gateway。'))
       return
     }
     setSaving(true)
@@ -510,11 +559,11 @@ export function SettingsPage(): ReactNode {
       setCustomConfig(next)
       setShowAdd(false)
       setDraft(EMPTY_DRAFT)
-      actions.notify('success', '已写入 models.json', `${next.file} · 重启会话后 pi 才会加载。`)
+      actions.notify('success', t('已写入 models.json'), state.settings.language === 'en' ? `${next.file} · Restart the session to load changes.` : `${next.file} · 重启会话后 pi 才会加载。`)
       if (!state.streaming) await actions.restartSession()
       await loadModels()
     } catch (error) {
-      actions.notify('error', '保存失败', error instanceof Error ? error.message : String(error))
+      actions.notify('error', t('保存失败'), error instanceof Error ? error.message : String(error))
     } finally {
       setSaving(false)
     }
@@ -524,11 +573,11 @@ export function SettingsPage(): ReactNode {
     try {
       const next = await window.pi.removeProvider(id)
       setCustomConfig(next)
-      actions.notify('success', `已移除 ${id}`, '重启会话后生效。')
+      actions.notify('success', state.settings.language === 'en' ? `Removed ${id}` : `已移除 ${id}`, t('重启会话后生效。'))
       if (!state.streaming) await actions.restartSession()
       await loadModels()
     } catch (error) {
-      actions.notify('error', '删除失败', error instanceof Error ? error.message : String(error))
+      actions.notify('error', t('删除失败'), error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -550,84 +599,87 @@ export function SettingsPage(): ReactNode {
 
   const renderGeneral = (): ReactNode => (
     <>
-      <Block title="Pi 运行时" query={query} terms={['路径', '版本', '重启', '可执行文件']}>
+      <Block title={t("语言")} query={query} terms={['界面语言', 'language', '中文', 'english']}>
+        <Row title={t("界面语言")} desc={t("选择应用界面显示的语言。")} query={query}>
+          <Select
+            label={t("界面语言")}
+            value={state.settings.language ?? 'zh-CN'}
+            onChange={(language) => void actions.updateSettings({ language: language as 'zh-CN' | 'en' })}
+            options={[{ value: 'zh-CN', label: '简体中文' }, { value: 'en', label: 'English' }]}
+          />
+        </Row>
+      </Block>
+      <Block title={t("Pi 运行时")} query={query} terms={['路径', '版本', '重启', '可执行文件']}>
         <Row
-          title="Pi 可执行文件"
-          desc="启动 pi 子进程时使用；更换后需要重启会话。"
+          title={t("Pi 可执行文件")}
+          desc={t("启动 pi 子进程时使用；更换后需要重启会话。")}
           query={query}
         >
           <span className="setting-value" title={piPath}>
             {shortenPath(piPath, state.boot?.home)}
           </span>
-          <button className="settings-button" onClick={() => void choosePiPath()}>
-            更改
-          </button>
+          <button className="settings-button" onClick={() => void choosePiPath()}>{t("更改")}</button>
         </Row>
-        <Row title="检测到的版本" desc="来自当前 pi 可执行文件。" query={query}>
+        <Row title={t("检测到的版本")} desc={t("来自当前 pi 可执行文件。")} query={query}>
           <span className={clsx('settings-pill', state.boot?.piVersion ? 'ok' : 'warn')}>
-            {state.boot?.piVersion ?? '未检测到'}
+            {state.boot?.piVersion ?? t("未检测到")}
           </span>
           <button className="settings-button" onClick={() => void restart()}>
-            <RotateCw size={12} /> 重启会话
-          </button>
+            <RotateCw size={12} />{t("重启会话")}</button>
         </Row>
       </Block>
 
       <Block
-        title="会话行为"
+        title={t("会话行为")}
         query={query}
         terms={['steering', 'follow', '排队', '自动压缩', '自动重试', '重试']}
       >
         <Row
-          title="Steering 消息投递"
-          desc="运行中插入的指令：一次性全部投递，还是每轮投递一条。"
+          title={t("Steering 消息投递")}
+          desc={t("运行中插入的指令：一次性全部投递，还是每轮投递一条。")}
           query={query}
         >
           <Select
-            label="Steering 模式"
+            label={t("Steering 模式")}
             value={steering}
             onChange={(value) =>
               void actions.setSteeringMode(value as 'all' | 'one-at-a-time')
             }
-          >
-            <option value="one-at-a-time">逐条投递</option>
-            <option value="all">全部投递</option>
-          </Select>
+            options={[{ value: 'one-at-a-time', label: t('逐条投递') }, { value: 'all', label: t('全部投递') }]}
+          />
         </Row>
         <Row
-          title="Follow-up 消息投递"
-          desc="任务结束后排队的消息：一次性全部投递，还是每轮投递一条。"
+          title={t("Follow-up 消息投递")}
+          desc={t("任务结束后排队的消息：一次性全部投递，还是每轮投递一条。")}
           query={query}
         >
           <Select
-            label="Follow-up 模式"
+            label={t("Follow-up 模式")}
             value={followUp}
             onChange={(value) =>
               void actions.setFollowUpMode(value as 'all' | 'one-at-a-time')
             }
-          >
-            <option value="one-at-a-time">逐条投递</option>
-            <option value="all">全部投递</option>
-          </Select>
+            options={[{ value: 'one-at-a-time', label: t('逐条投递') }, { value: 'all', label: t('全部投递') }]}
+          />
         </Row>
         <Row
-          title="自动压缩上下文"
-          desc="上下文接近上限时自动摘要历史，避免请求被截断。"
+          title={t("自动压缩上下文")}
+          desc={t("上下文接近上限时自动摘要历史，避免请求被截断。")}
           query={query}
         >
           <Switch
-            label="自动压缩上下文"
+            label={t("自动压缩上下文")}
             checked={autoCompaction}
             onChange={(value) => void actions.setAutoCompaction(value)}
           />
         </Row>
         <Row
-          title="自动重试"
-          desc="遇到限流、过载或 5xx 时按指数退避重试。"
+          title={t("自动重试")}
+          desc={t("遇到限流、过载或 5xx 时按指数退避重试。")}
           query={query}
         >
           <Switch
-            label="自动重试"
+            label={t("自动重试")}
             checked={autoRetry}
             onChange={(value) => void actions.setAutoRetry(value)}
           />
@@ -647,58 +699,43 @@ export function SettingsPage(): ReactNode {
 
     return (
       <>
-        <Block title="新会话默认值" query={query} terms={['默认模型', '推理强度', 'thinking']}>
+        <Block title={t("新会话默认值")} query={query} terms={['默认模型', '推理强度', 'thinking']}>
         <Row
-          title="默认模型"
-          desc="新建会话时使用；当前会话仍可在输入框里随时切换。"
+          title={t("默认模型")}
+          desc={t("新建会话时使用；当前会话仍可在输入框里随时切换。")}
           query={query}
         >
-          <Select label="默认模型" value={modelValue} onChange={(value) => void saveDefaultModel(value)}>
-            <option value="">跟随 pi 配置</option>
-            {modelGroups.map(([provider, models]) => (
-              <optgroup key={provider} label={provider}>
-                {models.map((model) => (
-                  <option key={model.id} value={`${provider}\u0000${model.id}`}>
-                    {model.name}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </Select>
+          <Select label={t("默认模型")} value={modelValue} onChange={(value) => void saveDefaultModel(value)}
+            options={[{ value: '', label: t('跟随 pi 配置') }, ...modelGroups.flatMap(([provider, models]) => models.map((model) => ({ value: `${provider}\u0000${model.id}`, label: model.name, group: provider })))]}
+          />
         </Row>
         <Row
-          title="默认推理强度"
-          desc="新会话启动时的 thinking level，可在底部选择器临时覆盖。"
+          title={t("默认推理强度")}
+          desc={t("新会话启动时的 thinking level，可在底部选择器临时覆盖。")}
           query={query}
         >
           <Select
-            label="默认推理强度"
+            label={t("默认推理强度")}
             value={thinkingValue}
             onChange={(value) =>
               void actions.updatePiSettings({
                 defaultThinkingLevel: (value || undefined) as ThinkingLevel | undefined
               })
             }
-          >
-            <option value="">跟随 pi 配置</option>
-            {(Object.keys(THINKING_LABELS) as ThinkingLevel[]).map((level) => (
-              <option key={level} value={level}>
-                {THINKING_LABELS[level]}
-              </option>
-            ))}
-          </Select>
+            options={[{ value: '', label: t('跟随 pi 配置') }, ...(Object.keys(THINKING_LABELS) as ThinkingLevel[]).map((level) => ({ value: level, label: level === 'off' ? (state.settings.language === 'en' ? 'Off' : '关闭') : t(THINKING_LABELS[level]) }))]}
+          />
         </Row>
       </Block>
 
-      <Block title="当前模型" query={query} terms={['上下文', '模型信息', '窗口']}>
+      <Block title={t("当前模型")} query={query} terms={['上下文', '模型信息', '窗口']}>
         <Row
-          title={state.piState?.model?.name ?? '未选择模型'}
+          title={state.piState?.model?.name ?? t("未选择模型")}
           desc={
             state.piState?.model
-              ? `${state.piState.model.provider} · 上下文 ${Math.round(
+              ? `${state.piState.model.provider} · ${t('上下文')} ${Math.round(
                   (state.piState.model.contextWindow ?? 0) / 1000
-                )}k · 推理 ${state.piState.model.reasoning ? '支持' : '不支持'}`
-              : '打开一个会话后显示'
+                )}k · ${t('思维')} ${state.piState.model.reasoning ? t("支持") : t("不支持")}`
+              : t("打开一个会话后显示")
           }
           query={query}
         >
@@ -708,35 +745,32 @@ export function SettingsPage(): ReactNode {
         </Row>
       </Block>
 
-      <Block title="pi 支持的模型" query={query} terms={['模型列表', '目录', '刷新', '可用']}>
+      <Block title={t("pi 支持的模型")} query={query} terms={['模型列表', '目录', '刷新', '可用']}>
         <div className="model-catalog-head">
           <div className="settings-search model-search">
             <Search size={13} />
             <input
               value={modelSearch}
-              placeholder="搜索模型或服务商"
+              placeholder={t("搜索模型或服务商")}
               onChange={(event) => setModelSearch(event.target.value)}
             />
             {modelSearch && (
-              <button className="search-clear" onClick={() => setModelSearch('')} aria-label="清除">
+              <button className="search-clear" onClick={() => setModelSearch('')} aria-label={t("清除")}>
                 <X size={11} />
               </button>
             )}
           </div>
           <button className="settings-button" disabled={modelsBusy} onClick={() => void loadModels()}>
-            <RefreshCw size={12} /> 重新读取
-          </button>
+            <RefreshCw size={12} />{t("重新读取")}</button>
           <button
             className="settings-button"
             disabled={modelsBusy}
             onClick={() => void refreshCatalog()}
-          >
-            更新目录
-          </button>
+          >{t("更新目录")}</button>
         </div>
         <p className="settings-note model-note">
-          来自 <code>pi --list-models</code>：{rows.length} / {piModels?.length ?? 0} 个模型，
-          {providers.size} 个服务商。只包含已在 pi 中配置好凭证（<code>pi auth</code> 或环境变量）的模型。
+          {state.settings.language === 'en' ? 'From ' : '来自 '}<code>pi --list-models</code>：{rows.length} / {piModels?.length ?? 0}
+          {state.settings.language === 'en' ? ` models, ${providers.size} providers. Only models with credentials configured in pi are shown.` : ` 个模型，${providers.size} 个服务商。只包含已在 pi 中配置好凭证的模型。`}
         </p>
         {modelsMessage && <p className="settings-note model-error">{modelsMessage}</p>}
         <div className="model-list">
@@ -751,26 +785,26 @@ export function SettingsPage(): ReactNode {
                 <span className="model-row-provider">{row.provider}</span>
                 <span className="model-badges">
                   <span className="model-badge">{row.context}</span>
-                  {row.thinking && <span className="model-badge">思维</span>}
-                  {row.images && <span className="model-badge">图片</span>}
+                  {row.thinking && <span className="model-badge">{t("思维")}</span>}
+                  {row.images && <span className="model-badge">{t("图片")}</span>}
                 </span>
               </div>
             )
           })}
           {piModels && rows.length === 0 && (
-            <div className="model-empty">没有匹配的模型。</div>
+            <div className="model-empty">{t("没有匹配的模型。")}</div>
           )}
         </div>
       </Block>
 
       <Block
-        title="自定义服务商与模型"
+        title={t("自定义服务商与模型")}
         query={query}
         terms={['添加模型', 'models.json', 'baseurl', 'api key', 'ollama', 'lmstudio', 'vllm', '端点']}
       >
         <div className="custom-provider-list">
           {customEntries.length === 0 && (
-            <div className="model-empty">还没有自定义服务商。pi 默认使用内置目录与登录凭证。</div>
+            <div className="model-empty">{t("还没有自定义服务商。pi 默认使用内置目录与登录凭证。")}</div>
           )}
           {customEntries.map(([id, provider]) => (
             <div className="custom-provider" key={id}>
@@ -780,8 +814,8 @@ export function SettingsPage(): ReactNode {
                   {provider.name && <code className="custom-provider-id">{id}</code>}
                 </div>
                 <div className="setting-desc">
-                  {provider.baseUrl ?? '跟随内置端点'} · {provider.api ?? '跟随内置协议'}
-                  {provider.apiKey ? ' · 已设置 API Key' : ''}
+                  {provider.baseUrl ?? t("跟随内置端点")} · {provider.api ?? t("跟随内置协议")}
+                  {provider.apiKey ? (state.settings.language === 'en' ? ' · API key configured' : ' · 已设置 API Key') : ''}
                 </div>
                 <div className="model-badges">
                   {(provider.models ?? []).map((model) => (
@@ -794,10 +828,9 @@ export function SettingsPage(): ReactNode {
               <button
                 className="settings-button danger"
                 onClick={() => void deleteProvider(id)}
-                title={`从 models.json 移除 ${id}`}
+                title={state.settings.language === 'en' ? `Remove ${id} from models.json` : `从 models.json 移除 ${id}`}
               >
-                <Trash2 size={12} /> 移除
-              </button>
+                <Trash2 size={12} />{t("移除")}</button>
             </div>
           ))}
         </div>
@@ -805,10 +838,9 @@ export function SettingsPage(): ReactNode {
         {!showAdd && (
           <div className="custom-provider-actions">
             <button className="settings-button primary" onClick={() => setShowAdd(true)}>
-              <Plus size={12} /> 添加服务商 / 模型
-            </button>
+              <Plus size={12} />{t("添加服务商 / 模型")}</button>
             <span className="setting-desc">
-              写入 <code>{customConfig?.file ?? '~/.pi/agent/models.json'}</code>，格式即 pi 的 models.json
+              {state.settings.language === 'en' ? 'Writes to ' : '写入 '}<code>{customConfig?.file ?? '~/.pi/agent/models.json'}</code>{state.settings.language === 'en' ? ' in pi models.json format.' : '，格式即 pi 的 models.json'}
             </span>
           </div>
         )}
@@ -831,14 +863,14 @@ export function SettingsPage(): ReactNode {
                     }))
                   }
                 >
-                  {preset.label}
+                        {t(preset.label)}
                 </button>
               ))}
             </div>
 
             <div className="form-grid">
               <label className="form-field">
-                <span>服务商 ID *</span>
+                <span>{t("服务商 ID *")}</span>
                 <input
                   value={draft.id}
                   placeholder="ollama"
@@ -846,10 +878,10 @@ export function SettingsPage(): ReactNode {
                 />
               </label>
               <label className="form-field">
-                <span>显示名</span>
+                <span>{t("显示名")}</span>
                 <input
                   value={draft.name}
-                  placeholder="可选"
+                  placeholder={t("可选")}
                   onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
                 />
               </label>
@@ -862,29 +894,24 @@ export function SettingsPage(): ReactNode {
                 />
               </label>
               <label className="form-field">
-                <span>API 协议</span>
+                <span>{t("API 协议")}</span>
                 <Select
-                  label="API 协议"
+                  label={t("API 协议")}
                   value={draft.api}
                   onChange={(value) => setDraft((prev) => ({ ...prev, api: value }))}
-                >
-                  {API_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </Select>
+                  options={API_OPTIONS.map((option) => ({ value: option.value, label: t(option.label) }))}
+                />
               </label>
               <label className="form-field wide">
                 <span>API Key</span>
                 <input
                   value={draft.apiKey}
-                  placeholder="$MY_API_KEY 或直接填 key；本地服务可留空或填占位"
+                  placeholder={t("$MY_API_KEY 或直接填 key；本地服务可留空或填占位")}
                   onChange={(event) => setDraft((prev) => ({ ...prev, apiKey: event.target.value }))}
                 />
               </label>
               <label className="form-field wide">
-                <span>模型 ID（每行一个，或用逗号分隔）*</span>
+                <span>{t("模型 ID（每行一个，或用逗号分隔）*")}</span>
                 <textarea
                   rows={2}
                   value={draft.modelIds}
@@ -895,7 +922,7 @@ export function SettingsPage(): ReactNode {
                 />
               </label>
               <label className="form-field">
-                <span>上下文窗口</span>
+                <span>{t("上下文窗口")}</span>
                 <input
                   value={draft.contextWindow}
                   placeholder="128000"
@@ -905,7 +932,7 @@ export function SettingsPage(): ReactNode {
                 />
               </label>
               <label className="form-field">
-                <span>最大输出</span>
+                <span>{t("最大输出")}</span>
                 <input
                   value={draft.maxTokens}
                   placeholder="16384"
@@ -917,16 +944,16 @@ export function SettingsPage(): ReactNode {
             </div>
 
             <div className="form-switches">
-              <Row title="支持推理 / 思维链" query="">
+              <Row title={t("支持推理 / 思维链")} query="">
                 <Switch
-                  label="支持推理"
+                  label={t("支持推理")}
                   checked={draft.reasoning}
                   onChange={(value) => setDraft((prev) => ({ ...prev, reasoning: value }))}
                 />
               </Row>
-              <Row title="支持图片输入" query="">
+              <Row title={t("支持图片输入")} query="">
                 <Switch
-                  label="支持图片输入"
+                  label={t("支持图片输入")}
                   checked={draft.images}
                   onChange={(value) => setDraft((prev) => ({ ...prev, images: value }))}
                 />
@@ -935,7 +962,7 @@ export function SettingsPage(): ReactNode {
 
             <div className="form-actions">
               <button className="settings-button primary" disabled={saving} onClick={() => void saveProviderDraft()}>
-                {saving ? '保存中…' : '保存到 models.json'}
+                {saving ? t("保存中…") : t("保存到 models.json")}
               </button>
               <button
                 className="settings-button"
@@ -943,10 +970,8 @@ export function SettingsPage(): ReactNode {
                   setShowAdd(false)
                   setDraft(EMPTY_DRAFT)
                 }}
-              >
-                取消
-              </button>
-              <span className="setting-desc">保存后会重启当前会话，让 pi 重新加载模型。</span>
+              >{t("取消")}</button>
+              <span className="setting-desc">{t("保存后会重启当前会话，让 pi 重新加载模型。")}</span>
             </div>
           </div>
         )}
@@ -958,7 +983,7 @@ export function SettingsPage(): ReactNode {
   const renderTools = (): ReactNode => (
     <>
       <Block
-        title="内置工具"
+        title={t("内置工具")}
         query={query}
         terms={['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', '工具列表']}
       >
@@ -966,11 +991,11 @@ export function SettingsPage(): ReactNode {
           <Row
             key={tool.name}
             title={tool.name}
-            desc={tool.desc}
+            desc={t(tool.desc)}
             query={query}
           >
             <Switch
-              label={`启用 ${tool.name}`}
+              label={state.settings.language === 'en' ? `Enable ${tool.name}` : `启用 ${tool.name}`}
               checked={enabledTools.includes(tool.name)}
               onChange={(value) => void toggleTool(tool.name, value)}
             />
@@ -979,29 +1004,29 @@ export function SettingsPage(): ReactNode {
       </Block>
       <p className="settings-note">
         {toolsExplicit
-          ? '已自定义工具列表，重启会话后按新列表加载。'
-          : '当前使用 pi 默认工具集；修改后会写入 pi 设置，重启会话生效。'}
+          ? t("已自定义工具列表，重启会话后按新列表加载。")
+          : t("当前使用 pi 默认工具集；修改后会写入 pi 设置，重启会话生效。")}
       </p>
 
       <Block
-        title="桌面显示"
+        title={t("桌面显示")}
         query={query}
         terms={['工具卡', '展开', '跟随', '流式', '滚动']}
       >
-        <Row title="工具调用默认展开" desc="工具卡片显示完整输出，而不是折叠成一行。" query={query}>
+        <Row title={t("工具调用默认展开")} desc={t("工具卡片显示完整输出，而不是折叠成一行。")} query={query}>
           <Switch
-            label="工具调用默认展开"
+            label={t("工具调用默认展开")}
             checked={Boolean(state.settings.toolCardsExpanded)}
             onChange={(value) => void actions.updateSettings({ toolCardsExpanded: value })}
           />
         </Row>
         <Row
-          title="流式输出自动跟随"
-          desc="新内容到达时保持滚动在底部；关闭后只在你发送消息时跳转。"
+          title={t("流式输出自动跟随")}
+          desc={t("新内容到达时保持滚动在底部；关闭后只在你发送消息时跳转。")}
           query={query}
         >
           <Switch
-            label="流式输出自动跟随"
+            label={t("流式输出自动跟随")}
             checked={state.settings.followStream !== false}
             onChange={(value) => void actions.updateSettings({ followStream: value })}
           />
@@ -1011,11 +1036,11 @@ export function SettingsPage(): ReactNode {
   )
 
   const renderAppearance = (): ReactNode => (
-    <Block title="主题" query={query} terms={['深色', '浅色', '外观']}>
+    <Block title={t("主题")} query={query} terms={['深色', '浅色', '外观']}>
       <div className="setting-row stack">
         <div className="setting-main">
-          <div className="setting-title">界面主题</div>
-          <div className="setting-desc">深色为暖调纸墨；浅色适合白天和投屏。</div>
+          <div className="setting-title">{t("界面主题")}</div>
+          <div className="setting-desc">{t("深色为暖调纸墨；浅色适合白天和投屏。")}</div>
         </div>
         <div className="theme-cards">
           <button
@@ -1027,9 +1052,7 @@ export function SettingsPage(): ReactNode {
               <span />
               <span />
             </span>
-            <span className="theme-name">
-              深色
-              {state.settings.theme === 'dark' && <Check size={13} />}
+            <span className="theme-name">{t("深色")}{state.settings.theme === 'dark' && <Check size={13} />}
             </span>
           </button>
           <button
@@ -1041,9 +1064,7 @@ export function SettingsPage(): ReactNode {
               <span />
               <span />
             </span>
-            <span className="theme-name">
-              浅色
-              {state.settings.theme === 'light' && <Check size={13} />}
+            <span className="theme-name">{t("浅色")}{state.settings.theme === 'light' && <Check size={13} />}
             </span>
           </button>
         </div>
@@ -1053,8 +1074,8 @@ export function SettingsPage(): ReactNode {
 
   const renderSessions = (): ReactNode => (
     <>
-      <Block title="存储" query={query} terms={['目录', '文件夹', '记录', '会话位置']}>
-        <Row title="会话存储目录" desc="每次对话都会写成一个 JSONL 会话文件。" query={query}>
+      <Block title={t("存储")} query={query} terms={['目录', '文件夹', '记录', '会话位置']}>
+        <Row title={t("会话存储目录")} desc={t("每次对话都会写成一个 JSONL 会话文件。")} query={query}>
           <span className="setting-value" title={sessionsRoot}>
             {shortenPath(sessionsRoot, state.boot?.home)}
           </span>
@@ -1062,30 +1083,26 @@ export function SettingsPage(): ReactNode {
             className="settings-button"
             onClick={() => sessionsRoot && actions.revealSession(sessionsRoot)}
           >
-            <FolderSearch size={12} /> 显示
-          </button>
+            <FolderSearch size={12} />{t("显示")}</button>
         </Row>
-        <Row title="会话数量" desc="已缓存的会话文件，由最近修改时间排序。" query={query}>
+        <Row title={t("会话数量")} desc={t("已缓存的会话文件，由最近修改时间排序。")} query={query}>
           <span className="setting-value">{state.sessions.length}</span>
           <button className="settings-button" onClick={() => void actions.refreshSessions()}>
-            <RotateCw size={12} /> 刷新
-          </button>
+            <RotateCw size={12} />{t("刷新")}</button>
         </Row>
       </Block>
 
-      <Block title="当前工作区" query={query} terms={['项目', '目录', '工作区']}>
+      <Block title={t("当前工作区")} query={query} terms={['项目', '目录', '工作区']}>
         <Row
-          title={shortenPath(state.workspace, state.boot?.home) || '未打开项目'}
-          desc="新会话会在这个目录下运行 pi。"
+          title={shortenPath(state.workspace, state.boot?.home) || t("未打开项目")}
+          desc={t("新会话会在这个目录下运行 pi。")}
           query={query}
         >
-          <button className="settings-button" onClick={() => void actions.pickFolder()}>
-            更改
-          </button>
+          <button className="settings-button" onClick={() => void actions.pickFolder()}>{t("更改")}</button>
         </Row>
         <Row
-          title="当前会话"
-          desc={state.sessionPath ? shortenPath(state.sessionPath, state.boot?.home) : '尚未开始'}
+          title={t("当前会话")}
+          desc={state.sessionPath ? shortenPath(state.sessionPath, state.boot?.home) : t("尚未开始")}
           query={query}
         >
           {state.sessionPath && (
@@ -1093,8 +1110,7 @@ export function SettingsPage(): ReactNode {
               className="settings-button"
               onClick={() => state.sessionPath && actions.revealSession(state.sessionPath)}
             >
-              <FolderSearch size={12} /> 显示
-            </button>
+              <FolderSearch size={12} />{t("显示")}</button>
           )}
         </Row>
       </Block>
@@ -1102,9 +1118,9 @@ export function SettingsPage(): ReactNode {
   )
 
   const renderShortcuts = (): ReactNode => (
-    <Block title="快捷键" query={query} terms={SHORTCUTS.map((item) => item.label)}>
+    <Block title={t("快捷键")} query={query} terms={SHORTCUTS.map((item) => item.label)}>
       {SHORTCUTS.map((shortcut) => (
-        <Row key={shortcut.keys} title={shortcut.label} query={query}>
+        <Row key={shortcut.keys} title={t(shortcut.label)} query={query}>
           <kbd>{shortcut.keys}</kbd>
         </Row>
       ))}
@@ -1113,24 +1129,24 @@ export function SettingsPage(): ReactNode {
 
   const renderAbout = (): ReactNode => (
     <>
-      <Block title="版本" query={query} terms={['electron', '平台', 'pi']}>
+      <Block title={t("版本")} query={query} terms={['electron', '平台', 'pi']}>
         <Row title="Pi Desktop" query={query}>
           <span className="setting-value">{state.boot?.appVersion ?? '0.1.0'}</span>
         </Row>
         <Row title="pi" query={query}>
-          <span className="setting-value">{state.boot?.piVersion ?? '未检测到'}</span>
+          <span className="setting-value">{state.boot?.piVersion ?? t("未检测到")}</span>
         </Row>
         <Row title="Electron" query={query}>
           <span className="setting-value">{state.boot?.electronVersion ?? '—'}</span>
         </Row>
-        <Row title="平台" query={query}>
+        <Row title={t("平台")} query={query}>
           <span className="setting-value">{state.boot?.platform ?? '—'}</span>
         </Row>
       </Block>
 
-      <Block title="配置文件" query={query} terms={['settings.json', '设置文件', 'agent']}>
+      <Block title={t("配置文件")} query={query} terms={['settings.json', '设置文件', 'agent']}>
         <Row
-          title="pi 设置文件"
+          title={t("pi 设置文件")}
           desc={shortenPath(state.boot?.piSettingsFile, state.boot?.home)}
           query={query}
         >
@@ -1138,13 +1154,12 @@ export function SettingsPage(): ReactNode {
             className="settings-button"
             onClick={() => state.boot?.piSettingsFile && actions.revealSession(state.boot.piSettingsFile)}
           >
-            <FolderSearch size={12} /> 显示
-          </button>
+            <FolderSearch size={12} />{t("显示")}</button>
         </Row>
       </Block>
 
-      <Block title="链接" query={query} terms={['pi.dev', '官网', '文档']}>
-        <Row title="pi 官网与文档" desc="协议、模型与扩展的完整说明。" query={query}>
+      <Block title={t("链接")} query={query} terms={['pi.dev', '官网', '文档']}>
+        <Row title={t("pi 官网与文档")} desc={t("协议、模型与扩展的完整说明。")} query={query}>
           <button
             className="settings-link"
             onClick={() => actions.openExternal('https://pi.dev')}
@@ -1170,21 +1185,26 @@ export function SettingsPage(): ReactNode {
   const hasResults = visibleNav.length > 0
 
   return (
-    <div className="settings-page" aria-label="Settings">
+    <div className="settings-page" aria-label={t("Settings")}>
       <div className="settings-drag" />
 
       <aside className="settings-nav">
-        <h1>设置</h1>
+        <div className="settings-nav-header">
+          <button className="settings-close" onClick={close} aria-label={t("返回对话")} title={t("返回对话")}>
+            <ArrowLeft size={17} />
+          </button>
+          <h1>{t("设置")}</h1>
+        </div>
         <div className="settings-search">
           <Search size={14} />
           <input
             value={query}
-            placeholder="搜索设置"
+            placeholder={t("搜索设置")}
             spellCheck={false}
             onChange={(event) => setQuery(event.target.value)}
           />
           {query && (
-            <button className="search-clear" onClick={() => setQuery('')} aria-label="清空搜索">
+            <button className="search-clear" onClick={() => setQuery('')} aria-label={t("清空搜索")}>
               <X size={11} />
             </button>
           )}
@@ -1194,7 +1214,7 @@ export function SettingsPage(): ReactNode {
           {hasResults ? (
             visibleNav.map((group) => (
               <div className="settings-group" key={group.group}>
-                <div className="settings-group-label">{group.group}</div>
+                <div className="settings-group-label">{t(group.group)}</div>
                 {group.items.map((item) => {
                   const Icon = item.icon
                   return (
@@ -1204,14 +1224,14 @@ export function SettingsPage(): ReactNode {
                       onClick={() => selectCategory(item.id)}
                     >
                       <Icon size={15} />
-                      <span>{item.label}</span>
+                      <span>{t(item.label)}</span>
                     </button>
                   )
                 })}
               </div>
             ))
           ) : (
-            <div className="settings-empty">没有匹配的设置</div>
+            <div className="settings-empty">{t("没有匹配的设置")}</div>
           )}
         </div>
 
@@ -1221,15 +1241,12 @@ export function SettingsPage(): ReactNode {
       </aside>
 
       <main className="settings-content" ref={contentRef}>
-        <button className="settings-close" onClick={close} aria-label="关闭设置">
-          <X size={16} />
-        </button>
         <div className="settings-content-inner">
-          <h2 className="settings-page-title">{query ? '搜索结果' : current.title}</h2>
+          <h2 className="settings-page-title">{query ? t("搜索结果") : t(current.title)}</h2>
           {hasResults ? (
             current.render()
           ) : (
-            <p className="settings-note">换个关键词试试，比如「压缩」「工具」「模型」。</p>
+            <p className="settings-note">{t("换个关键词试试，比如「压缩」「工具」「模型」。")}</p>
           )}
         </div>
       </main>

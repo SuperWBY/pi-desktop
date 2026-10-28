@@ -1,3 +1,4 @@
+import { useTranslation } from '../i18n'
 import { useEffect, type ReactNode } from 'react'
 import { AlertCircle, CheckCircle2, Info, TriangleAlert, X } from 'lucide-react'
 import clsx from 'clsx'
@@ -11,6 +12,7 @@ const ICONS = {
 }
 
 function Toast({ notice }: { notice: Notice }): ReactNode {
+  const t = useTranslation()
   const { actions } = useApp()
   const Icon = ICONS[notice.level]
 
@@ -40,7 +42,7 @@ function Toast({ notice }: { notice: Notice }): ReactNode {
       <button
         className="icon-button toast-close"
         onClick={() => actions.dismissNotice(notice.id)}
-        aria-label="Dismiss"
+        aria-label={t("Dismiss")}
       >
         <X size={13} />
       </button>

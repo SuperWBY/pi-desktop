@@ -1,3 +1,4 @@
+import { useTranslation } from './i18n'
 import { useEffect, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { AlertTriangle } from 'lucide-react'
@@ -13,6 +14,7 @@ import { UiRequestDialog } from './components/UiRequestDialog'
 import { Toasts } from './components/Toasts'
 
 function Shell(): ReactNode {
+  const t = useTranslation()
   const { state, actions } = useApp()
   const showWelcome = !state.workspace
   const failed = state.status === 'error' && Boolean(state.workspace)
@@ -43,6 +45,7 @@ function Shell(): ReactNode {
 
     const onEscape = (event: KeyboardEvent): void => {
       if (event.key === 'Escape' && state.settingsOpen) {
+        if (document.querySelector('.popover')) return
         event.stopPropagation()
         actions.openSettings(false)
       }
@@ -76,9 +79,7 @@ function Shell(): ReactNode {
               <strong>Could not start pi</strong>
               <span>{state.error}</span>
             </div>
-            <button className="button ghost small" onClick={() => actions.openSettings(true)}>
-              Settings
-            </button>
+            <button className="button ghost small" onClick={() => actions.openSettings(true)}>{t("Settings")}</button>
             <button
               className="button ghost small"
               onClick={() => void actions.openSession(state.workspace ?? '', null)}

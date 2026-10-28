@@ -686,6 +686,8 @@ interface AppActions {
   respondUi: (response: Record<string, unknown>) => void
   refreshMeta: () => Promise<void>
   restartSession: () => Promise<void>
+  exportHtml: () => Promise<void>
+  exportMarkdown: () => Promise<void>
   compact: () => Promise<void>
   fillComposer: (text: string) => void
   openExternal: (url: string) => void
@@ -792,6 +794,50 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   )
 
   /** Respawning pi is what makes it re-read models.json / auth.json. */
+  /** pi renders its own HTML transcript; we only pick the path. */
+  const exportHtml = useCallback(async () => {
+    const current = stateRef.current
+    const name = current.sessionName ?? 'pi-session'
+    try {
+      const path = await window.pi.pickSavePath({
+        defaultName: `${name}.html`,
+        filters: [{ name: 'HTML', extensions: ['html'] }]
+      })
+      if (!path) return
+      const response = await safeCommand<{ path?: string }>(
+        { type: 'export_html', outputPath: path },
+        120_000
+      )
+      if (response?.success) {
+        notify('success', '已导出 HTML', response.data?.path ?? path)
+        window.pi.showItem(response.data?.path ?? path)
+      } else {
+        notify('error', '导出失败', response?.error)
+      }
+    } catch (error) {
+      notify('error', '导出失败', error instanceof Error ? error.message : String(error))
+    }
+  }, [notify])
+
+  const exportMarkdown = useCallback(async () => {
+    const current = stateRef.current
+    const name = current.sessionName ?? 'pi-session'
+    try {
+      const path = await window.pi.pickSavePath({
+        defaultName: `${name}.md`,
+        filters: [{ name: 'Markdown', extensions: ['md'] }]
+      })
+      if (!path) return
+      const { buildTurns: build, turnsToMarkdown } = await import('./lib/turns')
+      const turns = build(current.messages, current.toolRuns, {}, -1)
+      const ok = await window.pi.writeTextFile(path, turnsToMarkdown(turns, name))
+      notify(ok ? 'success' : 'error', ok ? '已导出 Markdown' : '导出失败', path)
+      if (ok) window.pi.showItem(path)
+    } catch (error) {
+      notify('error', '导出失败', error instanceof Error ? error.message : String(error))
+    }
+  }, [notify])
+
   const restartSession = useCallback(async () => {
     const current = stateRef.current
     if (!current.workspace) return
@@ -1120,6 +1166,32 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       .catch(() => undefined)
   }, [currentSessionPath])
 
+  // Desktop notification when a run finishes while the window is in the
+  // background. The main process refuses to notify when the window is focused.
+  const notifiedStreaming = useRef(false)
+  useEffect(() => {
+    const finished = notifiedStreaming.current && !state.streaming
+    notifiedStreaming.current = state.streaming
+    if (!finished || state.settings.notifyOnFinish === false) return
+    if (typeof document !== 'undefined' && document.hasFocus()) return
+    const lastAssistant = [...state.messages]
+      .reverse()
+      .find((message) => message.role === 'assistant') as
+      | { content?: { type: string; text?: string }[]; errorMessage?: string }
+      | undefined
+    const text =
+      lastAssistant?.errorMessage ??
+      (lastAssistant?.content ?? [])
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text ?? '')
+        .join(' ')
+        .trim()
+    void window.pi.notify({
+      title: lastAssistant?.errorMessage ? 'pi 出错了' : 'pi 完成了',
+      body: text ? text.slice(0, 140) : '本轮已结束'
+    })
+  }, [state.streaming, state.messages, state.settings.notifyOnFinish])
+
   // Batch high-frequency streaming records to one render per frame.
   useEffect(() => {
     let pending: PiRecord[] = []
@@ -1236,6 +1308,8 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       respondUi,
       refreshMeta,
       restartSession,
+      exportHtml,
+      exportMarkdown,
       compact,
       fillComposer,
       openExternal,
@@ -1269,6 +1343,8 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       respondUi,
       refreshMeta,
       restartSession,
+      exportHtml,
+      exportMarkdown,
       compact,
       fillComposer,
       openExternal,

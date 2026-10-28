@@ -70,6 +70,17 @@ const pairs: Array<[string, string]> = [
   ['折叠显示', 'Folded'],
   ['总是展开', 'Always expanded'],
   ['完全隐藏', 'Hidden'],
+  ['用默认应用打开', 'Open with the default app'],
+  ['展开全文件', 'Show the whole file'],
+  ['只看上下文', 'Show context only'],
+  ['全文', 'Full'],
+  ['完成时发系统通知', 'Notify when a run finishes'],
+  ['窗口在后台时，长任务结束会发一条系统通知。', 'Send a desktop notification when a long run ends while the window is in the background.'],
+  ['导出 Markdown', 'Export Markdown'],
+  ['导出 HTML', 'Export HTML'],
+  ['已导出 Markdown', 'Exported Markdown'],
+  ['已导出 HTML', 'Exported HTML'],
+  ['导出失败', 'Export failed'],
 ]
 
 const english = new Map<string, string>()

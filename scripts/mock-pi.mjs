@@ -46,6 +46,8 @@ const transcriptSize = Number(process.env.MOCK_TRANSCRIPT ?? 0)
 const toolBurst = Number(process.env.MOCK_TOOLS ?? 0)
 const now = Date.now()
 
+const editDemo = process.env.MOCK_EDIT === '1'
+
 function seededTurn(i) {
   const calls = toolBurst
     ? Array.from({ length: i === transcriptSize - 1 ? Math.max(toolBurst, 5) : toolBurst }, (_, k) => ({
@@ -55,6 +57,22 @@ function seededTurn(i) {
         arguments: { path: `src/module-${i}-${k}.ts` }
       }))
     : []
+
+  if (editDemo) {
+    const oldLines = Array.from({ length: 40 }, (_, n) => `line ${n + 1}`)
+    const newLines = [...oldLines]
+    newLines[2] = 'line 3 (changed)'
+    newLines[30] = 'line 31 (changed)'
+    calls.push({
+      type: 'toolCall',
+      id: `call-edit-${i}`,
+      name: 'edit',
+      arguments: {
+        path: `src/edited-${i}.ts`,
+        edits: [{ oldText: oldLines.join('\n'), newText: newLines.join('\n') }]
+      }
+    })
+  }
   const parts = [
     {
       role: 'user',

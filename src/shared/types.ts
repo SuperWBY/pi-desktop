@@ -204,6 +204,8 @@ export interface Settings {
   turnAggregate?: number
   /** off | summary | full */
   thinkingDisplay?: 'off' | 'summary' | 'full'
+  /** Desktop notification when a long run finishes in the background. */
+  notifyOnFinish?: boolean
   toolCardsExpanded?: boolean
   followStream?: boolean
   windowBounds?: { x?: number; y?: number; width: number; height: number }

@@ -10,6 +10,7 @@ import { Composer } from './components/Composer'
 import { Welcome } from './components/Welcome'
 import { SettingsPage } from './components/SettingsPage'
 import { Diagnostics } from './components/Diagnostics'
+import { ImageLightbox, openImage } from './components/ImageLightbox'
 import { UiRequestDialog } from './components/UiRequestDialog'
 import { Toasts } from './components/Toasts'
 
@@ -51,9 +52,19 @@ function Shell(): ReactNode {
       }
     }
 
+    const onImageClick = (event: MouseEvent): void => {
+      const target = event.target
+      if (!(target instanceof HTMLImageElement)) return
+      if (!target.closest('.assistant-body, .user-message, .tool-body')) return
+      if (!/^data:image\//.test(target.src)) return
+      openImage(target.src)
+    }
+
+    document.addEventListener('click', onImageClick)
     window.addEventListener('keydown', onKeyDown)
     document.addEventListener('keydown', onEscape, true)
     return () => {
+      document.removeEventListener('click', onImageClick)
       window.removeEventListener('keydown', onKeyDown)
       document.removeEventListener('keydown', onEscape, true)
     }
@@ -95,6 +106,7 @@ function Shell(): ReactNode {
 
       <SettingsPage />
       <Diagnostics />
+      <ImageLightbox />
       <UiRequestDialog />
       <Toasts />
     </div>

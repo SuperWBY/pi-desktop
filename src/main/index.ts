@@ -4,10 +4,11 @@ import {
   dialog,
   ipcMain,
   Menu,
+  Notification,
   shell,
   type MenuItemConstructorOptions
 } from 'electron'
-import { existsSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -299,6 +300,65 @@ function registerIpc(): void {
 
   ipcMain.handle('shell:show-item', (_event, path: string) => {
     if (path) shell.showItemInFolder(path)
+  })
+
+  ipcMain.handle('shell:open-path', async (_event, path: string): Promise<boolean> => {
+    if (!path) return false
+    const error = await shell.openPath(path)
+    return error === ''
+  })
+
+  // Desktop notification, only when the window is not in front: a focused
+  // window already shows the result.
+  ipcMain.handle(
+    'notify:desktop',
+    (_event, payload: { title?: string; body?: string }): boolean => {
+      if (!Notification.isSupported()) return false
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) return false
+      const notification = new Notification({
+        title: payload?.title ?? 'Pi Desktop',
+        body: payload?.body ?? ''
+      })
+      notification.on('click', () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show()
+          mainWindow.focus()
+        }
+      })
+      notification.show()
+      return true
+    }
+  )
+
+  ipcMain.handle(
+    'dialog:pick-save',
+    async (_event, options?: { defaultName?: string; filters?: { name: string; extensions: string[] }[] }) => {
+      const exportDir = process.env.PI_DESKTOP_EXPORT_DIR?.trim()
+      if (exportDir) {
+        // Test hook: skip the native dialog and write into a known directory.
+        return join(exportDir, options?.defaultName ?? 'export.txt')
+      }
+      const result = mainWindow
+        ? await dialog.showSaveDialog(mainWindow, {
+            defaultPath: options?.defaultName,
+            filters: options?.filters
+          })
+        : await dialog.showSaveDialog({
+            defaultPath: options?.defaultName,
+            filters: options?.filters
+          })
+      if (result.canceled || !result.filePath) return null
+      return result.filePath
+    }
+  )
+
+  ipcMain.handle('fs:write-text', (_event, path: string, content: string): boolean => {
+    try {
+      writeFileSync(path, content, 'utf8')
+      return true
+    } catch {
+      return false
+    }
   })
 }
 

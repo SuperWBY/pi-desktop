@@ -3,8 +3,10 @@ import { memo, useEffect, useState, type ReactNode } from 'react'
 import {
   ChevronDown,
   ChevronRight,
+  ExternalLink,
   FilePlus2,
   FileText,
+  FolderSearch,
   PencilLine,
   Terminal,
   Wrench
@@ -15,6 +17,36 @@ import { baseName, formatDuration } from '../lib/format'
 import { contentText, diffParts, editPairs, toolImages, toolMeta } from '../lib/tools'
 import { Spinner } from './ui'
 import { CopyButton } from './Markdown'
+
+/** Reveal / open a path straight from a tool card. */
+function FileActions({ path }: { path: string }): ReactNode {
+  const t = useTranslation()
+  if (!path.includes('/')) return null
+  return (
+    <>
+      <button
+        className="file-action"
+        title={t('用默认应用打开')}
+        onClick={(event) => {
+          event.stopPropagation()
+          void window.pi.openPath(path)
+        }}
+      >
+        <ExternalLink size={12} />
+      </button>
+      <button
+        className="file-action"
+        title={t('在 Finder 中显示')}
+        onClick={(event) => {
+          event.stopPropagation()
+          window.pi.showItem(path)
+        }}
+      >
+        <FolderSearch size={12} />
+      </button>
+    </>
+  )
+}
 
 const ICONS = {
   bash: Terminal,
@@ -69,8 +101,16 @@ function CodeOutput({
   )
 }
 
-function DiffView({ oldText, newText }: { oldText: string; newText: string }): ReactNode {
-  const parts = diffParts(oldText, newText)
+function DiffView({
+  oldText,
+  newText,
+  context = 3
+}: {
+  oldText: string
+  newText: string
+  context?: number
+}): ReactNode {
+  const parts = diffParts(oldText, newText, context)
   return (
     <div className="diff">
       {parts.map((part, index) => {
@@ -113,6 +153,7 @@ export const ToolCard = memo(function ToolCard({
   const images = toolImages(run?.resultContent ?? (result?.content as ContentBlock[] | undefined))
   const running = status === 'running'
   const [open, setOpen] = useState(defaultOpen)
+  const [fullDiff, setFullDiff] = useState(false)
 
   useEffect(() => {
     if (status === 'running' || status === 'error') setOpen(true)
@@ -158,9 +199,28 @@ export const ToolCard = memo(function ToolCard({
               <div className="diff-block" key={index}>
                 <div className="diff-head">
                   <span>{baseName(path) || 'file'}</span>
-                  {pairs.length > 1 && <span className="diff-count">{t('change {count}').replace('{count}', String(index + 1))}</span>}
+                  {pairs.length > 1 && (
+                    <span className="diff-count">
+                      {t('change {count}').replace('{count}', String(index + 1))}
+                    </span>
+                  )}
+                  <span className="diff-actions">
+                    <button
+                      className="file-action"
+                      onClick={() => setFullDiff((value) => !value)}
+                      title={fullDiff ? t('只看上下文') : t('展开全文件')}
+                    >
+                      {fullDiff ? t('全文') : `±${3}`}
+                    </button>
+                    <CopyButton text={pair.newText} />
+                    <FileActions path={path} />
+                  </span>
                 </div>
-                <DiffView oldText={pair.oldText} newText={pair.newText} />
+                <DiffView
+                  oldText={pair.oldText}
+                  newText={pair.newText}
+                  context={fullDiff ? Number.MAX_SAFE_INTEGER : 3}
+                />
               </div>
             ))
           ) : meta.kind === 'bash' ? (
@@ -182,7 +242,10 @@ export const ToolCard = memo(function ToolCard({
               {path && (
                 <div className="file-head">
                   <span className="file-path">{path}</span>
-                  <CopyButton text={path} />
+                  <span className="file-actions">
+                    <CopyButton text={path} />
+                    <FileActions path={path} />
+                  </span>
                 </div>
               )}
               {resultText ? (
@@ -196,7 +259,10 @@ export const ToolCard = memo(function ToolCard({
               {path && (
                 <div className="file-head">
                   <span className="file-path">{path}</span>
-                  <CopyButton text={String(args.content ?? '')} />
+                  <span className="file-actions">
+                    <CopyButton text={String(args.content ?? '')} />
+                    <FileActions path={path} />
+                  </span>
                 </div>
               )}
               {typeof args.content === 'string' ? (

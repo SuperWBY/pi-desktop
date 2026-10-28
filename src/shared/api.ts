@@ -32,6 +32,13 @@ export interface PiDesktopApi {
   uiResponse(response: Record<string, unknown>): void
   openExternal(url: string): Promise<void>
   showItem(path: string): Promise<void>
+  openPath(path: string): Promise<boolean>
+  notify(payload: { title?: string; body?: string }): Promise<boolean>
+  pickSavePath(options?: {
+    defaultName?: string
+    filters?: { name: string; extensions: string[] }[]
+  }): Promise<string | null>
+  writeTextFile(path: string, content: string): Promise<boolean>
   onRecord(callback: (record: PiRecord) => void): () => void
   onStatus(
     callback: (status: { status: string; code?: number | null; signal?: string | null }) => void

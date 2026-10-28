@@ -27,7 +27,7 @@ function check(name, ok, detail = '') {
 
 function freshDirs(name) {
   const base = join(tmpRoot, name)
-  rmSync(base, { recursive: true, force: true })
+  rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   const dirs = {
     base,
     userData: join(base, 'userData'),
@@ -151,6 +151,107 @@ async function caseMenuScrollAndKeyboard() {
   const focusBack = await page.evaluate(() => document.activeElement?.className ?? '')
   check('关闭后焦点回到触发器', focusBack.includes('chip'), focusBack)
   check('无 JS 异常', errors.length === 0, errors.join(' | '))
+  await app.close()
+}
+
+async function casePolish() {
+  const dirs = freshDirs('polish')
+  const exportDir = join(dirs.base, 'exports')
+  mkdirSync(exportDir, { recursive: true })
+  seedSession(dirs.sessions, 'mock-session', 'Mock session', 2)
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+  )
+  const { app, page } = await launch(dirs, 'default', {
+    MOCK_TRANSCRIPT: '4',
+    MOCK_TOOLS: '2',
+    MOCK_EDIT: '1',
+    PI_DESKTOP_EXPORT_DIR: exportDir
+  })
+
+  // expand everything so tool cards and diffs are reachable
+  await page.keyboard.press('Meta+Shift+Period')
+  await page.waitForTimeout(400)
+  await page.locator('.turn').last().locator('.tool-group .tool-head').first().click()
+  await page.locator('.turn').last().locator('.tool-card .tool-head').first().click()
+  await page.waitForTimeout(300)
+
+  const fileActions = await page.locator('.tool-body .file-action').count()
+  check('工具卡提供在 Finder 中显示 / 打开', fileActions >= 2, `count=${fileActions}`)
+
+  const opened = await page.evaluate(() => window.pi.openPath('/Users/qm/Desktop/pi-desktop/package.json'))
+  check('shell:open-path 可用', opened === true, String(opened))
+
+  // notification IPC answers even when focused (false = suppressed)
+  const notified = await page.evaluate(() => window.pi.notify({ title: 't', body: 'b' }))
+  check('notify IPC 可用（返回布尔）', typeof notified === 'boolean', String(notified))
+
+  // export markdown / html through the virtual save dialog
+  await page.locator('.session-item').first().click({ button: 'right' })
+  await page.waitForSelector('.context-menu')
+  await page.locator('.context-menu .menu-item', { hasText: 'Markdown' }).click()
+  await page.waitForTimeout(1200)
+  const exported = readdirSync(exportDir)
+  check('导出 Markdown 落盘', exported.some((name) => name.endsWith('.md')), exported.join(','))
+
+  // diff: open the edit card and toggle full-file context
+  await page.locator('.turn').last().locator('.tool-card:has(.kind-edit) .tool-head').first().click()
+  await page.waitForTimeout(300)
+  const collapsedLines = await page.locator('.turn').last().locator('.diff-line').count()
+  await page.locator('.turn').last().locator('.diff-actions .file-action').first().click()
+  await page.waitForTimeout(300)
+  const fullLines = await page.locator('.turn').last().locator('.diff-line').count()
+  check(
+    'diff 可切换全文件/上下文',
+    collapsedLines > 0 && fullLines > collapsedLines,
+    `${collapsedLines} → ${fullLines}`
+  )
+
+  // image lightbox via a synthetic data-URL image inside an assistant body
+  const lightbox = await page.evaluate(async () => {
+    const img = document.createElement('img')
+    img.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    const host = document.querySelector('.assistant-body') ?? document.body
+    host.appendChild(img)
+    img.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    const open = Boolean(document.querySelector('.lightbox'))
+    document.querySelector('.lightbox')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    return { open, closed: !document.querySelector('.lightbox') }
+  })
+  check('图片 lightbox 可打开并关闭', lightbox.open && lightbox.closed, JSON.stringify(lightbox))
+
+  const virtual = await page.evaluate(() => document.querySelectorAll('.turn').length)
+  check('轮次数量统计正常', virtual >= 1, `turns=${virtual}`)
+  await app.close()
+}
+
+async function caseVirtualization() {
+  const dirs = freshDirs('virtual')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+  )
+  const { app, page } = await launch(dirs, 'default', { MOCK_TRANSCRIPT: '60', MOCK_TOOLS: '0' })
+  const state = await page.evaluate(() => ({
+    visibleTurns: document.querySelectorAll('.turn').length,
+    total: document.querySelector('.chat-inner')?.dataset.totalTurns ?? '',
+    virtual: document.querySelector('.chat-inner')?.classList.contains('is-virtual') ?? false,
+    older: document.querySelector('.older-turns')?.textContent ?? ''
+  }))
+  check(
+    '长会话启用按需渲染（更早轮次聚合）',
+    state.virtual && state.visibleTurns <= 6 && /更早的 55 轮|55 earlier turns/.test(state.older),
+    JSON.stringify(state)
+  )
+  const scrolls = await page.evaluate(() => {
+    const scroller = document.querySelector('.chat-scroll')
+    scroller.scrollTop = 2000
+    return scroller.scrollTop
+  })
+  check('按需渲染下滚动仍然可用', scrolls > 500, `scrollTop=${scrolls}`)
   await app.close()
 }
 
@@ -574,11 +675,15 @@ async function caseLanguage() {
 }
 
 try {
-  rmSync(tmpRoot, { recursive: true, force: true })
+  rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   console.log('\nmenu / keyboard')
   await caseLanguage()
   await caseComposerSafety()
   await caseMenuScrollAndKeyboard()
+  console.log('\npolish: files / export / lightbox')
+  await casePolish()
+  console.log('\nvirtualization')
+  await caseVirtualization()
   console.log('\nturns / folding')
   await caseTurnsFold()
   console.log('\nfold persistence')

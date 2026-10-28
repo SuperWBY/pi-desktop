@@ -64,6 +64,25 @@ function SessionMenu({
       >{t("在 Finder 中显示")}</button>
       <div className="menu-separator" />
       <button
+        className="menu-item"
+        onClick={() => {
+          close()
+          void actions.exportMarkdown()
+        }}
+      >
+        导出 Markdown
+      </button>
+      <button
+        className="menu-item"
+        onClick={() => {
+          close()
+          void actions.exportHtml()
+        }}
+      >
+        导出 HTML
+      </button>
+      <div className="menu-separator" />
+      <button
         className="menu-item danger"
         onClick={() => {
           close()

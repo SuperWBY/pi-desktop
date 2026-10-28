@@ -30,6 +30,11 @@ const api: PiDesktopApi = {
   uiResponse: (response) => ipcRenderer.send('pi:ui-response', response),
   openExternal: (url: string) => ipcRenderer.invoke('shell:open-external', url),
   showItem: (path: string) => ipcRenderer.invoke('shell:show-item', path),
+  openPath: (path: string) => ipcRenderer.invoke('shell:open-path', path),
+  notify: (payload) => ipcRenderer.invoke('notify:desktop', payload),
+  pickSavePath: (options) => ipcRenderer.invoke('dialog:pick-save', options),
+  writeTextFile: (path: string, content: string) =>
+    ipcRenderer.invoke('fs:write-text', path, content),
   onRecord: (callback: (record: PiRecord) => void) => subscribe('pi:record', callback),
   onStatus: (callback) => subscribe('pi:status', callback),
   onStderr: (callback) => subscribe('pi:stderr', callback),

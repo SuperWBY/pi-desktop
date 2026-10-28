@@ -306,7 +306,10 @@ export function ChatView(): ReactNode {
         onScroll={onScroll}
         onWheel={onWheel}
       >
-        <div className="chat-inner" ref={innerRef}>
+        <div
+          className={clsx('chat-inner', turns.length > 40 && 'is-virtual')}
+          ref={innerRef}
+        >
           {olderTurns.length > 0 && (
             <OlderTurnsRow
               count={olderTurns.length}

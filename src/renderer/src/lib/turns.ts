@@ -207,3 +207,25 @@ export function summariseTools(tools: Record<string, number>): string {
     .map(([name, count]) => (count > 1 ? `${name}×${count}` : name))
     .join(' ')
 }
+
+function turnToMarkdown(turn: Turn): string {
+  const lines: string[] = []
+  if (turn.userText) lines.push(`### 你\n\n${turn.userText}`)
+  const tools = summariseTools(turn.stats.tools)
+  const meta = [
+    turn.stats.steps ? `${turn.stats.steps} 步` : '',
+    tools,
+    turn.stats.files.length ? `${turn.stats.files.length} 个文件` : '',
+    turn.stats.startedAt && turn.stats.endedAt
+      ? `${Math.round((turn.stats.endedAt - turn.stats.startedAt) / 1000)}s`
+      : ''
+  ].filter(Boolean)
+  if (meta.length) lines.push(`> 过程：${meta.join(' · ')}`)
+  if (turn.finalText) lines.push(`### pi\n\n${turn.finalText}`)
+  return lines.join('\n\n')
+}
+
+export function turnsToMarkdown(turns: Turn[], title?: string): string {
+  const header = title ? `# ${title}\n\n` : ''
+  return `${header}${turns.map(turnToMarkdown).filter(Boolean).join('\n\n---\n\n')}\n`
+}

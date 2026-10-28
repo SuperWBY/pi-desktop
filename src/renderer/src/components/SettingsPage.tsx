@@ -1068,6 +1068,17 @@ export function SettingsPage(): ReactNode {
           />
         </Row>
         <Row
+          title={t("完成时发系统通知")}
+          desc={t("窗口在后台时，长任务结束会发一条系统通知。")}
+          query={query}
+        >
+          <Switch
+            label={t("完成时发系统通知")}
+            checked={state.settings.notifyOnFinish !== false}
+            onChange={(value) => void actions.updateSettings({ notifyOnFinish: value })}
+          />
+        </Row>
+        <Row
           title={t("思考内容")}
           desc={t("summary 折叠成一行，full 直接展开，off 完全不显示。")}
           query={query}

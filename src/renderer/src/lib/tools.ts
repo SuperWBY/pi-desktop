@@ -100,42 +100,43 @@ export interface DiffPart {
 export function diffParts(oldText: string, newText: string, context = 3): DiffPart[] {
   const parts = diffLines(oldText, newText) as DiffPart[]
   const output: DiffPart[] = []
-  let pending: string[] = []
+  const limit = context === Number.MAX_SAFE_INTEGER ? Number.POSITIVE_INFINITY : context
 
-  const flush = (): void => {
-    if (!pending.length) return
-    if (pending.length > context * 2 + 1) {
-      output.push({ value: pending.slice(0, context).join('') })
-      output.push({ value: `… ${pending.length - context * 2} unchanged lines …\n` })
-      output.push({ value: pending.slice(-context).join('') })
-    } else {
-      output.push({ value: pending.join('') })
+  const splitLines = (value: string): string[] => value.replace(/\n$/, '').split('\n')
+  const joinLines = (lines: string[]): string => `${lines.join('\n')}\n`
+
+  const emitContext = (value: string, head: number, tail: number): void => {
+    const lines = splitLines(value)
+    const before = Number.isFinite(head) ? Math.max(0, head) : lines.length
+    const after = Number.isFinite(tail) ? Math.max(0, tail) : lines.length
+    if (lines.length <= before + after + 1) {
+      output.push({ value })
+      return
     }
-    pending = []
+    if (before > 0) output.push({ value: joinLines(lines.slice(0, before)) })
+    const hidden = lines.length - before - after
+    output.push({ value: `… ${hidden} unchanged lines …\n` })
+    if (after > 0) output.push({ value: joinLines(lines.slice(lines.length - after)) })
   }
 
-  for (let index = 0; index < parts.length; index += 1) {
-    const part = parts[index]
+  parts.forEach((part, index) => {
     if (part.added || part.removed) {
-      flush()
       output.push(part)
-      continue
+      return
     }
-
     const before = parts[index - 1]
     const after = parts[index + 1]
-    const nearChange = Boolean(before && (before.added || before.removed)) ||
-      Boolean(after && (after.added || after.removed))
-
-    if (nearChange) {
-      flush()
-      output.push(part)
-    } else {
-      pending.push(part.value)
+    const changeBefore = Boolean(before && (before.added || before.removed))
+    const changeAfter = Boolean(after && (after.added || after.removed))
+    const head = changeBefore ? limit : 0
+    const tail = changeAfter ? limit : 0
+    if (!changeBefore && !changeAfter) {
+      emitContext(part.value, 0, 0)
+      return
     }
-  }
+    emitContext(part.value, head, tail)
+  })
 
-  flush()
   return output
 }
 

@@ -28,6 +28,7 @@ export interface Turn {
   stats: TurnStats
   streaming: boolean
   finalText: string
+  finalMessage?: AssistantMessage
   failed: boolean
 }
 
@@ -119,6 +120,7 @@ export function buildTurns(
     const files = new Set<string>()
     const tools: Record<string, number> = {}
     const seenCalls = new Set<string>()
+    const failedCalls = new Set<string>()
     let started: number | undefined
     let ended: number | undefined
 
@@ -146,12 +148,14 @@ export function buildTurns(
           if (typeof path === 'string' && path) files.add(path)
           const run = toolRuns[call.id]
           if (run?.status === 'error') {
-            turn.stats.errors += 1
+            failedCalls.add(call.id)
             turn.failed = true
           }
         }
-        const text = assistantText(assistant)
-        if (text) turn.finalText = text
+        // Only the last assistant message can be the final answer. Text that
+        // accompanies tool calls is progress, not a completed response.
+        turn.finalMessage = assistant
+        turn.finalText = calls.length ? '' : assistantText(assistant)
       } else if (item.role === 'toolResult') {
         const result = item as ToolResultMessage
         // A toolResult that already has its call in this turn must not be
@@ -160,7 +164,7 @@ export function buildTurns(
           tools[result.toolName] = (tools[result.toolName] ?? 0) + 1
         }
         if (result.isError) {
-          turn.stats.errors += 1
+          failedCalls.add(result.toolCallId)
           turn.failed = true
         }
         const run = toolRuns[result.toolCallId]
@@ -177,6 +181,7 @@ export function buildTurns(
     }
 
     turn.stats.tools = tools
+    turn.stats.errors += failedCalls.size
     turn.stats.files = [...files]
     turn.stats.startedAt = started
     turn.stats.endedAt = ended

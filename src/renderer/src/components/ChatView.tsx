@@ -46,6 +46,7 @@ export function ChatView(): ReactNode {
   const innerRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
   const programmatic = useRef(false)
+  const readingPositions = useRef(new Map<string, { top: number; following: boolean }>())
   const [showJump, setShowJump] = useState(false)
   const followRef = useRef(state.settings.followStream !== false)
   followRef.current = state.settings.followStream !== false
@@ -101,11 +102,24 @@ export function ChatView(): ReactNode {
     if (last?.role === 'user') scrollToBottom()
   }, [state.messages.length, scrollToBottom])
 
-  useEffect(() => {
-    stickRef.current = true
-    setShowJump(false)
-    requestAnimationFrame(() => scrollToBottom())
-  }, [state.sessionPath, scrollToBottom])
+  useLayoutEffect(() => {
+    const node = scrollerRef.current
+    if (!node || state.status !== 'ready') return
+    const key = state.sessionPath ?? `project:${state.workspace ?? ''}`
+    const saved = readingPositions.current.get(key)
+    if (saved && !saved.following) {
+      stickRef.current = false
+      node.scrollTop = saved.top
+      setShowJump(node.scrollHeight - node.scrollTop - node.clientHeight >= 80)
+    } else {
+      stickRef.current = true
+      setShowJump(false)
+      scrollToBottom()
+    }
+    return () => {
+      readingPositions.current.set(key, { top: node.scrollTop, following: stickRef.current })
+    }
+  }, [state.sessionPath, state.workspace, state.status, scrollToBottom])
 
   // Keep the view pinned while content grows (markdown reflow, fonts, code blocks).
   useEffect(() => {
@@ -146,7 +160,7 @@ export function ChatView(): ReactNode {
 
   const folds = useTurnFolds(state.sessionPath, turns, {
     autoFold: state.settings.turnAutoFold !== false,
-    aggregateAfter: state.settings.turnAggregate ?? 5,
+    aggregateAfter: state.settings.turnAggregate ?? 0,
     defaultLevel: 1
   })
 
@@ -231,9 +245,11 @@ export function ChatView(): ReactNode {
     return () => window.removeEventListener('keydown', onKey)
   }, [folds, jumpTurn])
 
-  const aggregateAfter = state.settings.turnAggregate ?? 5
+  const aggregateAfter = state.settings.turnAggregate ?? 0
   const olderTurns =
-    olderOpen || turns.length <= aggregateAfter ? [] : turns.slice(0, turns.length - aggregateAfter)
+    olderOpen || aggregateAfter <= 0 || aggregateAfter >= 200 || turns.length <= aggregateAfter
+      ? []
+      : turns.slice(0, turns.length - aggregateAfter)
   const visibleTurns = olderTurns.length ? turns.slice(turns.length - aggregateAfter) : turns
 
   const streamingMessage =
@@ -255,7 +271,7 @@ export function ChatView(): ReactNode {
 
   if (state.status === 'starting' && state.messages.length === 0) {
     return (
-      <div className="chat-scroll" aria-live="polite" aria-relevant="additions text">
+      <div className="chat-scroll" ref={scrollerRef} aria-live="polite" aria-relevant="additions text">
         <div className="chat-inner">
           <div className="chat-starting">
             <Spinner size={16} />
@@ -268,7 +284,7 @@ export function ChatView(): ReactNode {
 
   if (state.messages.length === 0) {
     return (
-      <div className="chat-scroll" aria-live="polite" aria-relevant="additions text">
+      <div className="chat-scroll" ref={scrollerRef} aria-live="polite" aria-relevant="additions text">
         <div className="chat-inner empty-session">
           <div className="empty-mark">
             <PiLogo size={32} />

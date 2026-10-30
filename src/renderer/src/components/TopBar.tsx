@@ -1,6 +1,6 @@
 import { useTranslation } from '../i18n'
 import { useEffect, useState, type ReactNode } from 'react'
-import { Archive, Moon, PanelLeft, Plus, Settings, Sun } from 'lucide-react'
+import { Archive, Moon, PanelLeft, PanelRight, Plus, Settings, Sun } from 'lucide-react'
 import clsx from 'clsx'
 import { useApp } from '../store'
 import { baseName, formatTokens, shortenPath, truncate } from '../lib/format'
@@ -111,6 +111,15 @@ export function TopBar(): ReactNode {
         </button>
         <button className="icon-button settings-entry" onClick={() => actions.openSettings(true)} title={t("Settings")} aria-label={t("Settings")}>
           <Settings size={15} />
+        </button>
+        <button
+          className={clsx('icon-button', state.settings.workPanelOpen && 'work-panel-toggle-active')}
+          onClick={actions.toggleWorkPanel}
+          title={state.settings.language === 'en' ? 'Work panel (⌘⇧E)' : '工作面板 (⌘⇧E)'}
+          aria-label={state.settings.language === 'en' ? 'Work panel' : '工作面板'}
+          aria-pressed={state.settings.workPanelOpen === true}
+        >
+          <PanelRight size={15} />
         </button>
       </div>
     </header>

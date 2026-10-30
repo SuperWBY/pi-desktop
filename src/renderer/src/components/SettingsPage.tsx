@@ -1060,14 +1060,14 @@ export function SettingsPage(): ReactNode {
         >
           <Select
             label={t("更早的轮次聚合")}
-            value={String(state.settings.turnAggregate ?? 5)}
+            value={String((state.settings.turnAggregate ?? 0) >= 200 ? 0 : (state.settings.turnAggregate ?? 0))}
             onChange={(value) => void actions.updateSettings({ turnAggregate: Number(value) })}
             options={[
               { value: '3', label: t('3 轮') },
               { value: '5', label: t('5 轮') },
               { value: '8', label: t('8 轮') },
               { value: '12', label: t('12 轮') },
-              { value: '200', label: t('不聚合') }
+              { value: '0', label: t('不聚合') }
             ]}
           />
         </Row>

@@ -1,6 +1,6 @@
 import { useTranslation } from '../../i18n'
 import { useEffect, useState, type ReactNode } from 'react'
-import { ChevronRight, ExternalLink, FolderSearch, Search } from 'lucide-react'
+import { ChevronRight, Search } from 'lucide-react'
 import clsx from 'clsx'
 import type { DirEntry } from '@shared/types'
 import { useApp } from '../../store'
@@ -13,17 +13,13 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-export function FilesTab(): ReactNode {
+export function FilesTab({ onOpenFile }: { onOpenFile: (path: string) => void }): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
   const root = state.workspace ?? ''
   const [children, setChildren] = useState<Record<string, DirEntry[]>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [filter, setFilter] = useState('')
-  const [preview, setPreview] = useState<{ path: string; text: string; truncated: boolean } | null>(
-    null
-  )
-  const [error, setError] = useState<string | null>(null)
 
   const load = async (path: string): Promise<void> => {
     try {
@@ -37,14 +33,13 @@ export function FilesTab(): ReactNode {
   useEffect(() => {
     setChildren({})
     setExpanded({})
-    setPreview(null)
     if (root) void load(root)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root])
 
   const toggle = (entry: DirEntry): void => {
     if (!entry.isDir) {
-      void openFile(entry.path)
+      onOpenFile(entry.path)
       return
     }
     const next = !expanded[entry.path]
@@ -52,24 +47,11 @@ export function FilesTab(): ReactNode {
     if (next && !children[entry.path]) void load(entry.path)
   }
 
-  const openFile = async (path: string): Promise<void> => {
-    setError(null)
-    const result = await window.pi.readText(path, 200_000)
-    if (!result.ok || typeof result.content !== 'string') {
-      setError(result.error ?? t('无法预览这个文件'))
-      return
-    }
-    if (result.content.includes('\u0000')) {
-      setError(t('二进制文件不支持预览'))
-      return
-    }
-    setPreview({ path, text: result.content, truncated: Boolean(result.truncated) })
-  }
-
   const matches = (entry: DirEntry): boolean => {
     const query = filter.trim().toLowerCase()
     if (!query) return true
-    return entry.name.toLowerCase().includes(query)
+    // Keep folders navigable: their children are loaded only on expansion.
+    return entry.isDir || entry.name.toLowerCase().includes(query)
   }
 
   const renderLevel = (path: string, depth: number): ReactNode => {
@@ -115,34 +97,12 @@ export function FilesTab(): ReactNode {
         </div>
       </div>
 
-      {preview ? (
-        <div className="file-preview">
-          <div className="file-preview-head">
-            <button className="work-icon" onClick={() => setPreview(null)} title={t('返回')}>
-              <ChevronRight size={13} style={{ transform: 'rotate(180deg)' }} />
-            </button>
-            <span className="file-preview-path" title={preview.path}>
-              {preview.path.replace(`${root}/`, '')}
-            </span>
-            <button className="work-icon" onClick={() => void window.pi.openPath(preview.path)}>
-              <ExternalLink size={12} />
-            </button>
-            <button className="work-icon" onClick={() => window.pi.showItem(preview.path)}>
-              <FolderSearch size={12} />
-            </button>
-          </div>
-          <pre className="file-preview-body">{preview.text}</pre>
-          {preview.truncated && <div className="work-hint">{t('只显示前 200 KB。')}</div>}
-        </div>
-      ) : (
         <div className="work-tree">
           <button className="tree-row root" onClick={() => void load(root)}>
             <span className="tree-name dir">{baseName(root)}</span>
           </button>
           {renderLevel(root, 0)}
-          {error && <div className="work-empty small">{error}</div>}
         </div>
-      )}
     </div>
   )
 }

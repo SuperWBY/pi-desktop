@@ -9,6 +9,9 @@ import type { FoldLevel } from '../lib/turn-fold'
 import { AnswerOnly, AssistantMessageView, CustomMessageView, UserMessageView } from './Message'
 import { ToolCard } from './ToolCard'
 import { contentText } from '../lib/tools'
+import { collectSessionChanges } from '../lib/session-changes'
+import { requestReview } from '../lib/review-focus'
+import { useApp } from '../store'
 
 function turnMarkdown(turn: Turn): string {
   const lines: string[] = []
@@ -53,10 +56,11 @@ export function TurnSummary({
   }, [turn.streaming])
 
   const { stats } = turn
-  const elapsed =
-    stats.startedAt && stats.endedAt ? formatDuration(Math.max(0, stats.endedAt - stats.startedAt)) : ''
+  const elapsed = stats.startedAt && (turn.streaming || stats.endedAt)
+    ? formatDuration(Math.max(0, (turn.streaming ? Date.now() : stats.endedAt!) - stats.startedAt))
+    : ''
   const tools = summariseTools(stats.tools)
-  const parts: string[] = []
+  const parts: string[] = [turn.streaming ? t('执行中') : turn.failed ? t('过程有错误') : t('已完成')]
   if (stats.steps) parts.push(t('{count} steps').replace('{count}', String(stats.steps)))
   if (tools) parts.push(tools)
   if (stats.files.length) parts.push(t('{count} files').replace('{count}', String(stats.files.length)))
@@ -155,7 +159,12 @@ export function TurnView({
   results: Record<string, ToolResultMessage>
   busy?: boolean
 }): ReactNode {
+  const { state } = useApp()
   const rendered = callIds(turn)
+  const changes = turn.streaming ? [] : collectSessionChanges([turn], toolRuns, state.workspace ?? '')
+  const assistantCount = turn.items.filter((item) => item.role === 'assistant').length
+  const hasProcess = assistantCount > 1 || turn.stats.thinkingLines > 0 ||
+    Object.keys(turn.stats.tools).length > 0 || turn.items.some((item) => item.role === 'custom')
   const model = (() => {
     for (let index = turn.items.length - 1; index >= 0; index -= 1) {
       const item = turn.items[index]
@@ -173,14 +182,16 @@ export function TurnView({
         <UserMessageView message={turn.user as UserMessage} />
       ) : null}
 
-      <TurnSummary
-        turn={turn}
-        level={level}
-        onLevel={onLevel}
-        onOpenTranscript={onOpenTranscript}
-        onRetry={onRetry}
-        busy={busy}
-      />
+      {(hasProcess || level === 2) && (
+        <TurnSummary
+          turn={turn}
+          level={level}
+          onLevel={onLevel}
+          onOpenTranscript={onOpenTranscript}
+          onRetry={onRetry}
+          busy={busy}
+        />
+      )}
 
       {level === 0 ? (
         turn.items.map((item, index) => {
@@ -229,7 +240,22 @@ export function TurnView({
           return null
         })
       ) : (
-        level === 1 && <AnswerOnly text={turn.finalText} model={model} />
+        level === 1 && <AnswerOnly text={turn.finalText} model={model} message={turn.finalMessage} />
+      )}
+      {level !== 2 && changes.length > 0 && (
+        <section className="turn-changes" aria-label={state.settings.language === 'en' ? 'Files changed in this turn' : '本轮文件变更'}>
+          <div className="turn-changes-title">{state.settings.language === 'en' ? 'Files changed' : '本轮文件变更'} · {changes.length}</div>
+          {changes.slice(0, 5).map((file) => (
+            <button key={file.path} className="turn-changes-row" onClick={() => requestReview(state.sessionPath, state.workspace, file.path)} title={file.relative}>
+              <span>{file.relative}</span><span className="turn-changes-count">{file.unmeasuredWrite ? (state.settings.language === 'en' ? 'Counts unknown' : '行数未知') : <><span>+{file.additions}</span> <span>−{file.deletions}</span></>}</span>
+            </button>
+          ))}
+          {changes.length > 5 && (
+            <button className="turn-changes-row" onClick={() => requestReview(state.sessionPath, state.workspace, changes[0].path)}>
+              {state.settings.language === 'en' ? `View all ${changes.length} files` : `查看全部 ${changes.length} 个文件`}
+            </button>
+          )}
+        </section>
       )}
     </div>
   )

@@ -2,6 +2,7 @@ import { useTranslation } from '../i18n'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   ChevronsUpDown,
+  ChevronRight,
   FolderOpen,
   MoreHorizontal,
   Plus,
@@ -45,16 +46,16 @@ function SessionMenu({
   onDelete: () => void
 }): ReactNode {
   const t = useTranslation()
-  const { actions } = useApp()
+  const { actions, state } = useApp()
   return (
     <div className="menu">
-      <button
+      {session.path === state.sessionPath && <button
         className="menu-item"
         onClick={() => {
           close()
           onRename(session.name)
         }}
-      >{t("重命名")}</button>
+      >{t("重命名")}</button>}
       <button
         className="menu-item"
         onClick={() => {
@@ -62,7 +63,7 @@ function SessionMenu({
           actions.revealSession(session.path)
         }}
       >{t("在 Finder 中显示")}</button>
-      <div className="menu-separator" />
+      {session.path === state.sessionPath && <><div className="menu-separator" />
       <button
         className="menu-item"
         onClick={() => {
@@ -81,6 +82,7 @@ function SessionMenu({
       >
         导出 HTML
       </button>
+      </>}
       <div className="menu-separator" />
       <button
         className="menu-item danger"
@@ -102,6 +104,7 @@ export function Sidebar(): ReactNode {
   const [renameValue, setRenameValue] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
   const [contextMenu, setContextMenu] = useState<{ session: SessionSummary; x: number; y: number } | null>(null)
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set())
   const [, setTick] = useState(0)
 
   // Relative timestamps ("2h", "now") should age while the app stays open.
@@ -112,27 +115,18 @@ export function Sidebar(): ReactNode {
 
   const workspace = state.workspace ?? state.settings.lastWorkspace ?? null
 
-  const workspaceSessions = useMemo(() => {
-    const scoped = workspace
-      ? state.sessions.filter((session) => session.cwd === workspace)
-      : state.sessions
-    const text = query.trim().toLowerCase()
-    const filtered = text
-      ? scoped.filter((session) =>
-          `${session.name} ${session.preview} ${session.cwd}`.toLowerCase().includes(text)
-        )
-      : scoped
-    return filtered.slice(0, 200)
-  }, [state.sessions, workspace, query])
-
   const language = state.settings.language ?? 'zh-CN'
-  const groups = useMemo(() => groupSessions(workspaceSessions, language), [workspaceSessions, language])
 
   const workspaces = useMemo(() => {
     const set = new Set(state.settings.workspaces)
     if (workspace) set.add(workspace)
+    for (const session of state.sessions) if (session.cwd) set.add(session.cwd)
     return Array.from(set)
-  }, [state.settings.workspaces, workspace])
+  }, [state.settings.workspaces, workspace, state.sessions])
+
+  useEffect(() => {
+    if (workspace) setExpandedProjects((current) => current.has(workspace) ? current : new Set([...current, workspace]))
+  }, [workspace])
 
   return (
     <aside className={clsx('sidebar', !state.sidebarOpen && 'collapsed')} aria-hidden={!state.sidebarOpen}>
@@ -230,12 +224,34 @@ export function Sidebar(): ReactNode {
       </div>
 
       <div className="session-list">
-        {groups.length === 0 && (
-          <div className="session-empty">
-            {query ? t("没有匹配的会话。") : t("还没有会话，新建一个开始。")}
-          </div>
-        )}
-        {groups.map((group) => (
+        <div className="project-shortcuts-label">{t('Projects')}</div>
+        {workspaces.map((path) => {
+          const expanded = expandedProjects.has(path) || Boolean(query.trim())
+          const text = query.trim().toLowerCase()
+          const sessions = state.sessions.filter((session) => session.cwd === path &&
+            (!text || `${session.name} ${session.preview} ${session.cwd}`.toLowerCase().includes(text))).slice(0, 200)
+          const groups = groupSessions(sessions, language)
+          return <div className="project-tree" key={path}>
+            <div className="project-tree-head">
+              <button className="project-tree-toggle" aria-expanded={expanded}
+                aria-label={state.settings.language === 'en' ? `${expanded ? 'Collapse' : 'Expand'} sessions for ${baseName(path)}` : `${expanded ? '收起' : '展开'} ${baseName(path)} 的会话`}
+                onClick={() => setExpandedProjects((current) => {
+                  const next = new Set(current)
+                  if (next.has(path)) next.delete(path); else next.add(path)
+                  return next
+                })}>
+                <ChevronRight size={13} className={clsx(expanded && 'open')} />
+              </button>
+              <button className={clsx('project-shortcut', path === workspace && 'active')}
+                aria-current={path === workspace ? 'true' : undefined}
+                title={shortenPath(path, state.boot?.home)}
+                onClick={() => { if (path !== workspace) void actions.openSession(path, null) }}>
+                <FolderOpen size={13} /><span>{baseName(path)}</span>
+              </button>
+            </div>
+            {expanded && <div className="project-tree-sessions">
+            {groups.length === 0 && <div className="session-empty">{query ? t('没有匹配的会话。') : t('还没有会话，新建一个开始。')}</div>}
+            {groups.map((group) => (
           <div className="session-group" key={group.label}>
             <div className="session-group-label">{group.label}</div>
             {group.items.map((session) => {
@@ -326,7 +342,10 @@ export function Sidebar(): ReactNode {
               )
             })}
           </div>
-        ))}
+            ))}
+            </div>}
+          </div>
+        })}
       </div>
 
       <div className="sidebar-footer">

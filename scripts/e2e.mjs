@@ -103,6 +103,10 @@ async function caseMenuScrollAndKeyboard() {
   const { app, page, errors } = await launch(dirs, 'catalog-huge')
 
   await openModelMenu(page)
+  // Moving the pointer away prevents a menu item appearing under it from
+  // changing the highlight while this case exercises keyboard navigation.
+  await page.mouse.move(0, 0)
+  await page.locator('.menu-item.highlight .menu-item-title').filter({ hasText: 'Mock Fast' }).waitFor()
   const scrollable = await page.evaluate(() => {
     const list = document.querySelector('.popover .menu-list')
     return { scroll: list.scrollHeight, client: list.clientHeight }
@@ -158,7 +162,7 @@ async function caseWorkPanel() {
   const dirs = freshDirs('panel')
   writeFileSync(
     join(dirs.userData, 'settings.json'),
-    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root, workPanelTabs: ['changes', 'files', 'terminal', 'artifacts'] })
   )
   const { app, page } = await launch(dirs, 'default', {
     MOCK_TRANSCRIPT: '3',
@@ -166,10 +170,10 @@ async function caseWorkPanel() {
     MOCK_EDIT: '1'
   })
 
-  const closed = await page.locator('.work-panel').count()
+  const closed = !(await page.locator('.work-panel').isVisible())
   await page.keyboard.press('Meta+Shift+E')
   await page.waitForSelector('.work-panel')
-  check('⌘⇧E 打开右侧工作面板', closed === 0)
+  check('⌘⇧E 打开右侧工作面板', closed)
 
   const changes = await page.evaluate(() => ({
     files: document.querySelectorAll('.work-file').length,
@@ -200,13 +204,42 @@ async function caseWorkPanel() {
   await page.locator('.work-tab-button', { hasText: '产物' }).click()
   await page.waitForTimeout(300)
   const artifacts = await page.evaluate(
-    () => document.querySelector('.work-empty')?.textContent ?? ''
+    () => document.querySelector('.work-tab-container:not([hidden]) .work-empty')?.textContent ?? ''
   )
   check('产物 tab 有空状态', artifacts.length > 0, artifacts.slice(0, 30))
 
   await page.keyboard.press('Meta+Shift+E')
   await page.waitForTimeout(400)
-  check('⌘⇧E 再次关闭面板', (await page.locator('.work-panel').count()) === 0)
+  check('⌘⇧E 再次关闭面板', !(await page.locator('.work-panel').isVisible()))
+
+  // resize: drag wider then drag far right to collapse
+  await page.keyboard.press('Meta+Shift+E')
+  await page.waitForFunction(() => Boolean(document.querySelector('.work-panel')), null, {
+    timeout: 5000
+  })
+  await page.waitForTimeout(300)
+  const panelWidth = async () =>
+    page.locator('.work-panel').evaluate((el) => Math.round(el.getBoundingClientRect().width))
+  const dragHandle = async (dx) => {
+    const box = await page.locator('.work-resize').boundingBox()
+    await page.mouse.move(box.x + 5, box.y + 260)
+    await page.mouse.down()
+    await page.mouse.move(box.x + 5 + dx, box.y + 260, { steps: 10 })
+    await page.mouse.up()
+    await page.waitForTimeout(250)
+  }
+  const widthStart = await panelWidth()
+  await dragHandle(-110)
+  const widthWide = await panelWidth()
+  await dragHandle(120)
+  const widthNarrow = await panelWidth()
+  check(
+    '拖拽可以变宽 / 变窄（有最小宽度）',
+    widthWide > widthStart && widthNarrow < widthWide && widthNarrow >= 280,
+    `${widthStart} → ${widthWide} → ${widthNarrow}`
+  )
+  await dragHandle(600)
+  check('拖到最窄再放手会收起面板', !(await page.locator('.work-panel').isVisible()))
   await app.close()
 }
 
@@ -288,7 +321,7 @@ async function caseVirtualization() {
   const dirs = freshDirs('virtual')
   writeFileSync(
     join(dirs.userData, 'settings.json'),
-    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root, turnAggregate: 5 })
   )
   const { app, page } = await launch(dirs, 'default', { MOCK_TRANSCRIPT: '60', MOCK_TOOLS: '0' })
   const state = await page.evaluate(() => ({
@@ -315,7 +348,7 @@ async function caseTurnsFold() {
   const dirs = freshDirs('turns')
   writeFileSync(
     join(dirs.userData, 'settings.json'),
-    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root, turnAggregate: 5 })
   )
   const { app, page, errors } = await launch(dirs, 'default', {
     MOCK_TRANSCRIPT: '8',
@@ -557,7 +590,7 @@ async function caseStreamingGuard() {
   seedSession(dirs.sessions, 'mock-session', 'Mock session')
   writeFileSync(
     join(dirs.userData, 'settings.json'),
-    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+    JSON.stringify({ theme: 'dark', workspaces: [root, dirs.base], lastWorkspace: root })
   )
   const { app, page } = await launch(dirs)
   await page.locator('.composer-input').fill('hello')
@@ -567,11 +600,17 @@ async function caseStreamingGuard() {
     Array.from(document.querySelectorAll('.chip')).map((chip) => chip.disabled)
   )
   check('流式输出中模型 / 强度不可切换', disabled.every(Boolean), JSON.stringify(disabled))
+  await page.locator('.project-shortcut').filter({ hasText: 'streaming' }).click()
+  check('运行中的任务不会被项目切换中断', await page.locator('.workspace-name').innerText() === 'pi-desktop')
+  check('运行中切换项目有提示', await page.getByText('任务正在运行', { exact: true }).count() > 0)
   await page.waitForTimeout(2500)
   const after = await page.evaluate(() =>
     Array.from(document.querySelectorAll('.chip')).map((chip) => chip.disabled)
   )
   check('输出结束后恢复可切换', after.every((value) => value === false), JSON.stringify(after))
+  await page.locator('.project-shortcut').filter({ hasText: 'streaming' }).click()
+  await page.waitForFunction(() => document.querySelector('.workspace-name')?.textContent === 'streaming')
+  check('任务完成后可以切换项目', true)
   await app.close()
 }
 
@@ -646,9 +685,15 @@ async function caseSidebarAffordance() {
   seedSession(dirs.sessions, 'mock-session', 'Mock session')
   writeFileSync(
     join(dirs.userData, 'settings.json'),
-    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+    JSON.stringify({ theme: 'dark', workspaces: [root, dirs.base], lastWorkspace: root })
   )
   const { app, page } = await launch(dirs)
+  check('侧栏直接显示最近项目', (await page.locator('.project-shortcut').count()) === 2)
+  await page.locator('.project-shortcut').filter({ hasText: 'sidebar' }).click()
+  await page.waitForTimeout(500)
+  check('点击项目切换工作区', (await page.locator('.workspace-name').innerText()) === 'sidebar')
+  await page.locator('.project-shortcut').filter({ hasText: 'pi-desktop' }).click()
+  await page.waitForTimeout(500)
   const opacity = await page.evaluate(() => {
     const button = document.querySelector('.session-menu-button')
     return button ? getComputedStyle(button).opacity : 'missing'
@@ -718,6 +763,7 @@ async function caseLanguage() {
   await page.keyboard.press('Meta+,')
   await page.getByRole('button', { name: 'Interface language', exact: true }).click()
   await page.getByRole('menuitemradio', { name: '简体中文' }).click()
+  await page.getByRole('heading', { name: '设置', exact: true }).waitFor()
   check('可切换回中文', await page.getByRole('heading', { name: '设置', exact: true }).count() === 1)
   await page.getByRole('button', { name: 'Steering 模式', exact: true }).click()
   await page.keyboard.press('Escape')
@@ -730,14 +776,19 @@ async function caseLanguage() {
   await app.close()
 }
 
+const only = (process.env.E2E_ONLY ?? '').trim()
+const should = (name) => !only || only.includes(name)
+
 try {
   rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   console.log('\nmenu / keyboard')
   await caseLanguage()
   await caseComposerSafety()
   await caseMenuScrollAndKeyboard()
-  console.log('\nwork panel')
-  await caseWorkPanel()
+  if (should('panel')) {
+    console.log('\nwork panel')
+    await caseWorkPanel()
+  }
   console.log('\npolish: files / export / lightbox')
   await casePolish()
   console.log('\nvirtualization')

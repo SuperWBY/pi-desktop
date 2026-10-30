@@ -2,6 +2,7 @@ import { useTranslation } from '../i18n'
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -27,6 +28,25 @@ import type { ModelInfo, ThinkingLevel } from '@shared/types'
 import { useApp, type Attachment } from '../store'
 import { formatCost, formatTokens, truncate } from '../lib/format'
 import { Popover, Spinner } from './ui'
+
+type Draft = { text: string; attachments: Attachment[] }
+const drafts = new Map<string, Draft>()
+const draftStorageKey = (key: string): string => `pi.composer.draft.${key}`
+
+function readDraft(key: string): Draft {
+  const cached = drafts.get(key)
+  if (cached) return cached
+  try { return { text: localStorage.getItem(draftStorageKey(key)) ?? '', attachments: [] } }
+  catch { return { text: '', attachments: [] } }
+}
+
+function saveDraft(key: string, draft: Draft): void {
+  drafts.set(key, draft)
+  try {
+    if (draft.text) localStorage.setItem(draftStorageKey(key), draft.text)
+    else localStorage.removeItem(draftStorageKey(key))
+  } catch { /* The in-memory draft still works when storage is unavailable. */ }
+}
 
 const THINKING_LABELS: Record<ThinkingLevel, string> = {
   off: 'Off',
@@ -212,8 +232,12 @@ function ThinkingMenu({ close }: { close: () => void }): ReactNode {
 export function Composer(): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
-  const [text, setText] = useState('')
-  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const key = state.sessionPath ? `session:${state.sessionPath}` : `project:${state.workspace ?? ''}`
+  const [initialDraft] = useState(() => readDraft(key))
+  const [text, setText] = useState(initialDraft.text)
+  const [attachments, setAttachments] = useState<Attachment[]>(initialDraft.attachments)
+  const draftRef = useRef({ key, workspace: state.workspace, sessionPath: state.sessionPath, draft: initialDraft })
+  const skipDraftWrite = useRef(false)
   const [sending, setSending] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [dragging, setDragging] = useState(false)
@@ -225,6 +249,47 @@ export function Composer(): ReactNode {
   const context = state.stats?.contextUsage
   const percent = typeof context?.percent === 'number' ? context.percent : 0
   const model = state.piState?.model
+
+  useLayoutEffect(() => {
+    const previous = draftRef.current
+    if (previous.key === key) return
+    saveDraft(previous.key, previous.draft)
+    // A new session obtains its path lazily after the first prompt. Preserve
+    // the same draft owner when that happens without a session switch.
+    const promoted = previous.sessionPath === null && state.sessionPath !== null &&
+      previous.workspace === state.workspace && state.status === 'ready'
+    const next = promoted ? previous.draft : readDraft(key)
+    if (promoted) {
+      saveDraft(previous.key, { text: '', attachments: [] })
+      previous.key = key
+      previous.sessionPath = state.sessionPath
+      previous.draft = next
+    } else {
+      draftRef.current = { key, workspace: state.workspace, sessionPath: state.sessionPath, draft: next }
+    }
+    skipDraftWrite.current = true
+    setText(next.text)
+    setAttachments(next.attachments)
+  }, [key, state.workspace, state.sessionPath, state.status])
+
+  useEffect(() => {
+    if (skipDraftWrite.current) { skipDraftWrite.current = false; return }
+    const owner = draftRef.current
+    if (owner.key !== key) return
+    owner.draft = { text, attachments }
+    saveDraft(key, owner.draft)
+  }, [key, text, attachments])
+
+  useEffect(() => {
+    const onNewSession = (event: Event): void => {
+      if (state.sessionPath || (!text.trim() && attachments.length === 0)) return
+      event.preventDefault()
+      actions.notify('warning', state.settings.language === 'en' ? 'Unsent draft' : '当前有未发送的草稿',
+        state.settings.language === 'en' ? 'Send or clear this draft before starting another new session.' : '请先发送或清空草稿，再新建会话。')
+    }
+    window.addEventListener('pi:before-new-session', onNewSession)
+    return () => window.removeEventListener('pi:before-new-session', onNewSession)
+  }, [actions, attachments.length, state.sessionPath, state.settings.language, text])
 
   useEffect(() => {
     const node = textareaRef.current
@@ -261,6 +326,7 @@ export function Composer(): ReactNode {
 
   const addFiles = useCallback(
     async (files: FileList | File[]) => {
+      const owner = draftRef.current
       const images = Array.from(files).filter((file) => file.type.startsWith('image/'))
       if (!images.length) {
         if (files.length) {
@@ -284,7 +350,12 @@ export function Composer(): ReactNode {
           actions.notify('error', t('无法读取图片'), file.name)
         }
       }
-      setAttachments((current) => [...current, ...next].slice(0, 6))
+      if (draftRef.current.key === owner.key) {
+        setAttachments((current) => [...current, ...next].slice(0, 6))
+      } else {
+        const saved = readDraft(owner.key)
+        saveDraft(owner.key, { ...saved, attachments: [...saved.attachments, ...next].slice(0, 6) })
+      }
     },
     [actions, attachments.length, state.settings.language, t]
   )
@@ -302,10 +373,11 @@ export function Composer(): ReactNode {
       return { type: 'image' as const, data: base64, mimeType: attachment.mimeType }
     })
 
+    const owner = draftRef.current
     setSending(true)
     const ok = await actions.sendMessage(value, images)
     setSending(false)
-    if (ok) {
+    if (ok && draftRef.current === owner) {
       setText((current) => (current === text ? '' : current))
       const sentIds = new Set(attachments.map((attachment) => attachment.id))
       setAttachments((current) => current.filter((attachment) => !sentIds.has(attachment.id)))

@@ -71,6 +71,7 @@ const pairs: Array<[string, string]> = [
   ['总是展开', 'Always expanded'],
   ['完全隐藏', 'Hidden'],
   ['变更', 'Changes'],
+  ['执行中', 'Running'], ['过程有错误', 'Errors in process'], ['已完成', 'Completed'],
   ['文件', 'Files'],
   ['终端', 'Terminal'],
   ['产物', 'Artifacts'],

@@ -209,6 +209,7 @@ export interface Settings {
   workPanelOpen?: boolean
   workPanelWidth?: number
   workPanelTab?: 'changes' | 'files' | 'terminal' | 'artifacts'
+  workPanelTabs?: ('changes' | 'files' | 'terminal' | 'artifacts')[]
   toolCardsExpanded?: boolean
   followStream?: boolean
   windowBounds?: { x?: number; y?: number; width: number; height: number }

@@ -312,26 +312,35 @@ function areMessagePropsEqual(prev: AssistantProps, next: AssistantProps): boole
   return true
 }
 
-/** The final answer of a folded turn: text only, with a copy button. */
+/** The visible answer of a folded turn, including images and failures. */
 export const AnswerOnly = memo(function AnswerOnly({
   text,
-  model
+  model,
+  message
 }: {
   text: string
   model?: string
+  message?: AssistantMessage
 }): ReactNode {
-  if (!text.trim()) return null
+  const images = (message?.content ?? []).filter(
+    (block): block is Extract<ContentBlock, { type: 'image' }> => block.type === 'image'
+  )
+  if (!text.trim() && !images.length && !message?.errorMessage) return null
   return (
     <div className="message assistant-message folded-answer">
       <div className="message-label">
         <span className="assistant-mark">π</span>
         <span>{model ? model.split('/').pop() : 'pi'}</span>
-        <span className="message-actions">
-          <CopyButton text={text} />
-        </span>
+        {text && <span className="message-actions"><CopyButton text={text} /></span>}
       </div>
       <div className="assistant-body">
-        <TextBlockView text={text} streaming={false} />
+        {text && <TextBlockView text={text} streaming={false} />}
+        {images.map((image, index) => (
+          <img key={index} className="md-image" src={`data:${image.mimeType};base64,${image.data}`} alt="" />
+        ))}
+        {message?.errorMessage && (
+          <div className="message-error"><AlertTriangle size={14} /><span>{message.errorMessage}</span></div>
+        )}
       </div>
     </div>
   )

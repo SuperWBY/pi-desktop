@@ -1,71 +1,15 @@
 import { useTranslation } from '../../i18n'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, ExternalLink, FolderSearch, RefreshCw } from 'lucide-react'
 import clsx from 'clsx'
-import type { AssistantMessage, GitStatus, ToolCallBlock } from '@shared/types'
+import type { GitStatus } from '@shared/types'
 import { useApp } from '../../store'
-import { buildTurns, type Turn } from '../../lib/turns'
-import { editPairs } from '../../lib/tools'
+import { buildTurns } from '../../lib/turns'
+import { collectSessionChanges, type FileChange } from '../../lib/session-changes'
+import { latestReview } from '../../lib/review-focus'
 import { DiffView } from '../Diff'
 import { baseName, shortenPath } from '../../lib/format'
 
-interface FileChange {
-  path: string
-  relative: string
-  additions: number
-  deletions: number
-  turnKeys: string[]
-  calls: {
-    id: string
-    name: string
-    oldText: string
-    newText: string
-  }[]
-}
-
-function countLines(text: string): number {
-  return text ? text.replace(/\n$/, '').split('\n').length : 0
-}
-
-function collectSessionChanges(turns: Turn[]): FileChange[] {
-  const files = new Map<string, FileChange>()
-  for (const turn of turns) {
-    for (const item of turn.items) {
-      if (item.role !== 'assistant') continue
-      for (const block of (item as AssistantMessage).content ?? []) {
-        if (block.type !== 'toolCall') continue
-        const call = block as ToolCallBlock
-        if (call.name !== 'edit' && call.name !== 'write') continue
-        const path = String((call.arguments as { path?: unknown })?.path ?? '')
-        if (!path) continue
-        const entry =
-          files.get(path) ??
-          ({
-            path,
-            relative: path,
-            additions: 0,
-            deletions: 0,
-            turnKeys: [],
-            calls: []
-          } satisfies FileChange)
-        if (!entry.turnKeys.includes(turn.key)) entry.turnKeys.push(turn.key)
-        if (call.name === 'edit') {
-          for (const pair of editPairs(call.arguments)) {
-            entry.additions += countLines(pair.newText)
-            entry.deletions += countLines(pair.oldText)
-            entry.calls.push({ id: call.id, name: 'edit', oldText: pair.oldText, newText: pair.newText })
-          }
-        } else {
-          const content = String((call.arguments as { content?: unknown })?.content ?? '')
-          entry.additions += countLines(content)
-          entry.calls.push({ id: call.id, name: 'write', oldText: '', newText: content })
-        }
-        files.set(path, entry)
-      }
-    }
-  }
-  return [...files.values()].sort((a, b) => b.additions + b.deletions - (a.additions + a.deletions))
-}
 
 export function ChangesTab(): ReactNode {
   const t = useTranslation()
@@ -82,7 +26,25 @@ export function ChangesTab(): ReactNode {
     () => buildTurns(state.messages, state.toolRuns, {}, -1),
     [state.messages, state.toolRuns]
   )
-  const sessionFiles = useMemo(() => collectSessionChanges(turns), [turns])
+  const sessionFiles = useMemo(() => collectSessionChanges(turns, state.toolRuns, state.workspace ?? ''), [turns, state.toolRuns, state.workspace])
+  const handledReview = useRef(0)
+
+  useEffect(() => {
+    const apply = (): void => {
+      const request = latestReview()
+      if (!request || request.sequence === handledReview.current || request.session !== state.sessionPath || request.workspace !== state.workspace) return
+      if (!sessionFiles.some((file) => file.path === request.path)) return
+      handledReview.current = request.sequence
+      setMode('session')
+      setOpenFile(request.path)
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>(`[data-work-file="${CSS.escape(request.path)}"]`)?.scrollIntoView({ block: 'nearest' })
+      })
+    }
+    window.addEventListener('pi:review-request', apply)
+    apply()
+    return () => window.removeEventListener('pi:review-request', apply)
+  }, [sessionFiles, state.sessionPath, state.workspace])
 
   const loadGit = async (): Promise<void> => {
     if (!state.workspace) return
@@ -107,6 +69,7 @@ export function ChangesTab(): ReactNode {
           relative: file.relative,
           additions: file.additions,
           deletions: file.deletions,
+          unmeasuredWrite: false,
           turnKeys: [],
           calls: []
         }))
@@ -172,6 +135,7 @@ export function ChangesTab(): ReactNode {
         <span className="work-dim">
           {t('{count} 个文件').replace('{count}', String(visible.length))}
           {mode === 'workspace' && git?.branch ? ` · ${git.branch}` : ''}
+          {mode === 'session' && visible.some((file) => file.unmeasuredWrite) ? ` · ${state.settings.language === 'en' ? 'some counts unknown' : '部分行数未知'}` : ''}
         </span>
       </div>
 
@@ -189,7 +153,7 @@ export function ChangesTab(): ReactNode {
         {visible.map((file) => {
           const expanded = openFile === file.path
           return (
-            <div className="work-file" key={file.path}>
+            <div className="work-file" key={file.path} data-work-file={file.path}>
               <button className="work-file-head" onClick={() => void openPatch(file)}>
                 {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 <span className="work-file-name" title={file.relative}>
@@ -197,8 +161,7 @@ export function ChangesTab(): ReactNode {
                 </span>
                 <span className="work-file-dir">{shortenPath(file.relative.replace(/\/[^/]+$/, ''))}</span>
                 <span className="work-diff-stat small">
-                  <span className="plus">+{file.additions}</span>
-                  <span className="minus">−{file.deletions}</span>
+                  {file.unmeasuredWrite ? <span>{state.settings.language === 'en' ? 'Counts unknown' : '行数未知'}</span> : <><span className="plus">+{file.additions}</span><span className="minus">−{file.deletions}</span></>}
                 </span>
               </button>
               {expanded && (
@@ -234,11 +197,12 @@ export function ChangesTab(): ReactNode {
                         />
                       ) : (
                         <pre className="git-patch" key={index}>
+                          <div>{state.settings.language === 'en' ? 'Written content; previous content unavailable' : '写入内容；原文件内容不可用'}</div>
                           {call.newText
                             .split('\n')
                             .slice(0, 80)
                             .map((line, lineIndex) => (
-                              <div className="git-patch-line added" key={lineIndex}>
+                              <div className="git-patch-line" key={lineIndex}>
                                 {line || ' '}
                               </div>
                             ))}

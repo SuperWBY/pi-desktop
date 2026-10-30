@@ -753,6 +753,7 @@ interface AppActions {
   openSettings: (open: boolean) => void
   openDiagnostics: (open: boolean) => void
   toggleWorkPanel: () => void
+  setWorkPanelOpen: (open: boolean) => void
   undoDelete: () => Promise<void>
   updateSettings: (patch: Partial<Settings>) => Promise<void>
   updatePiSettings: (patch: PiSettings) => Promise<void>
@@ -801,6 +802,11 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   stateRef.current = state
   const messageCache = useRef(new Map<string, AgentMessage[]>())
 
+  // Panel open state is optimistic: a pending intent wins over any settings
+  // response that was already in flight when the user toggled it.
+  const workPanelVersion = useRef(0)
+  const workPanelIntent = useRef<boolean | null>(null)
+
   const notify = useCallback(
     (level: NoticeLevel, title: string, detail?: string, action?: { label: string; run: () => void }) => {
       const language = stateRef.current.settings.language ?? 'zh-CN'
@@ -833,6 +839,13 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
 
   const openSession = useCallback(
     async (cwd: string, sessionPath?: string | null): Promise<boolean> => {
+      if (stateRef.current.streaming) {
+        const english = stateRef.current.settings.language === 'en'
+        notify('warning', english ? 'A task is running' : '任务正在运行', english
+          ? 'Wait for the task to finish or stop it before switching sessions or projects.'
+          : '请等待任务完成或先停止，再切换会话或项目。')
+        return false
+      }
       dispatch({
         type: 'SESSION_START',
         workspace: cwd,
@@ -861,6 +874,11 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
 
       const piState = stateResponse?.data ?? null
       const readyPath = result.sessionPath ?? piState?.sessionFile ?? sessionPath ?? null
+      if (!readyPath) {
+        // Do not reopen the previous conversation on restart when the user
+        // has moved to an as-yet unsaved new session.
+        await window.pi.updateSettings({ lastSessionPath: undefined }).catch(() => undefined)
+      }
       const messages = messagesResponse?.data?.messages ?? []
       if (readyPath) messageCache.current.set(readyPath, messages)
       dispatch({
@@ -968,6 +986,9 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   }, [openSession])
 
   const newSession = useCallback(async (): Promise<boolean> => {
+    const draftCheck = new Event('pi:before-new-session', { cancelable: true })
+    window.dispatchEvent(draftCheck)
+    if (draftCheck.defaultPrevented) return false
     const workspace = stateRef.current.workspace ?? stateRef.current.settings.lastWorkspace
     if (!workspace) {
       const folder = await window.pi.pickFolder()
@@ -1133,21 +1154,52 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     dispatch({ type: 'SET_SETTINGS_OPEN', open })
   }, [])
 
-  const toggleWorkPanel = useCallback(() => {
-    const current = stateRef.current.settings.workPanelOpen === true
-    void window.pi.updateSettings({ workPanelOpen: !current }).then((settings) =>
-      dispatch({ type: 'SET_SETTINGS', settings })
-    )
+  const setWorkPanelOpen = useCallback((open: boolean) => {
+    const version = ++workPanelVersion.current
+    workPanelIntent.current = open
+    dispatch({
+      type: 'SET_SETTINGS',
+      settings: { ...stateRef.current.settings, workPanelOpen: open }
+    })
+    void window.pi
+      .updateSettings({ workPanelOpen: open })
+      .then((settings) => {
+        if (workPanelVersion.current !== version) return
+        workPanelIntent.current = null
+        dispatch({ type: 'SET_SETTINGS', settings })
+      })
+      .catch(() => {
+        if (workPanelVersion.current === version) workPanelIntent.current = null
+      })
   }, [])
+
+  const toggleWorkPanel = useCallback(() => {
+    const current =
+      workPanelIntent.current ?? (stateRef.current.settings.workPanelOpen === true)
+    setWorkPanelOpen(!current)
+  }, [setWorkPanelOpen])
 
   const openDiagnostics = useCallback((open: boolean) => {
     dispatch({ type: 'SET_DIAGNOSTICS_OPEN', open })
   }, [])
 
-  const updateSettings = useCallback(async (patch: Partial<Settings>) => {
-    const settings = await window.pi.updateSettings(patch)
-    dispatch({ type: 'SET_SETTINGS', settings })
+  const applySettings = useCallback((settings: Settings) => {
+    const intent = workPanelIntent.current
+    dispatch({
+      type: 'SET_SETTINGS',
+      settings: intent === null ? settings : { ...settings, workPanelOpen: intent }
+    })
   }, [])
+
+  const updateSettings = useCallback(
+    async (patch: Partial<Settings>) => {
+      const settings = await window.pi.updateSettings(patch)
+      // A response carrying the panel state from before a toggle must not
+      // resurrect the old value (tab/width writes raced with ⌘⇧E).
+      applySettings({ ...settings, ...patch })
+    },
+    [applySettings]
+  )
 
   const updatePiSettings = useCallback(async (patch: PiSettings) => {
     const piSettings = await window.pi.updatePiSettings(patch)
@@ -1346,7 +1398,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   useEffect(() => {
     const offStatus = window.pi.onStatus((status) => dispatch({ type: 'STATUS', status }))
     const offStderr = window.pi.onStderr((text) => dispatch({ type: 'STDERR', text }))
-    const offSettings = window.pi.onSettings((settings) => dispatch({ type: 'SET_SETTINGS', settings }))
+    const offSettings = window.pi.onSettings((settings) => applySettings(settings))
     const offApp = window.pi.onAppEvent((event) => {
       switch (event.name) {
         case 'new-session':
@@ -1375,7 +1427,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       offSettings()
       offApp()
     }
-  }, [newSession, pickFolder, setTheme])
+  }, [newSession, pickFolder, setTheme, applySettings])
 
   useEffect(() => {
     const theme = state.settings.theme
@@ -1425,6 +1477,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       openSettings,
       openDiagnostics,
       toggleWorkPanel,
+      setWorkPanelOpen,
       undoDelete,
       updateSettings,
       updatePiSettings,
@@ -1464,6 +1517,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       openSettings,
       openDiagnostics,
       toggleWorkPanel,
+      setWorkPanelOpen,
       undoDelete,
       updateSettings,
       updatePiSettings,

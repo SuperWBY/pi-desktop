@@ -294,6 +294,8 @@ export interface Bootstrap {
   piVersion: string | null
   home: string
   sessionsRoot: string
+  /** Dedicated cwd for conversations without a project. */
+  scratchPath: string
   settings: Settings
   piSettings: PiSettings
   piSettingsFile: string

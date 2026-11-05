@@ -301,6 +301,7 @@ function registerIpc(): void {
       piVersion: piVersion(piPath),
       home: homedir(),
       sessionsRoot: sessionsRoot(),
+      scratchPath: scratchWorkspace(),
       settings,
       piSettings: loadPiSettings(),
       piSettingsFile: piSettingsFile(),

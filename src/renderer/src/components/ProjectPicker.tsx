@@ -17,12 +17,18 @@ export function ProjectPicker(): ReactNode {
   const [query, setQuery] = useState('')
 
   const projects = useMemo(() => {
-    const list = [...state.settings.workspaces]
-    if (state.workspace && !state.scratchWorkspace && !list.includes(state.workspace)) {
+    const scratchPath = state.boot?.scratchPath
+    const list = state.settings.workspaces.filter((path) => path !== scratchPath)
+    if (
+      state.workspace &&
+      !state.scratchWorkspace &&
+      state.workspace !== scratchPath &&
+      !list.includes(state.workspace)
+    ) {
       list.unshift(state.workspace)
     }
     return Array.from(new Set(list))
-  }, [state.scratchWorkspace, state.settings.workspaces, state.workspace])
+  }, [state.boot?.scratchPath, state.scratchWorkspace, state.settings.workspaces, state.workspace])
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()

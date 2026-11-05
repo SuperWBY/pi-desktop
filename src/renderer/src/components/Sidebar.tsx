@@ -163,6 +163,9 @@ export function Sidebar(): ReactNode {
   }, [])
 
   const workspace = state.workspace ?? (state.scratchWorkspace ? null : state.settings.lastWorkspace ?? null)
+  const scratchPath = state.boot?.scratchPath ?? null
+  const isScratchWorkspace =
+    state.scratchWorkspace || Boolean(workspace && scratchPath && workspace === scratchPath)
 
   const language = state.settings.language ?? 'zh-CN'
   const queryText = query.trim().toLowerCase()
@@ -171,11 +174,13 @@ export function Sidebar(): ReactNode {
   // a project falls through to "Recent conversations".
   const workspaces = useMemo(() => {
     const set = new Set(state.settings.workspaces)
-    if (workspace && !state.scratchWorkspace) set.add(workspace)
-    // Never delete a persisted project because the active chat is unbound.
-    // Doing so made a project vanish and pushed its sessions into Recent.
+    // A scratch path may have been persisted by an older build; never render it
+    // as a project, and never remove a real project just because a scratch chat
+    // is active.
+    if (scratchPath) set.delete(scratchPath)
+    if (workspace && !isScratchWorkspace) set.add(workspace)
     return Array.from(set)
-  }, [state.scratchWorkspace, state.settings.workspaces, workspace])
+  }, [isScratchWorkspace, scratchPath, state.settings.workspaces, workspace])
 
   const matching = useMemo(
     () =>
@@ -242,6 +247,11 @@ export function Sidebar(): ReactNode {
         <button
           className="session-main"
           onClick={() => void actions.openSession(session.cwd, session.path)}
+          onDoubleClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            setPendingRename({ path: session.path, name: session.name })
+          }}
           title={session.name}
         >
           {running && (

@@ -938,6 +938,10 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       options: { scratch?: boolean } = {}
     ): Promise<boolean> => {
       const current = stateRef.current
+      const isScratchCwd = Boolean(
+        cwd && stateRef.current.boot?.scratchPath && cwd === stateRef.current.boot.scratchPath
+      )
+      const scratch = options.scratch === true || isScratchCwd
       // Clicking the conversation that is already open (including the two
       // clicks of a double-click) must not restart pi or flash a loader.
       if (
@@ -951,7 +955,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       dispatch({
         type: 'SESSION_START',
         workspace: cwd,
-        scratch: options.scratch === true,
+        scratch,
         sessionPath: sessionPath ?? null,
         keepMessages: Boolean(sessionPath)
       })
@@ -960,7 +964,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       const result = await window.pi.openSession({
         cwd,
         sessionPath: sessionPath ?? null,
-        scratch: options.scratch === true
+        scratch
       })
       if (!result.ok) {
         const message = result.error ?? 'Could not open the session.'
@@ -1358,9 +1362,10 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   useEffect(() => {
     const workspace = state.workspace
     if (!workspace || state.scratchWorkspace || state.status !== 'ready') return
+    if (workspace === state.boot?.scratchPath) return
     if (state.settings.workspaces.includes(workspace)) return
     void updateSettings({ workspaces: [...state.settings.workspaces, workspace] })
-  }, [state.scratchWorkspace, state.settings.workspaces, state.status, state.workspace, updateSettings])
+  }, [state.boot?.scratchPath, state.scratchWorkspace, state.settings.workspaces, state.status, state.workspace, updateSettings])
 
   const updatePiSettings = useCallback(async (patch: PiSettings) => {
     const piSettings = await window.pi.updatePiSettings(patch)

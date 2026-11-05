@@ -18,7 +18,8 @@ import { baseName } from '../lib/format'
 import { PiLogo } from './PiLogo'
 import { TurnView, OlderTurnsRow } from './TurnView'
 import { TranscriptView } from './TranscriptView'
-import { buildTurns } from '../lib/turns'
+import { TurnPreview } from './TurnPreview'
+import { buildTurns, type Turn } from '../lib/turns'
 import { useTurnFolds, type FoldLevel } from '../lib/turn-fold'
 
 const SUGGESTIONS = [
@@ -48,10 +49,22 @@ export function ChatView(): ReactNode {
   const programmatic = useRef(false)
   const readingPositions = useRef(new Map<string, { top: number; following: boolean }>())
   const [showJump, setShowJump] = useState(false)
+  const [showStarting, setShowStarting] = useState(false)
   const followRef = useRef(state.settings.followStream !== false)
   followRef.current = state.settings.followStream !== false
   const streamingRef = useRef(state.streaming)
   streamingRef.current = state.streaming
+
+  // Quick session switches should not flash a loading state. Only show it
+  // once a switch has actually been slow enough to notice.
+  useEffect(() => {
+    if (state.status !== 'starting') {
+      setShowStarting(false)
+      return
+    }
+    const timer = window.setTimeout(() => setShowStarting(true), 180)
+    return () => window.clearTimeout(timer)
+  }, [state.status])
 
   const results = useMemo(() => {
     const map: Record<string, ToolResultMessage> = {}
@@ -133,13 +146,23 @@ export function ChatView(): ReactNode {
     })
     observer.observe(inner)
     return () => observer.disconnect()
-  }, [])
+  }, [state.messages.length > 0, state.status])
 
   const onWheel = (event: ReactWheelEvent<HTMLDivElement>): void => {
-    if (event.deltaY < 0 && state.messages.length > 0) {
-      stickRef.current = false
-      setShowJump(true)
+    const node = scrollerRef.current
+    if (!node || event.deltaY >= 0 || node.scrollTop <= 0) return
+    // A nested code block or tool result may consume the wheel itself.
+    let target = event.target as HTMLElement | null
+    while (target && target !== node) {
+      const overflow = getComputedStyle(target).overflowY
+      if ((overflow === 'auto' || overflow === 'scroll') && target.scrollTop > 0) return
+      target = target.parentElement
     }
+    if (programmatic.current) {
+      node.scrollTo({ top: node.scrollTop, behavior: 'instant' })
+      programmatic.current = false
+    }
+    stickRef.current = false
   }
 
   const onScroll = (): void => {
@@ -149,6 +172,7 @@ export function ChatView(): ReactNode {
     const distance = node.scrollHeight - node.scrollTop - node.clientHeight
     stickRef.current = distance < 80
     setShowJump(distance >= 80 && state.messages.length > 0)
+    setRailPreview(null)
   }
 
   const streamingIndex = state.streaming ? lastAssistantIndex : -1
@@ -159,14 +183,141 @@ export function ChatView(): ReactNode {
   )
 
   const folds = useTurnFolds(state.sessionPath, turns, {
-    autoFold: state.settings.turnAutoFold !== false,
+    autoFold: state.settings.turnAutoFold === true,
     aggregateAfter: state.settings.turnAggregate ?? 0,
-    defaultLevel: 1
+    defaultLevel: state.settings.turnAutoFold === true ? 1 : 0
   })
 
   const [transcriptOpen, setTranscriptOpen] = useState(false)
   const [olderOpen, setOlderOpen] = useState(false)
   const [activeTurn, setActiveTurn] = useState<string | null>(null)
+  const [railPreview, setRailPreview] = useState<{
+    turn: Turn
+    index: number
+    left: number
+    top: number
+  } | null>(null)
+  const tickRefs = useRef<HTMLButtonElement[]>([])
+  const railFrame = useRef<number | null>(null)
+  const railClose = useRef<number | null>(null)
+  const railHoverIndex = useRef(-1)
+  const railInside = useRef(false)
+
+  const cancelRailClose = useCallback(() => {
+    if (railClose.current) {
+      window.clearTimeout(railClose.current)
+      railClose.current = null
+    }
+  }, [])
+
+  const scheduleRailClose = useCallback(() => {
+    cancelRailClose()
+    railClose.current = window.setTimeout(() => setRailPreview(null), 180)
+  }, [cancelRailClose])
+
+  const jumpToTurn = useCallback((key: string) => {
+    const node = scrollerRef.current?.querySelector<HTMLElement>(`[data-turn-key="${key}"]`)
+    node?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    setActiveTurn(key)
+    setRailPreview(null)
+  }, [])
+
+  /** The rail's "slope": ticks grow by proximity to the pointer. Returns the nearest index. */
+  const applyRailSlope = useCallback((clientY: number): number => {
+    const ticks = tickRefs.current
+    if (!ticks.length) return -1
+    // Read geometry first, then write styles: a write between reads would force
+    // a layout for every tick.
+    const centers = ticks.map((tick) => {
+      if (!tick) return Number.NaN
+      const rect = tick.getBoundingClientRect()
+      return rect.top + rect.height / 2
+    })
+    let nearest = -1
+    let nearestDistance = Number.POSITIVE_INFINITY
+    for (let index = 0; index < ticks.length; index += 1) {
+      const center = centers[index]
+      if (!Number.isFinite(center)) continue
+      const distance = Math.abs(clientY - center)
+      if (distance < nearestDistance) {
+        nearestDistance = distance
+        nearest = index
+      }
+    }
+    const hoverRadius = 26
+    for (let index = 0; index < ticks.length; index += 1) {
+      const tick = ticks[index]
+      const center = centers[index]
+      if (!tick || !Number.isFinite(center)) continue
+      const raw = Math.max(0, 1 - Math.abs(clientY - center) / hoverRadius)
+      const falloff = raw * raw * (3 - 2 * raw)
+      tick.style.setProperty('--tick-hover', falloff.toFixed(3))
+    }
+    return nearest
+  }, [])
+
+  const onRailMove = (event: React.PointerEvent<HTMLElement>): void => {
+    const y = event.clientY
+    if (railFrame.current) return
+    railFrame.current = window.requestAnimationFrame(() => {
+      railFrame.current = null
+      if (!railInside.current) return
+      const nearest = applyRailSlope(y)
+      if (nearest >= 0 && nearest !== railHoverIndex.current) {
+        railHoverIndex.current = nearest
+        const turn = visibleTurns[nearest]
+        const tick = tickRefs.current[nearest]
+        if (turn && tick) openRailPreview(turn, turn.index + 1, tick)
+      }
+    })
+  }
+
+  const openRailPreview = useCallback(
+    (turn: Turn, index: number, element: HTMLElement) => {
+      cancelRailClose()
+      const rect = element.getBoundingClientRect()
+      const width = 380
+      const half = Math.min(260, window.innerHeight / 2 - 12)
+      const left = Math.min(rect.right + 10, window.innerWidth - width - 12)
+      const top = Math.min(
+        Math.max(rect.top + rect.height / 2, half + 12),
+        window.innerHeight - half - 12
+      )
+      setRailPreview({ turn, index, left, top })
+    },
+    [cancelRailClose]
+  )
+
+  const onRailEnter = useCallback(
+    (event: React.PointerEvent<HTMLElement>) => {
+      railInside.current = true
+      onRailMove(event)
+    },
+    [onRailMove]
+  )
+
+  const onRailLeave = useCallback(() => {
+    railInside.current = false
+    railHoverIndex.current = -1
+    if (railFrame.current) {
+      window.cancelAnimationFrame(railFrame.current)
+      railFrame.current = null
+    }
+    for (const tick of tickRefs.current) tick?.style.setProperty('--tick-hover', '0')
+    scheduleRailClose()
+  }, [scheduleRailClose])
+
+  useEffect(() => {
+    if (!railPreview) return
+    const onEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setRailPreview(null)
+        event.stopPropagation()
+      }
+    }
+    document.addEventListener('keydown', onEscape, true)
+    return () => document.removeEventListener('keydown', onEscape, true)
+  }, [railPreview])
 
   useEffect(() => {
     setOlderOpen(false)
@@ -270,6 +421,13 @@ export function ChatView(): ReactNode {
         : t('运行中…')
 
   if (state.status === 'starting' && state.messages.length === 0) {
+    if (!showStarting) {
+      return (
+        <div className="chat-scroll" ref={scrollerRef} aria-live="polite" aria-relevant="additions text">
+          <div className="chat-inner" />
+        </div>
+      )
+    }
     return (
       <div className="chat-scroll" ref={scrollerRef} aria-live="polite" aria-relevant="additions text">
         <div className="chat-inner">
@@ -289,7 +447,11 @@ export function ChatView(): ReactNode {
           <div className="empty-mark">
             <PiLogo size={32} />
           </div>
-          <h1>{state.settings.language === 'en' ? `What would you like to do in ${baseName(state.workspace)}?` : `在 ${baseName(state.workspace)} 里做点什么？`}</h1>
+          <h1 className="empty-title">
+            {state.settings.language === 'en'
+              ? `What would you like to do in ${state.scratchWorkspace ? t('临时对话') : baseName(state.workspace)}?`
+              : `在 ${state.scratchWorkspace ? t('临时对话') : baseName(state.workspace)} 里做点什么？`}
+          </h1>
           <p>{t("pi 能读写文件、跑命令、搜网页。发出第一条消息后，这个会话就会被保存下来。")}</p>
           <div className="suggestions">
             {SUGGESTIONS.map((suggestion) => {
@@ -312,8 +474,8 @@ export function ChatView(): ReactNode {
   }
 
   return (
-    <div className={clsx('chat-wrap', state.status === 'starting' && 'is-switching')}>
-      {state.status === 'starting' && <div className="top-progress" />}
+    <div className="chat-wrap">
+      {showStarting && <div className="top-progress" />}
       <div
         className="chat-scroll"
         aria-live="polite"
@@ -370,26 +532,52 @@ export function ChatView(): ReactNode {
       </div>
 
       {turns.length >= 4 && (
-        <div className="turn-rail" aria-hidden="true">
-          {visibleTurns.map((turn) => (
-            <button
-              key={turn.key}
-              className={clsx(
-                'turn-rail-tick',
-                turn.failed && 'has-error',
-                turn.streaming && 'is-live',
-                activeTurn === turn.key && 'is-active'
-              )}
-              onClick={() => {
-                const node = scrollerRef.current?.querySelector<HTMLElement>(
-                  `[data-turn-key="${turn.key}"]`
-                )
-                node?.scrollIntoView({ block: 'start', behavior: 'smooth' })
-              }}
-              title={turn.userText ? turn.userText.slice(0, 80) : ''}
-            />
-          ))}
-        </div>
+        <nav
+          className="turn-rail"
+          aria-label={t('轮次导航')}
+          onPointerEnter={onRailEnter}
+          onPointerMove={onRailMove}
+          onPointerLeave={onRailLeave}
+        >
+          {visibleTurns.map((turn, index) => {
+            return (
+              <button
+                key={turn.key}
+                ref={(element) => {
+                  if (element) tickRefs.current[index] = element
+                  else delete tickRefs.current[index]
+                }}
+                className={clsx(
+                  'turn-rail-tick',
+                  turn.failed && 'has-error',
+                  turn.streaming && 'is-live',
+                  activeTurn === turn.key && 'is-active'
+                )}
+                aria-label={`${t('第 {count} 轮').replace('{count}', String(index + 1))}: ${(turn.userText || t('无提问')).slice(0, 60)}`}
+                aria-describedby={railPreview?.turn.key === turn.key ? 'turn-preview' : undefined}
+                onPointerEnter={(event) =>
+                  openRailPreview(turn, turn.index + 1, event.currentTarget)
+                }
+                onPointerLeave={scheduleRailClose}
+                onFocus={(event) => openRailPreview(turn, turn.index + 1, event.currentTarget)}
+                onBlur={scheduleRailClose}
+                onClick={() => jumpToTurn(turn.key)}
+              />
+            )
+          })}
+        </nav>
+      )}
+
+      {railPreview && (
+        <TurnPreview
+          turn={railPreview.turn}
+          index={railPreview.index}
+          left={railPreview.left}
+          top={railPreview.top}
+          onKeep={cancelRailClose}
+          onLeave={scheduleRailClose}
+          onJump={() => jumpToTurn(railPreview.turn.key)}
+        />
       )}
 
       {showJump && (

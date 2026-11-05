@@ -1,9 +1,10 @@
 import { useTranslation } from '../i18n'
 import { useEffect, useState, type ReactNode } from 'react'
-import { Archive, Moon, PanelLeft, PanelRight, Plus, Settings, Sun } from 'lucide-react'
+import { Archive, PanelLeft, PanelRight } from 'lucide-react'
 import clsx from 'clsx'
 import { useApp } from '../store'
 import { baseName, formatTokens, shortenPath, truncate } from '../lib/format'
+import { shortcutKeys, shiftMod } from '../lib/platform'
 import { contentText } from '../lib/tools'
 
 export function TopBar(): ReactNode {
@@ -15,7 +16,9 @@ export function TopBar(): ReactNode {
   const firstUser = state.messages.find((message) => message.role === 'user')
   const fallbackTitle = firstUser
     ? truncate(contentText((firstUser as { content?: unknown }).content), 56)
-    : baseName(state.workspace) || t('Session')
+    : state.scratchWorkspace
+      ? t('临时对话')
+      : baseName(state.workspace) || t('Session')
   const title =
     state.sessionName ??
     (state.messages.length > 0
@@ -41,7 +44,7 @@ export function TopBar(): ReactNode {
         <button
           className={clsx('icon-button', state.sidebarOpen && 'subtle')}
           onClick={actions.toggleSidebar}
-          title={state.sidebarOpen ? t("Hide sidebar (⌘B)") : t("Show sidebar (⌘B)")}
+          title={state.sidebarOpen ? shortcutKeys(t("Hide sidebar (⌘B)")) : shortcutKeys(t("Show sidebar (⌘B)"))}
         >
           <PanelLeft size={15} />
         </button>
@@ -72,7 +75,9 @@ export function TopBar(): ReactNode {
           )}
           <div className="topbar-sub">
             <span className="topbar-path" title={state.workspace ?? ''}>
-              {shortenPath(state.workspace, state.boot?.home) || t("No project")}
+              {state.scratchWorkspace
+                ? t('临时对话')
+                : shortenPath(state.workspace, state.boot?.home) || t('No project')}
             </span>
             {state.sessionPath && (
               <>
@@ -99,23 +104,14 @@ export function TopBar(): ReactNode {
             <Archive size={15} />
           </button>
         )}
-        <button className="icon-button" onClick={() => void actions.newSession()} title={t("New session (⌘N)")}>
-          <Plus size={16} />
-        </button>
-        <button
-          className="icon-button"
-          onClick={() => void actions.setTheme(state.settings.theme === 'dark' ? 'light' : 'dark')}
-          title={t("Toggle theme (⌘⇧L)")}
-        >
-          {state.settings.theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
-        </button>
-        <button className="icon-button settings-entry" onClick={() => actions.openSettings(true)} title={t("Settings")} aria-label={t("Settings")}>
-          <Settings size={15} />
-        </button>
         <button
           className={clsx('icon-button', state.settings.workPanelOpen && 'work-panel-toggle-active')}
           onClick={actions.toggleWorkPanel}
-          title={state.settings.language === 'en' ? 'Work panel (⌘⇧E)' : '工作面板 (⌘⇧E)'}
+          title={
+            state.settings.language === 'en'
+              ? `Work panel (${shiftMod('E')})`
+              : `工作面板 (${shiftMod('E')})`
+          }
           aria-label={state.settings.language === 'en' ? 'Work panel' : '工作面板'}
           aria-pressed={state.settings.workPanelOpen === true}
         >

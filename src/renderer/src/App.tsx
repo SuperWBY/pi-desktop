@@ -9,17 +9,58 @@ import { ChatView } from './components/ChatView'
 import { Composer } from './components/Composer'
 import { Welcome } from './components/Welcome'
 import { SettingsPage } from './components/SettingsPage'
+import { SkillsPage } from './components/SkillsPage'
+import { SchedulesPage } from './components/SchedulesPage'
 import { Diagnostics } from './components/Diagnostics'
 import { WorkPanel } from './components/WorkPanel'
 import { ImageLightbox, openImage } from './components/ImageLightbox'
 import { UiRequestDialog } from './components/UiRequestDialog'
 import { Toasts } from './components/Toasts'
+import { formatDuration } from './lib/format'
 
 function Shell(): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
   const showWelcome = !state.workspace
   const failed = state.status === 'error' && Boolean(state.workspace)
+
+  useEffect(() => {
+    const when = (timestamp: number | null): string =>
+      timestamp
+        ? new Intl.DateTimeFormat('zh-CN', {
+            month: 'numeric',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+          }).format(new Date(timestamp))
+        : ''
+
+    const unsubscribeEvent = window.pi.onScheduleEvent((event) => {
+      if (event.type === 'created') {
+        actions.notify(
+          'success',
+          t('已创建定时任务'),
+          event.nextRunAt ? `${event.name} · ${when(event.nextRunAt)}` : event.name,
+          { label: t('查看'), run: () => actions.openScheduleTask(event.taskId) }
+        )
+      } else if (event.type === 'finished') {
+        const failed = event.status !== 'success' && event.status !== 'skipped'
+        actions.notify(
+          failed ? 'error' : 'success',
+          failed ? t('定时任务运行失败') : t('定时任务运行完成'),
+          [event.name, event.durationMs ? formatDuration(event.durationMs) : '', event.error]
+            .filter(Boolean)
+            .join(' · '),
+          event.removed ? undefined : { label: t('查看结果'), run: () => actions.openScheduleTask(event.taskId) }
+        )
+      }
+    })
+    const unsubscribeOpen = window.pi.onScheduleOpen((taskId) => actions.openScheduleTask(taskId))
+    return () => {
+      unsubscribeEvent()
+      unsubscribeOpen()
+    }
+  }, [actions, t])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -110,6 +151,8 @@ function Shell(): ReactNode {
 
       <WorkPanel />
 
+      {state.skillsOpen && <SkillsPage />}
+      {state.schedulesOpen && <SchedulesPage />}
       <SettingsPage />
       <Diagnostics />
       <ImageLightbox />

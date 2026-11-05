@@ -1,7 +1,7 @@
 import { useTranslation } from '../i18n'
 import { useApp } from '../store'
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
-import { AlertTriangle, Brain } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react'
 import clsx from 'clsx'
 import type {
   AssistantMessage,
@@ -11,7 +11,7 @@ import type {
   ToolRun,
   UserMessage
 } from '@shared/types'
-import { formatCost, formatTokens, timeOfDay } from '../lib/format'
+import { formatCost, formatDuration, formatTokens, timeOfDay } from '../lib/format'
 import { Markdown, CopyButton } from './Markdown'
 import { ToolCard } from './ToolCard'
 import { ToolGroup } from './ToolGroup'
@@ -61,27 +61,54 @@ const TextBlockView = memo(function TextBlockView({
 function ThinkingBlock({
   text,
   streaming,
-  defaultOpen
+  defaultOpen,
+  durationMs
 }: {
   text: string
   streaming: boolean
   defaultOpen: boolean
+  durationMs?: number
 }): ReactNode {
   const t = useTranslation()
   const { state } = useApp()
   const mode = state.settings.thinkingDisplay ?? 'summary'
-  const [open, setOpen] = useState(mode === 'full' || defaultOpen || streaming)
+  const [open, setOpen] = useState(mode === 'full' || defaultOpen)
   const manual = useRef(false)
+  const startedAt = useRef<number | undefined>(streaming ? Date.now() : undefined)
+  const [elapsed, setElapsed] = useState<number | undefined>(undefined)
 
   useEffect(() => {
-    if (streaming) {
-      setOpen(mode !== 'summary')
-    } else if (!manual.current) {
-      setOpen(mode === 'full')
+    if (!streaming) {
+      setElapsed((value) =>
+        value ?? (startedAt.current ? Date.now() - startedAt.current : undefined)
+      )
+      return
     }
-  }, [streaming, mode])
+    const timer = window.setInterval(() => {
+      if (startedAt.current) setElapsed(Date.now() - startedAt.current)
+    }, 500)
+    return () => window.clearInterval(timer)
+  }, [streaming])
+
+  useEffect(() => {
+    if (mode === 'full') setOpen(true)
+    else if (!manual.current) setOpen(false)
+  }, [mode])
 
   if (!text.trim() || mode === 'off') return null
+
+  // Readers care how long it thought, not how many lines it wrote. Live runs are
+  // timed here; history falls back to the step duration pi recorded.
+  const thoughtMs = elapsed ?? durationMs
+  const label = streaming
+    ? elapsed !== undefined
+      ? `${t('思考中')} ${formatDuration(elapsed)}`
+      : t('思考中')
+    : thoughtMs === undefined
+      ? t('思考过程')
+      : thoughtMs < 1000
+        ? t('思考了片刻')
+        : `${t('思考了')} ${formatDuration(thoughtMs)}`
 
   return (
     <div className={clsx('thinking', open && 'open')}>
@@ -91,10 +118,10 @@ function ThinkingBlock({
           manual.current = true
           setOpen((value) => !value)
         }}
+        aria-expanded={open}
       >
-        <Brain size={13} />
-        <span>{streaming ? t("Thinking…") : t("Thought process")}</span>
-        <span className="thinking-lines">{t('{count} lines').replace('{count}', String(text.trim().split('\n').length))}</span>
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        <span>{label}</span>
       </button>
       {open && <div className="thinking-body fade-in">{text}</div>}
     </div>
@@ -156,6 +183,8 @@ interface AssistantProps {
   streaming: boolean
   /** Hide the model/time header (consecutive assistant blocks in the transcript). */
   hideHeader?: boolean
+  /** Usage belongs to the turn, not to every tool-only step. */
+  isLast?: boolean
 }
 
 function AssistantMessageViewImpl({
@@ -163,7 +192,8 @@ function AssistantMessageViewImpl({
   toolRuns,
   results,
   streaming,
-  hideHeader
+  hideHeader,
+  isLast = false
 }: AssistantProps): ReactNode {
   const blocks = message.content ?? []
   const usage = message.usage
@@ -174,6 +204,10 @@ function AssistantMessageViewImpl({
     .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
     .map((block) => block.text)
     .join('\n\n')
+  const hasProse = text.trim().length > 0
+  const hasImages = blocks.some((block: ContentBlock) => block.type === 'image')
+  // Tool-only steps carry no identity: the row itself says what happened.
+  const showHeader = !hideHeader && (hasProse || hasImages)
 
   // 「read × 5」这种连续同类调用合成一组，避免一轮刷出十几张卡。
   type Segment =
@@ -185,7 +219,7 @@ function AssistantMessageViewImpl({
 
   const flush = (): void => {
     if (!pending) return
-    if (pending.calls.length >= 3) {
+    if (pending.calls.length >= 2) {
       segments.push({ kind: 'group', calls: pending.calls })
     } else {
       pending.calls.forEach((call, offset) => {
@@ -220,8 +254,8 @@ function AssistantMessageViewImpl({
   flush()
 
   return (
-    <div className={clsx('message assistant-message', streaming && 'is-streaming')}>
-      {!hideHeader && (
+    <div className={clsx('message assistant-message', streaming && 'is-streaming', !hasProse && !hasImages && 'is-tool-only')}>
+      {showHeader && (
         <div className="message-label">
           <span className="assistant-mark">π</span>
           <span>{model ? model.split('/').pop() : 'pi'}</span>
@@ -258,6 +292,7 @@ function AssistantMessageViewImpl({
                 text={block.thinking}
                 streaming={streaming}
                 defaultOpen={false}
+                durationMs={message.durationMs}
               />
             )
           }
@@ -285,7 +320,7 @@ function AssistantMessageViewImpl({
           </div>
         )}
 
-        {!streaming && (tokens > 0 || cost > 0) && (
+        {!streaming && isLast && (tokens > 0 || cost > 0) && (
           <div className="message-meta">
             {tokens > 0 && <span>{formatTokens(tokens)} tokens</span>}
             {cost > 0 && <span>{formatCost(cost)}</span>}
@@ -316,11 +351,13 @@ function areMessagePropsEqual(prev: AssistantProps, next: AssistantProps): boole
 export const AnswerOnly = memo(function AnswerOnly({
   text,
   model,
-  message
+  message,
+  streaming = false
 }: {
   text: string
   model?: string
   message?: AssistantMessage
+  streaming?: boolean
 }): ReactNode {
   const images = (message?.content ?? []).filter(
     (block): block is Extract<ContentBlock, { type: 'image' }> => block.type === 'image'
@@ -334,7 +371,7 @@ export const AnswerOnly = memo(function AnswerOnly({
         {text && <span className="message-actions"><CopyButton text={text} /></span>}
       </div>
       <div className="assistant-body">
-        {text && <TextBlockView text={text} streaming={false} />}
+        {text && <TextBlockView text={text} streaming={streaming} />}
         {images.map((image, index) => (
           <img key={index} className="md-image" src={`data:${image.mimeType};base64,${image.data}`} alt="" />
         ))}

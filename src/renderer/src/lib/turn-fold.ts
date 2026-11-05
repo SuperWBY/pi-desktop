@@ -52,8 +52,8 @@ export function saveFolds(sessionPath: string | null, map: FoldMap): void {
 
 /**
  * Per-turn fold state with persistence, plus the automatic policy:
- * a streaming turn is always expanded, a finished turn collapses to `steps`
- * (Codex's contract: process is folded once the final answer landed), and
+ * a streaming turn starts compact and respects explicit expansion, a finished
+ * turn uses the configured default unless the reader made a choice, and
  * anything older than `aggregateAfter` turns is aggregated above.
  */
 export function useTurnFolds(
@@ -87,8 +87,8 @@ export function useTurnFolds(
 
   const levelOf = useCallback(
     (turn: Turn): FoldLevel => {
-      if (turn.streaming) return 0
       const entry = map[turn.key]
+      if (turn.streaming) return entry ? entry.level : 0
       if (entry) return entry.level
       return settings.autoFold ? settings.defaultLevel : 0
     },

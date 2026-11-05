@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.1.7",
+  "version": "0.3.6",
   "description": "A desktop client for pi",
   "main": "./out/main/index.js",
   "license": "MIT",
@@ -13,8 +13,10 @@
     "screenshot": "node scripts/screenshot.mjs",
     "smoke": "node scripts/smoke.mjs",
     "test:headless-ui": "node scripts/headless-ui.cjs",
+    "test:cadence": "node --experimental-strip-types scripts/test-cadence.mjs",
     "e2e": "node scripts/e2e.mjs",
     "pack": "npm run build && npx electron-packager . \"Pi Desktop\" --out=release --overwrite --icon=build/icon.icns --app-bundle-id=dev.pi.desktop --app-version=$(node -p \"require('./package.json').version\") --darwin-dark-mode-support --ignore=\"^/(src|scripts|output|release)\" && node scripts/fix-icon.mjs",
+    "pack:win": "npm run build && npx electron-packager . \"Pi Desktop\" --platform=win32 --arch=x64 --out=release --overwrite --icon=build/icon.ico --app-version=$(node -p \"require('./package.json').version\") --ignore=\"^/(src|scripts|output|release)\"",
     "dmg": "npm run pack && node scripts/make-dmg.mjs"
   },
   "devDependencies": {

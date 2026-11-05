@@ -1,38 +1,23 @@
 import { useTranslation } from '../i18n'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  ChevronsUpDown,
-  ChevronRight,
+  Clock,
   FolderOpen,
   MoreHorizontal,
   Plus,
   Search,
   Settings,
+  Sparkles,
   Trash2,
   X
 } from 'lucide-react'
 import clsx from 'clsx'
 import type { SessionSummary } from '@shared/types'
 import { useApp } from '../store'
-import { baseName, dayLabel, relativeTime, shortenPath, truncate } from '../lib/format'
+import { baseName, relativeTime, shortenPath, truncate } from '../lib/format'
+import { mod } from '../lib/platform'
 import { PiLogo } from './PiLogo'
-import { ContextMenu, Modal, Popover } from './ui'
-
-function groupSessions(sessions: SessionSummary[], language: 'zh-CN' | 'en'): { label: string; items: SessionSummary[] }[] {
-  const groups: { label: string; items: SessionSummary[] }[] = []
-  let current: { label: string; items: SessionSummary[] } | null = null
-
-  for (const session of sessions) {
-    const label = dayLabel(session.updatedAt, language)
-    if (!current || current.label !== label) {
-      current = { label, items: [] }
-      groups.push(current)
-    }
-    current.items.push(session)
-  }
-
-  return groups
-}
+import { ContextMenu, Modal, Popover, Spinner } from './ui'
 
 function SessionMenu({
   session,
@@ -104,8 +89,72 @@ export function Sidebar(): ReactNode {
   const [renameValue, setRenameValue] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
   const [contextMenu, setContextMenu] = useState<{ session: SessionSummary; x: number; y: number } | null>(null)
-  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set())
+  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => new Set())
+  const [skillCount, setSkillCount] = useState<number | null>(null)
+  const [scheduleCount, setScheduleCount] = useState<number | null>(null)
+  const [runningSchedules, setRunningSchedules] = useState<Set<string>>(new Set())
+  const [scheduleUnread, setScheduleUnread] = useState(0)
+  const [pendingRename, setPendingRename] = useState<{ path: string; name: string } | null>(null)
   const [, setTick] = useState(0)
+
+  // Skill count for the sidebar entry.
+  useEffect(() => {
+    let alive = true
+    window.pi
+      .countSkills(state.workspace ?? '')
+      .then((count) => {
+        if (alive) setSkillCount(count)
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [state.workspace])
+
+  // Double-click opens rename only after the session finishes loading; the
+  // composer focuses itself when status becomes ready and would blur the input.
+  useEffect(() => {
+    if (!pendingRename || state.status === 'starting') return
+    setRenaming(pendingRename.path)
+    setRenameValue(pendingRename.name)
+    setPendingRename(null)
+  }, [pendingRename, state.status])
+
+  useEffect(() => {
+    let alive = true
+    window.pi
+      .listSchedules()
+      .then((tasks) => {
+        if (alive) setScheduleCount(tasks.filter((task) => task.enabled).length)
+      })
+      .catch(() => undefined)
+    const unsubscribe = window.pi.onSchedulesChanged((next) => {
+      setScheduleCount(next.filter((task) => task.enabled).length)
+    })
+    return () => {
+      alive = false
+      unsubscribe()
+    }
+  }, [state.workspace])
+
+  useEffect(() => {
+    return window.pi.onScheduleEvent((event) => {
+      if (event.type === 'started') {
+        setRunningSchedules((current) => new Set(current).add(event.taskId))
+      } else if (event.type === 'finished') {
+        setRunningSchedules((current) => {
+          const next = new Set(current)
+          next.delete(event.taskId)
+          return next
+        })
+        if (!state.schedulesOpen) setScheduleUnread((count) => count + 1)
+      }
+    })
+  }, [state.schedulesOpen])
+
+  useEffect(() => {
+    if (state.schedulesOpen) setScheduleUnread(0)
+  }, [state.schedulesOpen])
 
   // Relative timestamps ("2h", "now") should age while the app stays open.
   useEffect(() => {
@@ -116,17 +165,127 @@ export function Sidebar(): ReactNode {
   const workspace = state.workspace ?? state.settings.lastWorkspace ?? null
 
   const language = state.settings.language ?? 'zh-CN'
+  const queryText = query.trim().toLowerCase()
 
+  // Only actual projects are listed as projects. A session whose folder is not
+  // a project falls through to "Recent conversations".
   const workspaces = useMemo(() => {
     const set = new Set(state.settings.workspaces)
-    if (workspace) set.add(workspace)
-    for (const session of state.sessions) if (session.cwd) set.add(session.cwd)
+    if (workspace && !state.scratchWorkspace) set.add(workspace)
+    if (workspace && state.scratchWorkspace) set.delete(workspace)
     return Array.from(set)
-  }, [state.settings.workspaces, workspace, state.sessions])
+  }, [state.scratchWorkspace, state.settings.workspaces, workspace])
 
-  useEffect(() => {
-    if (workspace) setExpandedProjects((current) => current.has(workspace) ? current : new Set([...current, workspace]))
-  }, [workspace])
+  const matching = useMemo(
+    () =>
+      state.sessions
+        .filter(
+          (session) =>
+            !queryText ||
+            `${session.name} ${session.preview} ${session.cwd}`.toLowerCase().includes(queryText)
+        )
+        .slice()
+        .sort((a, b) => b.updatedAt - a.updatedAt),
+    [state.sessions, queryText]
+  )
+
+  // A session that belongs to a project lives only under that project; the
+  // recent list is for conversations without a project.
+  const recent = useMemo(
+    () => matching.filter((session) => !workspaces.includes(session.cwd)).slice(0, 8),
+    [matching, workspaces]
+  )
+
+  const renderSession = (session: SessionSummary, showProject: boolean): ReactNode => {
+    const active = state.sessionPath === session.path
+    const running = active && state.streaming
+
+    if (renaming === session.path) {
+      return (
+        <div className="session-item renaming" key={session.path}>
+          <input
+            autoFocus
+            className="rename-input"
+            value={renameValue}
+            onChange={(event) => setRenameValue(event.target.value)}
+            onBlur={() => {
+              const next = renameValue.trim()
+              if (next && next !== session.name) void actions.renameSession(next)
+              setRenaming(null)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                void actions.renameSession(renameValue)
+                setRenaming(null)
+              }
+              if (event.key === 'Escape') setRenaming(null)
+            }}
+          />
+        </div>
+      )
+    }
+
+    return (
+      <div
+        className={clsx('session-item', active && 'active')}
+        key={session.path}
+        onDoubleClick={(event) => {
+          event.preventDefault()
+          setPendingRename({ path: session.path, name: session.name })
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          setContextMenu({ session, x: event.clientX, y: event.clientY })
+        }}
+      >
+        <button
+          className="session-main"
+          onClick={() => void actions.openSession(session.cwd, session.path)}
+          title={session.name}
+        >
+          {running && (
+            <span className="session-running" aria-label={t('执行中')}>
+              <Spinner size={11} />
+            </span>
+          )}
+          <span className="session-title">{truncate(session.name, 52)}</span>
+          {showProject && (
+            <span className="session-meta">{relativeTime(session.updatedAt, language)}</span>
+          )}
+        </button>
+
+        <Popover
+          width={190}
+          align="right"
+          trigger={(_open, toggle, expanded) => (
+            <button
+              className="icon-button session-menu-button"
+              onClick={(event) => {
+                event.stopPropagation()
+                toggle()
+              }}
+              aria-label={t("Session actions")}
+              {...expanded}
+            >
+              <MoreHorizontal size={14} />
+            </button>
+          )}
+        >
+          {(close) => (
+            <SessionMenu
+              session={session}
+              close={close}
+              onRename={(value) => {
+                setRenaming(session.path)
+                setRenameValue(value)
+              }}
+              onDelete={() => setPendingDelete(session)}
+            />
+          )}
+        </Popover>
+      </div>
+    )
+  }
 
   return (
     <aside className={clsx('sidebar', !state.sidebarOpen && 'collapsed')} aria-hidden={!state.sidebarOpen}>
@@ -138,74 +297,34 @@ export function Sidebar(): ReactNode {
           <PiLogo size={17} />
         </span>
         <span className="brand-name">Pi</span>
-        <button
-          className="icon-button brand-action"
-          title={t("新建会话 (⌘N)")}
-          onClick={() => void actions.newSession()}
-        >
-          <Plus size={16} />
-        </button>
       </div>
-
-      <Popover
-        width={280}
-        className="workspace-popover"
-        trigger={(open, toggle) => (
-          <button className={clsx('workspace-button', open && 'open')} onClick={toggle}>
-            <span className="workspace-icon">
-              <FolderOpen size={14} />
-            </span>
-            <span className="workspace-text">
-              <span className="workspace-name">{workspace ? baseName(workspace) : t("未选择项目")}</span>
-              <span className="workspace-path">
-                {workspace ? shortenPath(workspace, state.boot?.home) : t("选择一个文件夹开始")}
-              </span>
-            </span>
-            <ChevronsUpDown size={13} className="workspace-chevron" />
-          </button>
-        )}
-      >
-        {(close) => (
-          <div className="menu">
-            <div className="menu-group">
-              <div className="menu-group-label">{t("Projects")}</div>
-              {workspaces.length === 0 && <div className="menu-empty">{t("No recent projects")}</div>}
-              {workspaces.map((path) => (
-                <button
-                  key={path}
-                  className={clsx('menu-item', path === workspace && 'active')}
-                  onClick={() => {
-                    close()
-                    void actions.openSession(path, null)
-                  }}
-                >
-                  <span className="menu-item-main">
-                    <span className="menu-item-title">{baseName(path)}</span>
-                    <span className="menu-item-sub">{shortenPath(path, state.boot?.home)}</span>
-                  </span>
-                </button>
-              ))}
-            </div>
-            <div className="menu-separator" />
-            <button
-              className="menu-item"
-              onClick={() => {
-                close()
-                void actions.pickFolder()
-              }}
-            >
-              <FolderOpen size={14} />
-              <span className="menu-item-title">{t("打开文件夹…")}</span>
-            </button>
-          </div>
-        )}
-      </Popover>
 
       <div className="sidebar-actions">
         <button className="new-session" onClick={() => void actions.newSession()}>
           <Plus size={14} />
           <span>{t("新建会话")}</span>
-          <span className="shortcut">⌘N</span>
+          <span className="shortcut">{mod('N')}</span>
+        </button>
+        <button className="skills-entry skills-page-entry" onClick={() => actions.openSkills(true)}>
+          <Sparkles size={13} />
+          <span>{t('技能与插件')}</span>
+          <span className="shortcut">{skillCount ?? ''}</span>
+        </button>
+        <button
+          className="skills-entry schedules-entry"
+          onClick={() => {
+            setScheduleUnread(0)
+            actions.openSchedules(true)
+          }}
+        >
+          <Clock size={13} />
+          <span>{t('定时任务')}</span>
+          {runningSchedules.size > 0 ? (
+            <span className="schedule-running-dot" title={t('运行中')} />
+          ) : (
+            <span className="shortcut">{scheduleCount ?? ''}</span>
+          )}
+          {scheduleUnread > 0 && <span className="schedule-unread-dot" />}
         </button>
       </div>
 
@@ -224,128 +343,69 @@ export function Sidebar(): ReactNode {
       </div>
 
       <div className="session-list">
-        <div className="project-shortcuts-label">{t('Projects')}</div>
+        <div className="project-shortcuts-header">
+          <span className="project-shortcuts-label">{t('Projects')}</span>
+          <button className="icon-button project-add" onClick={() => void actions.pickFolder()}
+            title={t('打开文件夹…')} aria-label={t('打开文件夹…')}><Plus size={14} /></button>
+        </div>
+        {Boolean(queryText) && matching.length === 0 && (
+          <div className="session-empty">{t('没有匹配的会话。')}</div>
+        )}
         {workspaces.map((path) => {
-          const expanded = expandedProjects.has(path) || Boolean(query.trim())
-          const text = query.trim().toLowerCase()
-          const sessions = state.sessions.filter((session) => session.cwd === path &&
-            (!text || `${session.name} ${session.preview} ${session.cwd}`.toLowerCase().includes(text))).slice(0, 200)
-          const groups = groupSessions(sessions, language)
-          return <div className="project-tree" key={path}>
-            <div className="project-tree-head">
-              <button className="project-tree-toggle" aria-expanded={expanded}
-                aria-label={state.settings.language === 'en' ? `${expanded ? 'Collapse' : 'Expand'} sessions for ${baseName(path)}` : `${expanded ? '收起' : '展开'} ${baseName(path)} 的会话`}
-                onClick={() => setExpandedProjects((current) => {
-                  const next = new Set(current)
-                  if (next.has(path)) next.delete(path); else next.add(path)
-                  return next
-                })}>
-                <ChevronRight size={13} className={clsx(expanded && 'open')} />
-              </button>
-              <button className={clsx('project-shortcut', path === workspace && 'active')}
-                aria-current={path === workspace ? 'true' : undefined}
-                title={shortenPath(path, state.boot?.home)}
-                onClick={() => { if (path !== workspace) void actions.openSession(path, null) }}>
-                <FolderOpen size={13} /><span>{baseName(path)}</span>
-              </button>
-            </div>
-            {expanded && <div className="project-tree-sessions">
-            {groups.length === 0 && <div className="session-empty">{query ? t('没有匹配的会话。') : t('还没有会话，新建一个开始。')}</div>}
-            {groups.map((group) => (
-          <div className="session-group" key={group.label}>
-            <div className="session-group-label">{group.label}</div>
-            {group.items.map((session) => {
-              const active = state.sessionPath === session.path
-              if (renaming === session.path) {
-                return (
-                  <div className="session-item renaming" key={session.path}>
-                    <input
-                      autoFocus
-                      className="rename-input"
-                      value={renameValue}
-                      onChange={(event) => setRenameValue(event.target.value)}
-                      onBlur={() => {
-                        const next = renameValue.trim()
-                        if (next && next !== session.name) void actions.renameSession(next)
-                        setRenaming(null)
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          void actions.renameSession(renameValue)
-                          setRenaming(null)
-                        }
-                        if (event.key === 'Escape') setRenaming(null)
-                      }}
-                    />
-                  </div>
-                )
-              }
-
-              return (
-                <div
-                  className={clsx('session-item', active && 'active')}
-                  key={session.path}
-                  onContextMenu={(event) => {
-                    event.preventDefault()
-                    setContextMenu({ session, x: event.clientX, y: event.clientY })
+          const matches = matching.filter((session) => session.cwd === path)
+          if (queryText && matches.length === 0) return null
+          const expanded = !collapsedProjects.has(path) || Boolean(queryText)
+          return (
+            <div className="project-tree" key={path}>
+              <div className={clsx('project-row', path === workspace && 'active')}>
+                <button
+                  className="project-row-main"
+                  aria-expanded={expanded}
+                  title={shortenPath(path, state.boot?.home)}
+                  aria-label={state.settings.language === 'en' ? `${expanded ? 'Collapse' : 'Expand'} sessions for ${baseName(path)}` : `${expanded ? '收起' : '展开'} ${baseName(path)} 的会话`}
+                  onClick={() => setCollapsedProjects((current) => {
+                    const next = new Set(current)
+                    if (next.has(path)) next.delete(path); else next.add(path)
+                    return next
+                  })}
+                >
+                  <FolderOpen size={13} />
+                  <span>{baseName(path)}</span>
+                </button>
+                <button
+                  className="icon-button project-new-chat"
+                  title={state.settings.language === 'en' ? `New conversation in ${baseName(path)}` : `在 ${baseName(path)} 中新建对话`}
+                  aria-label={state.settings.language === 'en' ? `New conversation in ${baseName(path)}` : `在 ${baseName(path)} 中新建对话`}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void actions.openSession(path, null)
                   }}
                 >
-                  <button
-                    className="session-main"
-                    onClick={() => void actions.openSession(session.cwd, session.path)}
-                    title={session.name}
-                  >
-                    <span className="session-title">{truncate(session.name, 52)}</span>
-                    <span className="session-meta">
-                      {relativeTime(session.updatedAt, language)}
-                      <span className="dot-sep">·</span>
-                      {state.settings.language === 'en' ? `${session.messageCount} messages` : `${session.messageCount} 条`}
-                      {session.cwd !== workspace && (
-                        <>
-                          <span className="dot-sep">·</span>
-                          {baseName(session.cwd)}
-                        </>
-                      )}
-                    </span>
-                  </button>
-
-                  <Popover
-                    width={190}
-                    align="right"
-                    trigger={(_open, toggle, expanded) => (
-                      <button
-                        className="icon-button session-menu-button"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          toggle()
-                        }}
-                        aria-label={t("Session actions")}
-                        {...expanded}
-                      >
-                        <MoreHorizontal size={14} />
-                      </button>
-                    )}
-                  >
-                    {(close) => (
-                      <SessionMenu
-                        session={session}
-                        close={close}
-                        onRename={(value) => {
-                          setRenaming(session.path)
-                          setRenameValue(value)
-                        }}
-                        onDelete={() => setPendingDelete(session)}
-                      />
-                    )}
-                  </Popover>
+                  <Plus size={13} />
+                </button>
+              </div>
+              {expanded && (
+                <div className="project-tree-sessions">
+                  {matches.length === 0 && (
+                    <div className="session-empty">
+                      {queryText ? t('没有匹配的会话。') : t('还没有会话，新建一个开始。')}
+                    </div>
+                  )}
+                  {matches.map((session) => renderSession(session, false))}
                 </div>
-              )
-            })}
-          </div>
-            ))}
-            </div>}
-          </div>
+              )}
+            </div>
+          )
         })}
+
+        {recent.length > 0 && (
+          <div className="recent-sessions">
+            <div className="project-shortcuts-header recent-header">
+              <span className="project-shortcuts-label">{t('最近对话')}</span>
+            </div>
+            {recent.map((session) => renderSession(session, true))}
+          </div>
+        )}
       </div>
 
       <div className="sidebar-footer">

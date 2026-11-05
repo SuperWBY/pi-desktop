@@ -1,17 +1,28 @@
 import type {
+  BackgroundSchedulerStatus,
   Bootstrap,
+  ConnectorEntry,
   CustomProviderEntry,
   DeletedSession,
   DirEntry,
   GitStatus,
   ModelsConfig,
   OpenSessionResult,
+  PackageEntry,
+  PackageProgress,
   PiModelRow,
   PiRecord,
   PiResponse,
+  ScheduleCadence,
+  ScheduleEvent,
+  ScheduledRun,
+  ScheduledTask,
+  ScheduledTaskInput,
+  SessionNotice,
   SessionSummary,
   Settings,
-  PiSettings
+  PiSettings,
+  SkillEntry
 } from './types'
 
 export interface PiDesktopApi {
@@ -28,7 +39,7 @@ export interface PiDesktopApi {
   removeProvider(id: string): Promise<ModelsConfig>
   listPiModels(): Promise<{ models: PiModelRow[]; error?: string }>
   refreshModelCatalog(): Promise<{ ok: boolean; output: string }>
-  openSession(options: { cwd: string; sessionPath?: string | null }): Promise<OpenSessionResult>
+  openSession(options: { cwd: string; sessionPath?: string | null; scratch?: boolean }): Promise<OpenSessionResult>
   closeSession(): Promise<void>
   command<T = unknown>(command: Record<string, unknown>, timeoutMs?: number): Promise<PiResponse<T>>
   uiResponse(response: Record<string, unknown>): void
@@ -46,8 +57,42 @@ export interface PiDesktopApi {
     path: string,
     maxBytes?: number
   ): Promise<{ ok: boolean; content?: string; truncated?: boolean; size?: number; error?: string }>
+  platform: string
   gitStatus(cwd: string): Promise<GitStatus>
   gitDiff(cwd: string, path: string, staged?: boolean): Promise<string>
+  listSkills(cwd: string): Promise<SkillEntry[]>
+  countSkills(cwd: string): Promise<number>
+  listConnectors(cwd: string): Promise<ConnectorEntry[]>
+  readSkill(path: string): Promise<{ ok: boolean; content?: string; error?: string }>
+  listPackages(cwd: string): Promise<PackageEntry[]>
+  installPackage(
+    source: string,
+    options: { cwd: string; local?: boolean }
+  ): Promise<{ ok: boolean; code: number | null; error?: string }>
+  removePackage(
+    source: string,
+    cwd: string
+  ): Promise<{ ok: boolean; code: number | null; error?: string }>
+  updatePackage(
+    source: string,
+    cwd: string
+  ): Promise<{ ok: boolean; code: number | null; error?: string }>
+  onPackageProgress(callback: (progress: PackageProgress) => void): () => void
+  listSchedules(): Promise<ScheduledTask[]>
+  getSchedule(id: string): Promise<{ task: ScheduledTask; runs: ScheduledRun[] } | null>
+  getSessionNotices(sessionPath: string): Promise<SessionNotice[]>
+  createSchedule(input: ScheduledTaskInput): Promise<ScheduledTask>
+  updateSchedule(id: string, patch: Partial<ScheduledTaskInput>): Promise<ScheduledTask | null>
+  deleteSchedule(id: string): Promise<boolean>
+  setScheduleEnabled(id: string, enabled: boolean): Promise<ScheduledTask | null>
+  runScheduleNow(id: string): Promise<ScheduledRun | null>
+  previewSchedule(cadence: ScheduleCadence, count?: number, timezone?: string): Promise<number[]>
+  validateCron(expression: string): Promise<string | null>
+  getBackgroundScheduler(): Promise<BackgroundSchedulerStatus>
+  setBackgroundScheduler(enabled: boolean): Promise<BackgroundSchedulerStatus>
+  onSchedulesChanged(callback: (tasks: ScheduledTask[]) => void): () => void
+  onScheduleEvent(callback: (event: ScheduleEvent) => void): () => void
+  onScheduleOpen(callback: (taskId: string) => void): () => void
   onRecord(callback: (record: PiRecord) => void): () => void
   onStatus(
     callback: (status: { status: string; code?: number | null; signal?: string | null }) => void

@@ -9,6 +9,46 @@ export interface ToolMeta {
   subtitle: string
 }
 
+/**
+ * Rows read as actions, not as protocol events: the verb carries the state
+ * (running / done / failed) and the group phrase carries the batch size.
+ * Strings are Chinese keys; `t()` maps them for the English UI.
+ */
+export interface ToolPhrases {
+  running: string
+  done: string
+  failed: string
+  group: string
+}
+
+export function toolPhrases(name: string): ToolPhrases {
+  switch (name) {
+    case 'bash':
+      return { running: '正在运行', done: '已运行', failed: '运行失败', group: '运行了 {count} 条命令' }
+    case 'read':
+      return { running: '正在读取', done: '已读取', failed: '读取失败', group: '读取了 {count} 个文件' }
+    case 'write':
+      return { running: '正在写入', done: '已写入', failed: '写入失败', group: '写入了 {count} 个文件' }
+    case 'edit':
+      return { running: '正在编辑', done: '已编辑', failed: '编辑失败', group: '编辑了 {count} 个文件' }
+    default:
+      return { running: '正在调用', done: '已调用', failed: '调用失败', group: '调用了 {count} 次 {name}' }
+  }
+}
+
+/**
+ * pi repeats durationMs on the toolResult message, which is the only timing
+ * that survives a session reload (history has no tool_execution events).
+ */
+export function durationOf(
+  run: { durationMs?: number } | undefined,
+  result: unknown
+): number | undefined {
+  if (typeof run?.durationMs === 'number') return run.durationMs
+  const fromResult = (result as { durationMs?: unknown } | undefined)?.durationMs
+  return typeof fromResult === 'number' ? fromResult : undefined
+}
+
 export function contentText(value: unknown): string {
   if (typeof value === 'string') return value
   if (Array.isArray(value)) {

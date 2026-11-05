@@ -8,12 +8,86 @@
  * pi install, credentials, or token spend (and on CI).
  */
 import { createInterface } from 'node:readline'
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 const scenario = process.env.MOCK_SCENARIO ?? 'default'
 const args = process.argv.slice(2)
 const sessionFlag = args.indexOf('--session')
 let sessionFile = sessionFlag !== -1 ? args[sessionFlag + 1] : null
 const cwd = process.cwd()
+
+if (process.env.MOCK_RPC_ARGS_FILE && args.includes('--mode')) {
+  writeFileSync(process.env.MOCK_RPC_ARGS_FILE, JSON.stringify(args))
+}
+
+// Headless mode used by scheduled tasks: `pi -p ... "prompt"`.
+if (args.includes('-p') || args.includes('--print')) {
+  const dirFlag = args.indexOf('--session-dir')
+  const idFlag = args.indexOf('--session-id')
+  const sessionDir = dirFlag !== -1 ? args[dirFlag + 1] : cwd
+  const sessionId = idFlag !== -1 ? args[idFlag + 1] : `mock-${Date.now()}`
+  const prompt = args[args.length - 1] ?? ''
+  if (process.env.MOCK_ARGS_FILE) {
+    writeFileSync(process.env.MOCK_ARGS_FILE, JSON.stringify(args))
+  }
+  if (process.env.MOCK_SCHEDULE_DELAY) {
+    await new Promise((resolve) => setTimeout(resolve, Number(process.env.MOCK_SCHEDULE_DELAY)))
+  }
+  if (process.env.MOCK_SCHEDULE_FAIL === '1') {
+    console.error('mock scheduled task failed')
+    process.exit(1)
+  }
+  const priorFlag = args.indexOf('--session')
+  const priorPath = priorFlag !== -1 ? args[priorFlag + 1] : null
+  if (priorPath && existsSync(priorPath)) {
+    const timestamp = new Date().toISOString()
+    const lines = [
+      {
+        type: 'message',
+        timestamp,
+        message: { role: 'user', content: [{ type: 'text', text: prompt }] }
+      },
+      {
+        type: 'message',
+        timestamp,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'mock scheduled answer (continued)' }],
+          usage: { input: 1, output: 2, totalTokens: 3, cost: { total: 0 } }
+        }
+      }
+    ]
+    writeFileSync(priorPath, lines.map((line) => JSON.stringify(line)).join('\n') + '\n', { flag: 'a' })
+    console.log(`mock scheduled answer continued ${priorPath}`)
+    process.exit(0)
+  }
+  mkdirSync(sessionDir, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const file = join(sessionDir, `${stamp}_${sessionId}.jsonl`)
+  const timestamp = new Date().toISOString()
+  const lines = [
+    { type: 'session', id: sessionId, cwd, timestamp },
+    { type: 'session_info', name: `Scheduled ${sessionId}` },
+    {
+      type: 'message',
+      timestamp,
+      message: { role: 'user', content: [{ type: 'text', text: prompt }] }
+    },
+    {
+      type: 'message',
+      timestamp,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'mock scheduled answer' }],
+        usage: { input: 1, output: 2, totalTokens: 3, cost: { total: 0 } }
+      }
+    }
+  ]
+  writeFileSync(file, lines.map((line) => JSON.stringify(line)).join('\n') + '\n')
+  console.log(`mock scheduled answer for ${sessionId}`)
+  process.exit(0)
+}
 
 const MODELS = [
   {
@@ -46,10 +120,40 @@ const transcriptSize = Number(process.env.MOCK_TRANSCRIPT ?? 0)
 const toolBurst = Number(process.env.MOCK_TOOLS ?? 0)
 const now = Date.now()
 
+const sessionRoot = process.env.PI_CODING_AGENT_SESSION_DIR?.trim()
+
+/** Real pi creates the transcript lazily; the desktop app relies on the file existing. */
+function createSessionFile() {
+  const dir = sessionRoot ? join(sessionRoot, '--mock-project--') : '/tmp'
+  mkdirSync(dir, { recursive: true })
+  const file = join(dir, `mock-${Date.now()}.jsonl`)
+  writeFileSync(
+    file,
+    `${JSON.stringify({ type: 'session', id: `mock-${Date.now()}`, cwd, timestamp: new Date().toISOString() })}\n`
+  )
+  return file
+}
+
+function loadSessionMessages(file) {
+  const out = []
+  try {
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      if (!line.trim()) continue
+      const entry = JSON.parse(line)
+      if (entry.type === 'message' && entry.message) out.push(entry.message)
+    }
+  } catch {
+    // missing or malformed file: behave like an empty session
+  }
+  return out
+}
+
 const editDemo = process.env.MOCK_EDIT === '1'
+/** Real pi sends one assistant message per tool call; mirror that on demand. */
+const splitTools = process.env.MOCK_SPLIT_TOOLS === '1'
 
 function seededTurn(i) {
-  const calls = toolBurst
+  const burst = toolBurst
     ? Array.from({ length: i === transcriptSize - 1 ? Math.max(toolBurst, 5) : toolBurst }, (_, k) => ({
         type: 'toolCall',
         id: `call-${i}-${k}`,
@@ -57,6 +161,13 @@ function seededTurn(i) {
         arguments: { path: `src/module-${i}-${k}.ts` }
       }))
     : []
+  const calls = splitTools
+    ? burst.map((call, k) => ({
+        ...call,
+        name: 'bash',
+        arguments: { command: `git log --oneline -${k + 1} && ls src` }
+      }))
+    : burst
 
   if (editDemo) {
     const oldLines = Array.from({ length: 40 }, (_, n) => `line ${n + 1}`)
@@ -73,38 +184,57 @@ function seededTurn(i) {
       }
     })
   }
+
+  const base = now - (transcriptSize - i) * 60_000
+  const user = {
+    role: 'user',
+    timestamp: base,
+    content: [{ type: 'text', text: `seeded question ${i}` }]
+  }
+  const results = calls.map((call) => ({
+    role: 'toolResult',
+    toolCallId: call.id,
+    toolName: call.name,
+    timestamp: base + 1200,
+    content: [
+      {
+        type: 'text',
+        text: Array.from(
+          { length: 60 },
+          (_, n) => `line ${n + 1} of ${call.arguments.path ?? call.arguments.command}`
+        ).join('\n')
+      }
+    ]
+  }))
+  const usage = { input: 80, output: 40, totalTokens: 120, cost: { total: 0.0001 } }
+  const answer = {
+    role: 'assistant',
+    timestamp: base + 2000,
+    content: [{ type: 'text', text: `seeded answer ${i}: ${'lorem ipsum dolor sit amet '.repeat(14)}` }],
+    usage: { input: 100, output: 200, totalTokens: 300, cost: { total: 0.0002 } }
+  }
+
+  if (splitTools) {
+    return [
+      user,
+      ...calls.flatMap((call, k) => [
+        { role: 'assistant', timestamp: base + 1000 + k * 10, content: [call], usage },
+        results[k]
+      ]),
+      answer
+    ]
+  }
+
   const parts = [
-    {
-      role: 'user',
-      timestamp: now - (transcriptSize - i) * 60_000,
-      content: [{ type: 'text', text: `seeded question ${i}` }]
-    },
+    user,
     {
       role: 'assistant',
-      timestamp: now - (transcriptSize - i) * 60_000 + 1000,
-      content: [
-        { type: 'text', text: `looking at module ${i}` },
-        ...calls
-      ],
-      usage: { input: 80, output: 40, totalTokens: 120, cost: { total: 0.0001 } }
+      timestamp: base + 1000,
+      content: [{ type: 'text', text: `looking at module ${i}` }, ...calls],
+      usage
     },
-    ...calls.map((call) => ({
-      role: 'toolResult',
-      toolCallId: call.id,
-      toolName: call.name,
-      timestamp: now - (transcriptSize - i) * 60_000 + 1200,
-      content: [
-        { type: 'text', text: Array.from({ length: 60 }, (_, n) => `line ${n + 1} of ${call.arguments.path}`).join('\n') }
-      ]
-    })),
-    {
-      role: 'assistant',
-      timestamp: now - (transcriptSize - i) * 60_000 + 2000,
-      content: [
-        { type: 'text', text: `seeded answer ${i}: ${'lorem ipsum dolor sit amet '.repeat(14)}` }
-      ],
-      usage: { input: 100, output: 200, totalTokens: 300, cost: { total: 0.0002 } }
-    }
+    ...results,
+    answer
   ]
   return parts
 }
@@ -215,7 +345,7 @@ function handle(command) {
       return response('set_thinking_level', undefined)
     case 'prompt': {
       if (!sessionFile && scenario !== 'auth-error') {
-        sessionFile = `/tmp/mock-session-${Date.now()}.jsonl`
+        sessionFile = createSessionFile()
       }
       if (scenario === 'auth-error') {
         return response('prompt', undefined, false, '401 Unauthorized: invalid api key')
@@ -239,8 +369,13 @@ function handle(command) {
       return response('abort', { steering: [], followUp: [] })
     case 'new_session':
     case 'switch_session':
-      sessionFile = `/tmp/mock-session-${Date.now()}.jsonl`
-      messages = []
+      if (command.type === 'switch_session' && typeof command.sessionPath === 'string') {
+        sessionFile = command.sessionPath
+        messages = loadSessionMessages(sessionFile)
+      } else {
+        sessionFile = createSessionFile()
+        messages = []
+      }
       return response(command.type, { sessionFile })
     case 'compact':
       return response('compact', {})

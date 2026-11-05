@@ -5,11 +5,13 @@ import {
   ipcMain,
   Menu,
   Notification,
+  powerMonitor,
   shell,
   type MenuItemConstructorOptions
 } from 'electron'
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -32,6 +34,13 @@ import { PiProcess } from './pi'
 import { locatePi, piVersion } from './pi-locate'
 import { deleteSession, listSessions, restoreSession, sessionExists, sessionsRoot } from './sessions'
 import { loadSettings, saveSettings } from './settings'
+import { validateCron } from './schedule-cadence'
+import { ensureScheduleCli, scheduleGuidance } from './schedule-bridge'
+import {
+  backgroundSchedulerStatus,
+  installBackgroundScheduler,
+  uninstallBackgroundScheduler
+} from './platform-scheduler'
 import { agentDir, loadPiSettings, piSettingsFile, savePiSettings } from './pi-settings'
 import {
   listPiModels,
@@ -40,9 +49,16 @@ import {
   removeProvider,
   saveProvider
 } from './models'
+import { countSkills, listConnectors, listSkills, readSkillFile } from './skills'
+import { listPackages, runPiPackageCommand } from './packages'
+import { scheduler } from './schedules'
+import { listSessionNotices } from './session-notices'
+import { rememberActiveSession } from './active-sessions'
 
 let mainWindow: BrowserWindow | null = null
 let proc: PiProcess | null = null
+const processes = new Map<string, PiProcess>()
+let sessionCounter = 0
 let queue: Promise<unknown> = Promise.resolve()
 
 function enqueue<T>(task: () => Promise<T>): Promise<T> {
@@ -57,7 +73,11 @@ function send(channel: string, payload: unknown): void {
   }
 }
 
-function wireProcess(process: PiProcess): void {
+function sessionKey(sessionPath: string): string {
+  return `session:${sessionPath}`
+}
+
+function wireProcess(process: PiProcess, key: string): void {
   process.on('record', (record: PiRecord) => {
     if (proc === process) send('pi:record', record)
   })
@@ -65,6 +85,10 @@ function wireProcess(process: PiProcess): void {
     if (proc === process) send('pi:stderr', chunk)
   })
   process.on('exit', (info: { code: number | null; signal: string | null; intentional?: boolean }) => {
+    if (processes.get(key) === process) processes.delete(key)
+    for (const [candidate, value] of processes) {
+      if (value === process) processes.delete(candidate)
+    }
     if (proc === process) {
       proc = null
       send('pi:status', { status: 'exited', code: info.code, signal: info.signal })
@@ -75,67 +99,83 @@ function wireProcess(process: PiProcess): void {
   })
 }
 
+function stopProcess(process: PiProcess): void {
+  for (const [candidate, value] of processes) {
+    if (value === process) processes.delete(candidate)
+  }
+  process.stop()
+}
+
 async function closeSession(): Promise<void> {
   const current = proc
   proc = null
   if (current) {
-    current.stop()
+    stopProcess(current)
     await new Promise((resolve) => setTimeout(resolve, 150))
   }
+}
+
+function scratchWorkspace(): string {
+  const dir = join(app.getPath('userData'), 'scratch')
+  mkdirSync(dir, { recursive: true })
+  return realpathSync(dir)
 }
 
 async function doOpenSession(options: {
   cwd: string
   sessionPath?: string | null
+  scratch?: boolean
 }): Promise<OpenSessionResult> {
   const english = loadSettings().language === 'en'
   const requested = options.cwd?.trim()
-  if (!requested || !existsSync(requested) || !statSync(requested).isDirectory()) {
+  if (!options.scratch && (!requested || !existsSync(requested) || !statSync(requested).isDirectory())) {
     return { ok: false, error: english ? 'Please choose an existing folder.' : '请选择一个存在的文件夹。' }
   }
-  const cwd = realpathSync(requested)
+  const scratchRoot = scratchWorkspace()
+  const cwd = options.scratch ? scratchRoot : realpathSync(requested)
+  const scratch = options.scratch === true || cwd === scratchRoot
 
   if (options.sessionPath && !(await sessionExists(options.sessionPath))) {
     return { ok: false, error: english ? 'This session file no longer exists.' : '这个会话文件已经不存在了。' }
   }
 
-  const active = proc
-  if (active && active.alive && active.cwd === cwd) {
-    try {
-      // Stop any in-flight run, then swap sessions in-process. This is far
-      // faster than respawning pi (no model/auth warm-up).
-      await active.send({ type: 'abort' }, 5000).catch(() => undefined)
-      const switched = await active.send<{ cancelled?: boolean }>(
-        options.sessionPath
-          ? { type: 'switch_session', sessionPath: options.sessionPath }
-          : { type: 'new_session' },
-        30_000
-      )
-      if (switched.success && !switched.data?.cancelled) {
-        const stateResponse = await active.send<{ sessionFile?: string | null }>(
+  const targetKey = options.sessionPath ? sessionKey(options.sessionPath) : null
+  if (targetKey) {
+    const existing = processes.get(targetKey)
+    if (existing?.alive) {
+      proc = existing
+      try {
+        const stateResponse = await existing.send<{ sessionFile?: string | null }>(
           { type: 'get_state' },
           20_000
         )
+        const existingPath = stateResponse.data?.sessionFile ?? options.sessionPath ?? null
+        if (existingPath) rememberActiveSession(existing.cwd, existingPath)
         return {
           ok: true,
-          cwd,
-          sessionPath: stateResponse.data?.sessionFile ?? options.sessionPath ?? null
+          cwd: existing.cwd,
+          sessionPath: existingPath,
+          scratch
         }
+      } catch {
+        processes.delete(targetKey)
       }
-    } catch {
-      // fall through to a fresh process
     }
   }
-
-  await closeSession()
 
   const settings = loadSettings()
   const piPath = locatePi(settings.piPath)
   const process = new PiProcess()
-  wireProcess(process)
+  const key = targetKey ?? `new:${cwd}:${++sessionCounter}`
+  wireProcess(process, key)
 
   try {
-    await process.start({ cwd, piPath, sessionPath: options.sessionPath ?? undefined })
+    await process.start({
+      cwd,
+      piPath,
+      sessionPath: options.sessionPath ?? undefined,
+      appendSystemPrompt: scheduleGuidance()
+    })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return {
@@ -147,6 +187,7 @@ async function doOpenSession(options: {
   }
 
   proc = process
+  processes.set(key, process)
 
   try {
     const response = await process.send<{ sessionFile?: string | null }>(
@@ -156,16 +197,32 @@ async function doOpenSession(options: {
     if (!response.success) {
       throw new Error(response.error || 'get_state failed')
     }
-    const sessionFile = response.data?.sessionFile ?? options.sessionPath ?? null
+    let sessionFile = response.data?.sessionFile ?? options.sessionPath ?? null
+    if (!sessionFile) {
+      // pi may not materialize a new session until the first prompt; create it
+      // now so the sidebar can track the running session immediately.
+      const created = await process.send<{ sessionFile?: string | null }>(
+        { type: 'new_session' },
+        20_000
+      )
+      if (created.success) sessionFile = created.data?.sessionFile ?? null
+    }
+    if (sessionFile) processes.set(sessionKey(sessionFile), process)
+    if (sessionFile) rememberActiveSession(cwd, sessionFile)
 
-    saveSettings({
-      lastWorkspace: cwd,
-      workspaces: [...settings.workspaces, cwd]
-    })
+    saveSettings(
+      scratch
+        ? {}
+        : {
+            lastWorkspace: cwd,
+            workspaces: [...settings.workspaces, cwd]
+          }
+    )
     send('app:settings', loadSettings())
-    return { ok: true, cwd, sessionPath: sessionFile }
+    return { ok: true, cwd, sessionPath: sessionFile, scratch }
   } catch (error) {
     process.stop()
+    processes.delete(key)
     proc = null
     const message = error instanceof Error ? error.message : String(error)
     return { ok: false, error: english ? `Pi is not ready: ${message}` : `pi 没有就绪：${message}` }
@@ -263,6 +320,12 @@ function registerIpc(): void {
   ipcMain.handle('app:update-settings', (_event, patch: Partial<Settings>): Settings => {
     const settings = saveSettings(patch)
     if (patch.language !== undefined) buildMenu()
+    if (patch.launchAtLogin !== undefined && app.isPackaged) {
+      app.setLoginItemSettings({
+        openAtLogin: patch.launchAtLogin,
+        args: ['--background']
+      })
+    }
     return settings
   })
 
@@ -327,6 +390,62 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('models:read', (): ModelsConfig => readModelsConfig())
+
+  ipcMain.handle('skills:list', (_event, cwd: string) => listSkills(cwd))
+  ipcMain.handle('skills:count', (_event, cwd: string) => countSkills(cwd))
+  ipcMain.handle('connectors:list', (_event, cwd: string) => listConnectors(cwd))
+  ipcMain.handle('skills:read', (_event, path: string) => readSkillFile(path))
+  ipcMain.handle('packages:list', (_event, cwd: string) => listPackages(cwd))
+
+  ipcMain.handle(
+    'packages:install',
+    (_event, source: string, options: { cwd: string; local?: boolean }) => {
+      const args = ['install', source]
+      if (options?.local) args.push('--local')
+      return runPiPackageCommand(args, options?.cwd || homedir(), (progress) =>
+        send('packages:progress', progress)
+      )
+    }
+  )
+
+  ipcMain.handle('packages:remove', (_event, source: string, cwd: string) =>
+    runPiPackageCommand(['remove', source], cwd || homedir(), (progress) =>
+      send('packages:progress', progress)
+    )
+  )
+
+  ipcMain.handle('packages:update', (_event, source: string, cwd: string) =>
+    runPiPackageCommand(['update', source], cwd || homedir(), (progress) =>
+      send('packages:progress', progress)
+    )
+  )
+
+  ipcMain.handle('schedules:list', () => scheduler.list())
+  ipcMain.handle('session:notices', (_event, sessionPath: string) => listSessionNotices(sessionPath))
+  ipcMain.handle('schedules:get', (_event, id: string) => scheduler.get(id))
+  ipcMain.handle('schedules:create', (_event, input) => scheduler.create(input))
+  ipcMain.handle('schedules:update', (_event, id: string, patch) => scheduler.update(id, patch))
+  ipcMain.handle('schedules:delete', (_event, id: string) => scheduler.remove(id))
+  ipcMain.handle('schedules:set-enabled', (_event, id: string, enabled: boolean) =>
+    scheduler.setEnabled(id, enabled)
+  )
+  ipcMain.handle('schedules:run-now', (_event, id: string) => scheduler.runNow(id))
+  ipcMain.handle('schedules:preview', (_event, cadence, count?: number, timezone?: string) =>
+    scheduler.preview(cadence, count, timezone)
+  )
+  ipcMain.handle('schedules:validate-cron', (_event, expression: string) =>
+    validateCron(expression)
+  )
+  ipcMain.handle('scheduler:background-status', () => backgroundSchedulerStatus())
+  ipcMain.handle('scheduler:set-background', async (_event, enabled: boolean) => {
+    const status = enabled
+      ? await installBackgroundScheduler()
+      : await uninstallBackgroundScheduler()
+    if (!enabled || status.installed === enabled) {
+      saveSettings({ backgroundScheduler: enabled })
+    }
+    return status
+  })
 
   ipcMain.handle(
     'models:save-provider',
@@ -580,7 +699,9 @@ function buildMenu(): void {
     },
     {
       label: english ? 'Window' : '窗口',
-      submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
+      submenu: isMac
+        ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
+        : [{ role: 'minimize' }, { role: 'close' }]
     },
     {
       role: 'help',
@@ -609,8 +730,12 @@ function createWindow(): void {
     minHeight: 560,
     show: false,
     backgroundColor: settings.theme === 'light' ? '#f7f6f3' : '#0c0d0f',
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 18, y: 20 },
+    ...(process.platform === 'darwin'
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 18, y: 20 }
+        }
+      : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -620,7 +745,10 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => mainWindow?.show())
+  const background = process.argv.includes('--background')
+  mainWindow.on('ready-to-show', () => {
+    if (!background) mainWindow?.show()
+  })
 
   mainWindow.on('close', () => {
     if (!mainWindow) return
@@ -660,14 +788,25 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    if (argv.includes('--scheduler-run-due')) return
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
       mainWindow.focus()
     }
   })
 
   app.whenReady().then(() => {
+    ensureScheduleCli()
+    if (process.argv.includes('--scheduler-run-due')) {
+      app.dock?.hide()
+      void scheduler
+        .runHeadlessTick()
+        .catch(() => undefined)
+        .finally(() => app.quit())
+      return
+    }
     if (process.platform === 'darwin' && !app.isPackaged) {
       try {
         app.dock?.setIcon(join(__dirname, '../../build/icon.png'))
@@ -679,8 +818,39 @@ if (!gotLock) {
     buildMenu()
     createWindow()
 
+    const settings = loadSettings()
+    if (app.isPackaged) {
+      app.setLoginItemSettings({
+        openAtLogin: settings.launchAtLogin === true,
+        args: ['--background']
+      })
+    }
+    if (settings.backgroundScheduler === true) {
+      void backgroundSchedulerStatus().then((status) => {
+        if (!status.installed) void installBackgroundScheduler()
+      })
+    }
+    scheduler.init(
+      () => send('schedules:changed', scheduler.list()),
+      (event) => send('schedules:event', event),
+      (taskId) => {
+        send('schedules:open', taskId)
+        if (mainWindow) {
+          if (mainWindow.isMinimized()) mainWindow.restore()
+          mainWindow.show()
+          mainWindow.focus()
+        }
+      }
+    )
+    powerMonitor.on('resume', () => scheduler.recoverNow())
+
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+      if (mainWindow) {
+        mainWindow.show()
+        mainWindow.focus()
+      } else {
+        createWindow()
+      }
     })
   })
 
@@ -689,6 +859,9 @@ if (!gotLock) {
   })
 
   app.on('before-quit', () => {
-    proc?.stop()
+    scheduler.shutdown()
+    for (const process of new Set(processes.values())) process.stop()
+    processes.clear()
+    proc = null
   })
 }

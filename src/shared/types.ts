@@ -122,6 +122,8 @@ export interface AssistantMessage {
   stopReason?: string
   errorMessage?: string
   timestamp?: number
+  /** Wall time pi spent producing this step (thinking + text). */
+  durationMs?: number
   [key: string]: unknown
 }
 
@@ -191,6 +193,13 @@ export interface SessionSummary {
   size: number
 }
 
+export interface BackgroundSchedulerStatus {
+  supported: boolean
+  installed: boolean
+  path?: string
+  detail?: string
+}
+
 export interface Settings {
   piPath?: string
   language?: 'zh-CN' | 'en'
@@ -212,6 +221,8 @@ export interface Settings {
   workPanelTabs?: ('changes' | 'files' | 'terminal' | 'artifacts')[]
   toolCardsExpanded?: boolean
   followStream?: boolean
+  launchAtLogin?: boolean
+  backgroundScheduler?: boolean
   windowBounds?: { x?: number; y?: number; width: number; height: number }
 }
 
@@ -333,6 +344,7 @@ export interface OpenSessionResult {
   error?: string
   sessionPath?: string | null
   cwd?: string
+  scratch?: boolean
 }
 
 export interface DirEntry {
@@ -368,4 +380,153 @@ export interface SessionListItem {
   cwd: string
   name: string
   exists: boolean
+}
+
+/** One skill discovered on disk (with or without a pi package). */
+export interface SkillEntry {
+  name: string
+  description: string
+  version?: string
+  path: string
+  realPath: string
+  source: 'user' | 'agents' | 'project' | 'package'
+  packageName?: string
+  symlink: boolean
+  requires: { bins: string[]; missing: string[] }
+  shadowedBy?: string
+}
+
+export interface PackageResources {
+  extensions: number
+  skills: number
+  prompts: number
+  themes: number
+}
+
+export interface PackageEntry {
+  source: string
+  name: string
+  version?: string
+  description?: string
+  scope: 'user' | 'project'
+  path?: string
+  resources: PackageResources
+  enabled: boolean
+}
+
+/** An external CLI that skills invoke (lark-cli, git, gh, …). */
+export interface ConnectorEntry {
+  name: string
+  installed: boolean
+  path?: string
+  usedBy: Array<{ name: string; path: string }>
+}
+
+export interface PackageProgress {
+  phase: 'start' | 'log' | 'done' | 'error'
+  line?: string
+  code?: number | null
+}
+
+export type ScheduleCadence =
+  | { type: 'once'; at: number }
+  | { type: 'hourly'; minute: number }
+  | { type: 'daily'; time: string }
+  | { type: 'weekdays'; time: string }
+  | { type: 'weekly'; weekday: number; time: string }
+  | { type: 'cron'; expression: string }
+  | { type: 'event'; event: 'file-change'; path: string; debounceMs: number }
+
+export type ScheduledRunStatus =
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'timeout'
+  | 'interrupted'
+  | 'missed'
+  | 'skipped'
+
+export interface ScheduledTask {
+  id: string
+  name: string
+  prompt: string
+  projectPath: string
+  /** Conversation that created the task, for completion notices. */
+  sourceSessionPath?: string
+  cadence: ScheduleCadence
+  timezone?: string
+  runMode: 'new-session' | 'continue-session'
+  model?: string
+  thinking?: string
+  tools?: string[]
+  catchUp: boolean
+  catchUpWindowMs: number
+  notifications: boolean
+  enabled: boolean
+  createdAt: number
+  updatedAt: number
+  nextRunAt: number | null
+  pendingCatchUpAt?: number | null
+  lastRunAt: number | null
+  lastStatus: ScheduledRunStatus | null
+  consecutiveFailures: number
+}
+
+export interface ScheduledRun {
+  id: string
+  taskId: string
+  trigger: 'schedule' | 'manual' | 'catch-up' | 'event'
+  scheduledFor: number | null
+  status: ScheduledRunStatus
+  startedAt: number
+  endedAt?: number
+  durationMs?: number
+  exitCode?: number | null
+  sessionPath?: string
+  logPath: string
+  summary?: string
+  error?: string
+}
+
+export interface SessionNotice {
+  id: string
+  sessionPath: string
+  taskId: string
+  taskName: string
+  status: ScheduledRunStatus
+  runId: string
+  text: string
+  createdAt: number
+}
+
+export type ScheduleEvent =
+  | { type: 'created'; taskId: string; name: string; nextRunAt: number | null }
+  | { type: 'started'; taskId: string; name: string; runId: string; startedAt: number }
+  | {
+      type: 'finished'
+      taskId: string
+      name: string
+      runId: string
+      status: ScheduledRunStatus
+      durationMs?: number
+      error?: string
+      sessionPath?: string
+      removed?: boolean
+    }
+  | { type: 'notice'; notice: SessionNotice }
+
+export interface ScheduledTaskInput {
+  name: string
+  prompt: string
+  projectPath: string
+  sourceSessionPath?: string
+  cadence: ScheduleCadence
+  timezone?: string
+  runMode?: 'new-session' | 'continue-session'
+  model?: string
+  thinking?: string
+  tools?: string[]
+  catchUp?: boolean
+  notifications?: boolean
+  enabled?: boolean
 }

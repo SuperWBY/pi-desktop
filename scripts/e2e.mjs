@@ -9,12 +9,30 @@
  */
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
 const tmpRoot = join(root, 'output', 'e2e')
 const mockPi = join(root, 'scripts', 'mock-pi.mjs')
+
+// The suite drives the built app (`out/`), not the sources. Running it against
+// a stale build silently tests yesterday's UI, so rebuild when sources moved.
+function newestSourceMtime(dir) {
+  let newest = 0
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) newest = Math.max(newest, newestSourceMtime(path))
+    else newest = Math.max(newest, statSync(path).mtimeMs)
+  }
+  return newest
+}
+
+const outMain = join(root, 'out', 'main', 'index.js')
+if (!existsSync(outMain) || newestSourceMtime(join(root, 'src')) > statSync(outMain).mtimeMs) {
+  console.log('sources changed — building before e2e…')
+  execFileSync('npm', ['run', 'build'], { cwd: root, stdio: 'inherit' })
+}
 
 let failures = 0
 const results = []
@@ -38,13 +56,13 @@ function freshDirs(name) {
   return dirs
 }
 
-function seedSession(sessionsDir, id, name, turns = 1) {
+function seedSession(sessionsDir, id, name, turns = 1, cwd = root) {
   const project = join(sessionsDir, '--mock-project--')
   mkdirSync(project, { recursive: true })
   const file = join(project, `2026-01-01T00-00-00-000Z_${id}.jsonl`)
   const now = new Date().toISOString()
   const lines = [
-    { type: 'session', id, cwd: root, timestamp: now },
+    { type: 'session', id, cwd, timestamp: now },
     { type: 'session_info', name }
   ]
   for (let i = 0; i < turns; i++) {
@@ -276,14 +294,6 @@ async function casePolish() {
   const notified = await page.evaluate(() => window.pi.notify({ title: 't', body: 'b' }))
   check('notify IPC 可用（返回布尔）', typeof notified === 'boolean', String(notified))
 
-  // export markdown / html through the virtual save dialog
-  await page.locator('.session-item').first().click({ button: 'right' })
-  await page.waitForSelector('.context-menu')
-  await page.locator('.context-menu .menu-item', { hasText: 'Markdown' }).click()
-  await page.waitForTimeout(1200)
-  const exported = readdirSync(exportDir)
-  check('导出 Markdown 落盘', exported.some((name) => name.endsWith('.md')), exported.join(','))
-
   // diff: open the edit card and toggle full-file context
   await page.locator('.turn').last().locator('.tool-card:has(.kind-edit) .tool-head').first().click()
   await page.waitForTimeout(300)
@@ -312,8 +322,74 @@ async function casePolish() {
   })
   check('图片 lightbox 可打开并关闭', lightbox.open && lightbox.closed, JSON.stringify(lightbox))
 
+  // export markdown last: switching the session reloads the transcript, so any
+  // check that needs tool cards has to run before this.
+  await page.locator('.session-item').first().click()
+  await page.waitForTimeout(1200)
+  await page.locator('.session-item').first().click({ button: 'right' })
+  await page.waitForSelector('.context-menu')
+  await page.locator('.context-menu .menu-item', { hasText: 'Markdown' }).click()
+  await page.waitForTimeout(1200)
+  const exported = readdirSync(exportDir)
+  check('导出 Markdown 落盘', exported.some((name) => name.endsWith('.md')), exported.join(','))
+
   const virtual = await page.evaluate(() => document.querySelectorAll('.turn').length)
   check('轮次数量统计正常', virtual >= 1, `turns=${virtual}`)
+  await app.close()
+}
+
+async function caseProcessSteps() {
+  const dirs = freshDirs('steps')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', lastWorkspace: root, workspaces: [root], turnAggregate: 5 })
+  )
+  // One assistant message per bash call, exactly like real pi.
+  const { app, page } = await launch(dirs, 'default', {
+    MOCK_TRANSCRIPT: '1',
+    MOCK_TOOLS: '6',
+    MOCK_SPLIT_TOOLS: '1'
+  })
+  await page.keyboard.press('Meta+Shift+Period')
+  await page.waitForTimeout(500)
+
+  const collapsed = await page.evaluate(() => {
+    const turn = document.querySelectorAll('.turn')[0]
+    const groups = [...turn.querySelectorAll('.tool-group')]
+    return {
+      groups: groups.length,
+      cards: turn.querySelectorAll('.tool-card').length,
+      titles: groups.map((group) => group.querySelector('.tool-title')?.textContent ?? '')
+    }
+  })
+  check(
+    '6 条独立消息里的终端调用合成一行',
+    collapsed.groups === 1 && collapsed.cards === 0,
+    JSON.stringify(collapsed)
+  )
+  check(
+    '分组标题是「运行了 6 条命令」',
+    /运行了\s*6\s*条命令|Ran 6 commands/.test(collapsed.titles[0] ?? ''),
+    collapsed.titles.join(' | ')
+  )
+
+  await page.locator('.turn').first().locator('.tool-group .tool-head').first().click()
+  await page.waitForTimeout(200)
+  const opened = await page.evaluate(() => {
+    const turn = document.querySelectorAll('.turn')[0]
+    return {
+      cards: turn.querySelectorAll('.tool-card').length,
+      subtitles: [...turn.querySelectorAll('.tool-group .tool-subtitle')].map(
+        (node) => node.textContent ?? ''
+      )
+    }
+  })
+  check('展开分组后 6 张卡都在', opened.cards === 6, JSON.stringify(opened))
+  check(
+    '分组摘要带上命令提示',
+    /git log|ls src/.test(opened.subtitles[0] ?? ''),
+    opened.subtitles[0] ?? ''
+  )
   await app.close()
 }
 
@@ -348,7 +424,7 @@ async function caseTurnsFold() {
   const dirs = freshDirs('turns')
   writeFileSync(
     join(dirs.userData, 'settings.json'),
-    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root, turnAggregate: 5 })
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root, turnAggregate: 5, turnAutoFold: true })
   )
   const { app, page, errors } = await launch(dirs, 'default', {
     MOCK_TRANSCRIPT: '8',
@@ -403,21 +479,27 @@ async function caseTurnsFold() {
     JSON.stringify(truncation)
   )
 
-  // collapse again and compare the anchor position
-  const anchor = await page.evaluate(() => {
-    const turn = document.querySelectorAll('.turn')[2]
-    return turn.getBoundingClientRect().top
-  })
-  await page.locator('.turn').last().locator('.turn-summary-main').click()
+  // Toggle a middle turn: its own header must stay put while the detail opens/closes.
+  const toggled = page.locator('.turn').nth(2).locator('.turn-summary-main')
+  await toggled.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(250)
+  const topOf = async () => page.evaluate(() => document.querySelectorAll('.turn')[2].getBoundingClientRect().top)
+  const beforeToggle = await topOf()
+  await toggled.click()
   await page.waitForTimeout(400)
-  const anchorAfter = await page.evaluate(() => {
-    const turn = document.querySelectorAll('.turn')[2]
-    return turn.getBoundingClientRect().top
-  })
+  const afterExpand = await topOf()
   check(
-    '折叠/展开保持滚动锚点',
-    Math.abs(anchor - anchorAfter) < 8,
-    `${Math.round(anchor)} → ${Math.round(anchorAfter)}`
+    '展开时被点的轮次不跳动',
+    Math.abs(beforeToggle - afterExpand) < 8,
+    `${Math.round(beforeToggle)} → ${Math.round(afterExpand)}`
+  )
+  await toggled.click()
+  await page.waitForTimeout(400)
+  const afterCollapse = await topOf()
+  check(
+    '收起时被点的轮次不跳动',
+    Math.abs(afterExpand - afterCollapse) < 8,
+    `${Math.round(afterExpand)} → ${Math.round(afterCollapse)}`
   )
 
   // batch shortcuts
@@ -460,7 +542,7 @@ async function caseFoldPersistence() {
   const dirs = freshDirs('fold-persist')
   writeFileSync(
     join(dirs.userData, 'settings.json'),
-    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root, turnAutoFold: true })
   )
   let { app, page } = await launch(dirs, 'default', { MOCK_TRANSCRIPT: '6', MOCK_TOOLS: '2' })
   await page.locator('.turn').last().locator('.turn-summary-main').click()
@@ -484,32 +566,1022 @@ async function caseFoldPersistence() {
   await app.close()
 }
 
+async function caseDefaultVisibility() {
+  const dirs = freshDirs('visible')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root, turnAggregate: 5 })
+  )
+  const { app, page } = await launch(dirs, 'default', { MOCK_TRANSCRIPT: '3', MOCK_TOOLS: '3' })
+  const state = await page.evaluate(() => {
+    const turns = document.querySelectorAll('.turn')
+    const last = turns[turns.length - 1]
+    return {
+      rows: last.querySelectorAll('.tool-card, .tool-group').length,
+      folded: last.querySelectorAll('.folded-answer').length
+    }
+  })
+  check(
+    '默认直接显示过程，不折叠成摘要',
+    state.rows > 0 && state.folded === 0,
+    JSON.stringify(state)
+  )
+  await app.close()
+}
+
 async function caseAutoFoldOnAnswer() {
   const dirs = freshDirs('autofold')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root, turnAutoFold: true })
+  )
+  const { app, page } = await launch(dirs, 'default', { MOCK_TRANSCRIPT: '3', MOCK_TOOLS: '3' })
+  const after = await page.evaluate(() => {
+    const turns = document.querySelectorAll('.turn')
+    const last = turns[turns.length - 1]
+    return {
+      summaries: last.querySelectorAll('.turn-summary').length,
+      rows: last.querySelectorAll('.tool-card, .tool-group').length
+    }
+  })
+  check(
+    '开启自动收起后过程折成一行摘要',
+    after.summaries === 1 && after.rows === 0,
+    JSON.stringify(after)
+  )
+  await app.close()
+}
+
+async function caseSidebarLayout() {
+  const dirs = freshDirs('sidebar-layout')
+  const sessionA = seedSession(dirs.sessions, 'layout-a', '布局会话 A', 2)
+  seedSession(dirs.sessions, 'layout-b', '布局会话 B', 1)
+  seedSession(dirs.sessions, 'layout-loose', '无项目会话', 1, '/tmp/loose-project')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root, lastSessionPath: sessionA })
+  )
+  const { app, page } = await launch(dirs)
+  await page.waitForSelector('.recent-sessions .session-item')
+
+  const info = await page.evaluate(() => {
+    const labels = [...document.querySelectorAll('.project-shortcuts-label')].map(
+      (node) => node.textContent ?? ''
+    )
+    const rows = [...document.querySelectorAll('.recent-sessions .session-item')]
+    return {
+      labels,
+      projectIndex: labels.findIndex((label) => /项目|Projects/.test(label)),
+      recentIndex: labels.findIndex((label) => /最近对话|Recent/.test(label)),
+      dates: document.querySelectorAll('.session-group-label').length,
+      projectRows: document.querySelectorAll('.project-tree-sessions .session-item').length,
+      projectMetas: document.querySelectorAll('.project-tree-sessions .session-meta').length,
+      recent: rows.length,
+      recentTitle: rows[0]?.querySelector('.session-title')?.textContent ?? '',
+      height: rows[0]?.getBoundingClientRect().height ?? 0,
+      meta: rows[0]?.querySelector('.session-meta')?.textContent ?? ''
+    }
+  })
+  check(
+    '侧栏分为「项目」和「最近对话」',
+    info.projectIndex >= 0 && info.recentIndex > info.projectIndex,
+    JSON.stringify(info.labels)
+  )
+  check('不再有日期分组', info.dates === 0, `dateLabels=${info.dates}`)
+  check(
+    '有项目的会话只显示在项目下（默认展开）',
+    info.projectRows >= 2,
+    `projectRows=${info.projectRows}`
+  )
+  check(
+    '项目内会话不显示时间 / 条数',
+    info.projectMetas === 0,
+    `metas=${info.projectMetas}`
+  )
+  check(
+    '最近对话只显示无项目的会话',
+    info.recent === 1 && info.recentTitle === '无项目会话',
+    JSON.stringify({ recent: info.recent, title: info.recentTitle })
+  )
+  check(
+    '会话行更紧凑（单行）',
+    info.height > 0 && info.height < 40,
+    `height=${Math.round(info.height)}`
+  )
+  check(
+    '最近对话只显示时间、不显示条数',
+    /刚刚|分钟|小时|天|now|ago/.test(info.meta) && !/条|messages/.test(info.meta),
+    info.meta
+  )
+
+  await page.locator('.project-row-main').first().click()
+  await page.waitForTimeout(250)
+  const collapsed = await page.evaluate(() => ({
+    projectRows: document.querySelectorAll('.project-tree-sessions .session-item').length,
+    recent: document.querySelectorAll('.recent-sessions .session-item').length,
+    chevrons: document.querySelectorAll('.project-tree-toggle').length
+  }))
+  check(
+    '点击项目行收起，无需箭头图标',
+    collapsed.projectRows === 0 && collapsed.recent === 1 && collapsed.chevrons === 0,
+    JSON.stringify(collapsed)
+  )
+  await page.locator('.project-row-main').first().click()
+  await page.waitForTimeout(200)
+  const expanded = await page.evaluate(
+    () => document.querySelectorAll('.project-tree-sessions .session-item').length
+  )
+  check('项目下会话不按时间分组', expanded >= 2, `rows=${expanded}`)
+
+  const sessionMain = page.locator('.project-tree-sessions .session-item .session-main').first()
+  const sessionTitle = await sessionMain.locator('.session-title').innerText()
+  await sessionMain.dblclick()
+  await page.waitForSelector('.rename-input')
+  const renameValue = await page.locator('.rename-input').inputValue()
+  check('双击会话进入重命名', renameValue === sessionTitle, `${renameValue} / ${sessionTitle}`)
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(150)
+
+  const projectName = await page.locator('.project-row-main').first().innerText()
+  await page.locator('.project-row-main').first().dblclick()
+  await page.waitForTimeout(200)
+  const projectAfter = await page.locator('.project-row-main').first().innerText()
+  check(
+    '双击项目文件夹不会重命名',
+    (await page.locator('.rename-input').count()) === 0 && projectAfter === projectName,
+    `${projectName} → ${projectAfter}`
+  )
+
+  const projectRow = page.locator('.project-tree').first()
+  await projectRow.hover()
+  await page.waitForTimeout(200)
+  const newChat = projectRow.locator('.project-new-chat')
+  const newChatVisible = await newChat.evaluate((el) => Number(getComputedStyle(el).opacity) > 0.5)
+  check(
+    '项目悬停出现「新建对话」',
+    (await newChat.count()) === 1 && newChatVisible,
+    `visible=${newChatVisible}`
+  )
+  await newChat.click()
+  await page.waitForTimeout(400)
+  const activeProject = await page.locator('.project-row.active .project-row-main').innerText()
+  check('点击后在项目里新建对话', activeProject === 'pi-desktop', activeProject)
+
+  await page.locator('.composer-input').fill('running check')
+  await page.keyboard.press('Enter')
+  await page.waitForTimeout(1200)
+  const live = await page.evaluate(() => {
+    const row = [...document.querySelectorAll('.session-item')].find((item) =>
+      item.querySelector('.session-running')
+    )
+    return {
+      spinner: Boolean(row),
+      title: row?.querySelector('.session-title')?.textContent ?? ''
+    }
+  })
+  check('执行中的会话左侧显示 loading', live.spinner, JSON.stringify(live))
+  await app.close()
+}
+
+async function waitForScheduleRun(page, id, timeout = 20_000) {
+  const start = Date.now()
+  while (Date.now() - start < timeout) {
+    const detail = await page.evaluate((taskId) => window.pi.getSchedule(taskId), id)
+    if (detail?.runs.some((run) => run.status === 'success')) return detail
+    await page.waitForTimeout(250)
+  }
+  throw new Error(`scheduled run did not finish: ${id}`)
+}
+
+async function caseSchedules() {
+  const dirs = freshDirs('schedules')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [dirs.base], lastWorkspace: dirs.base })
+  )
+  const { app, page } = await launch(dirs, 'default', { MOCK_SCHEDULE_DELAY: '200' })
+
+  const task = await page.evaluate(
+    (projectPath) =>
+      window.pi.createSchedule({
+        name: 'E2E 定时任务',
+        prompt: 'say scheduled hello',
+        projectPath,
+        cadence: { type: 'daily', time: '09:00' },
+        catchUp: true,
+        notifications: false
+      }),
+    dirs.base
+  )
+  await page.evaluate((id) => window.pi.runScheduleNow(id), task.id)
+
+  const detail = await waitForScheduleRun(page, task.id)
+  const run = detail?.runs.find((item) => item.status === 'success')
+  check('定时任务到点执行并成功', Boolean(run), JSON.stringify(detail?.task.lastStatus))
+  check('运行生成独立会话文件', Boolean(run?.sessionPath?.endsWith('.jsonl')), run?.sessionPath ?? '')
+  check('运行有日志文件', Boolean(run?.logPath && existsSync(run.logPath)), run?.logPath ?? '')
+
+  await page.locator('.schedules-entry').click()
+  await page.waitForSelector('.schedule-row')
+  const listed = await page.locator('.schedule-row').first().innerText()
+  check('侧栏入口打开定时任务列表', /E2E 定时任务/.test(listed), listed)
+
+  await page.locator('.schedule-row').first().click()
+  await page.waitForSelector('.schedule-detail')
+  const history = await page.locator('.schedule-runs').innerText()
+  check('详情页显示运行历史', /成功/.test(history), history)
+
+  await page.locator('.skills-head .skills-back').click()
+  await page.waitForSelector('.schedule-row')
+  await page.getByRole('button', { name: '新建任务' }).first().click()
+  await page.waitForSelector('.modal')
+  const compact = await page.evaluate(() => ({
+    prompt: Boolean(document.querySelector('.schedule-textarea')),
+    cadence: document.querySelectorAll('.schedule-cadence .skills-filter').length,
+    preview: document.querySelectorAll('.schedule-preview span').length,
+    nameField: [...document.querySelectorAll('.schedule-field > span')].some((node) => node.textContent === '名称'),
+    projectField: [...document.querySelectorAll('.schedule-field > span')].some((node) => node.textContent === '项目'),
+    toolsField: [...document.querySelectorAll('.schedule-field > span')].some((node) => node.textContent === '工具白名单'),
+    more: Boolean(document.querySelector('.schedule-more'))
+  }))
+  check(
+    '新建任务只保留 Prompt / 频率，高级项折叠',
+    compact.prompt && compact.cadence >= 4 && compact.preview >= 2 && compact.more && !compact.nameField && !compact.projectField && !compact.toolsField,
+    JSON.stringify(compact)
+  )
+  await page.locator('.schedule-more').click()
+  const advanced = await page.evaluate(() => ({
+    selects: document.querySelectorAll('.schedule-advanced select').length,
+    switches: document.querySelectorAll('.schedule-advanced .switch').length
+  }))
+  check('更多选项包含时区 / 运行方式 / 补跑 / 通知', advanced.selects === 2 && advanced.switches === 2, JSON.stringify(advanced))
+  const backgroundStatus = await page.evaluate(() => window.pi.getBackgroundScheduler())
+  check('系统级调度状态可读取', backgroundStatus.supported === true, JSON.stringify(backgroundStatus))
+
+  await page.locator('.schedule-textarea').fill('E2E 界面任务')
+  await page.locator('.modal .button.primary').click()
+  await page.waitForSelector('.modal', { state: 'detached' })
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('.schedule-row')].some((row) =>
+      row.textContent?.includes('E2E 界面任务')
+    )
+  )
+  const created = await page.evaluate(() => window.pi.listSchedules())
+  const uiTask = created.find((item) => item.name === 'E2E 界面任务')
+  check(
+    '名称自动生成、目录与工具走默认值',
+    Boolean(uiTask) && uiTask.projectPath.length > 0 && uiTask.tools === undefined,
+    JSON.stringify({ name: uiTask?.name, project: uiTask?.projectPath, tools: uiTask?.tools })
+  )
+
+  const uiRow = page.locator('.schedule-row', { hasText: 'E2E 界面任务' })
+  await uiRow.locator('.switch').click()
+  let paused = false
+  for (let index = 0; index < 20 && !paused; index += 1) {
+    const list = await page.evaluate(() => window.pi.listSchedules())
+    paused = list.find((item) => item.name === 'E2E 界面任务')?.enabled === false
+    if (!paused) await page.waitForTimeout(100)
+  }
+  check('列表开关可以暂停任务', paused, String(paused))
+  await uiRow.locator('.switch').click()
+  let resumed = false
+  for (let index = 0; index < 20 && !resumed; index += 1) {
+    const list = await page.evaluate(() => window.pi.listSchedules())
+    resumed = list.find((item) => item.name === 'E2E 界面任务')?.enabled === true
+    if (!resumed) await page.waitForTimeout(100)
+  }
+  check('列表开关可以恢复任务', resumed, String(resumed))
+
+  await page.keyboard.press('Escape')
+
+  await app.close()
+}
+
+async function caseScheduleRecovery() {
+  const dirs = freshDirs('schedule-recovery')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [dirs.base], lastWorkspace: dirs.base })
+  )
+  const first = await launch(dirs, 'default', { MOCK_SCHEDULE_DELAY: '100' })
+  const task = await first.page.evaluate(
+    (projectPath) =>
+      window.pi.createSchedule({
+        name: 'E2E 恢复任务',
+        prompt: 'recover me',
+        projectPath,
+        cadence: { type: 'daily', time: '09:00' },
+        catchUp: true,
+        notifications: false
+      }),
+    dirs.base
+  )
+  await first.app.close()
+
+  const file = join(dirs.userData, 'schedules', 'tasks.json')
+  const data = JSON.parse(readFileSync(file, 'utf8'))
+  const stored = data.tasks.find((item) => item.id === task.id)
+  stored.nextRunAt = Date.now() - 5 * 60_000
+  writeFileSync(file, JSON.stringify(data, null, 2))
+
+  const { app, page } = await launch(dirs, 'default', { MOCK_SCHEDULE_DELAY: '100' })
+  const detail = await waitForScheduleRun(page, task.id)
+  const successes = detail?.runs.filter((item) => item.status === 'success') ?? []
+  const catchUps = detail?.runs.filter((item) => item.trigger === 'catch-up') ?? []
+  check('重启后补跑一次', successes.length === 1 && catchUps.length === 1, JSON.stringify(detail?.runs))
+  check('补跑推进下一次运行', typeof detail?.task.nextRunAt === 'number' && detail.task.nextRunAt > Date.now(), String(detail?.task.nextRunAt))
+  await app.close()
+}
+
+async function caseScheduleInterrupted() {
+  const dirs = freshDirs('schedule-interrupted')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [dirs.base], lastWorkspace: dirs.base })
+  )
+  const first = await launch(dirs, 'default', { MOCK_SCHEDULE_DELAY: '8000' })
+  const task = await first.page.evaluate(
+    (projectPath) =>
+      window.pi.createSchedule({
+        name: 'E2E 中断任务',
+        prompt: 'interrupt me',
+        projectPath,
+        cadence: { type: 'daily', time: '09:00' },
+        catchUp: true,
+        notifications: false
+      }),
+    dirs.base
+  )
+  await first.page.evaluate((id) => { void window.pi.runScheduleNow(id) }, task.id)
+
+  const started = Date.now()
+  while (Date.now() - started < 15_000) {
+    const detail = await first.page.evaluate((id) => window.pi.getSchedule(id), task.id)
+    if (detail?.runs.some((run) => run.status === 'running')) break
+    await first.page.waitForTimeout(200)
+  }
+  await first.app.close()
+
+  const { app, page } = await launch(dirs, 'default', { MOCK_SCHEDULE_DELAY: '100' })
+  const detail = await waitForScheduleRun(page, task.id)
+  const interrupted = detail?.runs.filter((run) => run.status === 'interrupted') ?? []
+  const success = detail?.runs.filter((run) => run.status === 'success') ?? []
+  check(
+    '运行中退出会标记中断并补跑',
+    interrupted.length === 1 && success.length === 1,
+    JSON.stringify(detail?.runs.map((run) => run.status))
+  )
+  await app.close()
+}
+
+async function caseScheduleHeadlessTick() {
+  const dirs = freshDirs('schedule-headless')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [dirs.base], lastWorkspace: dirs.base })
+  )
+  const first = await launch(dirs, 'default', { MOCK_SCHEDULE_DELAY: '100' })
+  const task = await first.page.evaluate(
+    (projectPath) =>
+      window.pi.createSchedule({
+        name: 'E2E 系统级任务',
+        prompt: 'run without the app',
+        projectPath,
+        cadence: { type: 'daily', time: '09:00' },
+        catchUp: true,
+        notifications: false
+      }),
+    dirs.base
+  )
+  await first.app.close()
+
+  const file = join(dirs.userData, 'schedules', 'tasks.json')
+  const data = JSON.parse(readFileSync(file, 'utf8'))
+  const stored = data.tasks.find((item) => item.id === task.id)
+  stored.nextRunAt = Date.now() - 60_000
+  writeFileSync(file, JSON.stringify(data, null, 2))
+
+  const headless = await electron.launch({
+    args: ['.', '--scheduler-run-due', `--user-data-dir=${dirs.userData}`],
+    cwd: root,
+    env: {
+      ...process.env,
+      PI_DESKTOP_PI_PATH: mockPi,
+      PI_CODING_AGENT_DIR: dirs.agent,
+      PI_CODING_AGENT_SESSION_DIR: dirs.sessions,
+      MOCK_SCHEDULE_DELAY: '100'
+    }
+  })
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('headless tick did not exit')), 25_000)
+    headless.on('close', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+
+  const runs = JSON.parse(readFileSync(join(dirs.userData, 'schedules', 'runs', `${task.id}.json`), 'utf8'))
+  check(
+    '无窗口 tick 也能执行到期任务',
+    runs.some((run) => run.status === 'success' && run.trigger === 'catch-up'),
+    JSON.stringify(runs.map((run) => `${run.trigger}:${run.status}`))
+  )
+}
+
+async function caseScheduleAdvanced() {
+  const dirs = freshDirs('schedule-advanced')
+  const argsFile = join(dirs.base, 'last-args.json')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [dirs.base], lastWorkspace: dirs.base })
+  )
+  const { app, page } = await launch(dirs, 'default', {
+    MOCK_SCHEDULE_DELAY: '100',
+    MOCK_ARGS_FILE: argsFile
+  })
+
+  const task = await page.evaluate(
+    (projectPath) =>
+      window.pi.createSchedule({
+        name: 'E2E 高级任务',
+        prompt: 'continue this thread',
+        projectPath,
+        cadence: { type: 'cron', expression: '0 9 * * *' },
+        timezone: 'Asia/Shanghai',
+        runMode: 'continue-session',
+        tools: ['read'],
+        catchUp: true,
+        notifications: false
+      }),
+    dirs.base
+  )
+
+  const localTime = await page.evaluate(
+    (timestamp) =>
+      new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Shanghai',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23'
+      }).format(new Date(timestamp)),
+    task.nextRunAt
+  )
+  check('cron + 时区计算下一次运行', localTime === '09:00', localTime)
+
+  const first = await page.evaluate((id) => window.pi.runScheduleNow(id), task.id)
+  await page.waitForTimeout(300)
+  const second = await page.evaluate((id) => window.pi.runScheduleNow(id), task.id)
+  check('继续同一会话复用 sessionPath', Boolean(first?.sessionPath) && first?.sessionPath === second?.sessionPath, `${first?.sessionPath} / ${second?.sessionPath}`)
+  const sessionLines = readFileSync(first.sessionPath, 'utf8').trim().split('\n').length
+  check('继续会话追加消息', sessionLines >= 6, String(sessionLines))
+
+  const argv = JSON.parse(readFileSync(argsFile, 'utf8'))
+  check('工具白名单传给 pi', argv.includes('--tools') && argv.includes('read'), argv.join(' '))
+  check('继续会话使用 --session', argv.includes('--session'), argv.join(' '))
+  await app.close()
+}
+
+async function caseScheduleFailures() {
+  const dirs = freshDirs('schedule-failures')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [dirs.base], lastWorkspace: dirs.base })
+  )
+  const { app, page } = await launch(dirs, 'default', {
+    MOCK_SCHEDULE_DELAY: '50',
+    MOCK_SCHEDULE_FAIL: '1'
+  })
+  const task = await page.evaluate(
+    (projectPath) =>
+      window.pi.createSchedule({
+        name: 'E2E 失败任务',
+        prompt: 'fail',
+        projectPath,
+        cadence: { type: 'daily', time: '09:00' },
+        catchUp: true,
+        notifications: false
+      }),
+    dirs.base
+  )
+  for (let index = 0; index < 3; index += 1) {
+    await page.evaluate((id) => window.pi.runScheduleNow(id), task.id)
+  }
+  const detail = await page.evaluate((id) => window.pi.getSchedule(id), task.id)
+  check(
+    '连续 3 次失败后自动暂停',
+    detail?.task.enabled === false && detail?.task.consecutiveFailures >= 3,
+    JSON.stringify({ enabled: detail?.task.enabled, failures: detail?.task.consecutiveFailures })
+  )
+  await app.close()
+}
+
+async function caseScheduleEvent() {
+  const dirs = freshDirs('schedule-event')
+  const watched = join(dirs.base, 'watched')
+  mkdirSync(watched, { recursive: true })
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [dirs.base], lastWorkspace: dirs.base })
+  )
+  const { app, page } = await launch(dirs, 'default', { MOCK_SCHEDULE_DELAY: '100' })
+  const task = await page.evaluate(
+    ({ projectPath, watchPath }) =>
+      window.pi.createSchedule({
+        name: 'E2E 事件任务',
+        prompt: 'file changed',
+        projectPath,
+        cadence: { type: 'event', event: 'file-change', path: watchPath, debounceMs: 300 },
+        catchUp: false,
+        notifications: false
+      }),
+    { projectPath: dirs.base, watchPath: watched }
+  )
+  check('事件任务没有下次运行时间', task.nextRunAt == null, String(task.nextRunAt))
+  await page.waitForTimeout(500)
+  writeFileSync(join(watched, 'test.txt'), 'changed')
+  const detail = await waitForScheduleRun(page, task.id)
+  check(
+    '文件变化触发任务',
+    detail?.runs.some((run) => run.trigger === 'event' && run.status === 'success'),
+    JSON.stringify(detail?.runs.map((run) => `${run.trigger}:${run.status}`))
+  )
+  await app.close()
+}
+
+async function caseScheduleSlash() {
+  const dirs = freshDirs('schedule-slash')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [dirs.base], lastWorkspace: dirs.base })
+  )
+  const { app, page } = await launch(dirs)
+  await page.locator('.composer-input').fill('/schedule 0 9 * * * 每日总结')
+  await page.locator('.composer-input').press('Enter')
+  await page.waitForSelector('.skills-page')
+  await page.waitForSelector('.modal')
+  const draft = await page.evaluate(() => ({
+    prompt: document.querySelector('.schedule-textarea')?.value,
+    cron: document.querySelector('.schedule-cron input')?.value,
+    title: document.querySelector('.skills-title')?.textContent
+  }))
+  check(
+    '/schedule 打开预填的创建弹窗',
+    draft.prompt === '每日总结' && draft.cron === '0 9 * * *' && draft.title?.includes('定时任务'),
+    JSON.stringify(draft)
+  )
+  await app.close()
+}
+
+async function caseScheduleBridge() {
+  const dirs = freshDirs('schedule-bridge')
+  const rpcArgsFile = join(dirs.base, 'rpc-args.json')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [dirs.base], lastWorkspace: dirs.base })
+  )
+  const { app, page } = await launch(dirs, 'default', { MOCK_RPC_ARGS_FILE: rpcArgsFile })
+  const rpcArgs = JSON.parse(readFileSync(rpcArgsFile, 'utf8'))
+  check(
+    '每个会话注入定时任务系统提示',
+    rpcArgs.includes('--append-system-prompt') &&
+      rpcArgs.some((arg) => arg.includes('pi-desktop-schedule')),
+    rpcArgs.join(' ').slice(0, 180)
+  )
+
+  const cli = join(dirs.userData, 'bin', process.platform === 'win32' ? 'pi-desktop-schedule.cmd' : 'pi-desktop-schedule')
+  check('生成调度 CLI', existsSync(cli), cli)
+  const output = execFileSync(
+    cli,
+    ['add', '--prompt', '五分钟后的测试提醒', '--in', '1m', '--name', 'CLI 测试任务', '--project', dirs.base],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PI_DESKTOP_SCHEDULES_DIR: join(dirs.userData, 'schedules')
+      }
+    }
+  )
+  check('CLI 输出创建结果', output.includes('CLI 测试任务'), output.trim().split('\n')[0])
+  await page.waitForSelector('.toast', { timeout: 8000 })
+  const toast = await page.locator('.toast').first().innerText()
+  check('创建任务后出现应用内提示', /已创建定时任务/.test(toast) && /CLI 测试任务/.test(toast), toast)
+
+  let task
+  for (let index = 0; index < 30 && !task; index += 1) {
+    const list = await page.evaluate(() => window.pi.listSchedules())
+    task = list.find((item) => item.name === 'CLI 测试任务')
+    if (!task) await page.waitForTimeout(200)
+  }
+  check(
+    'CLI 创建的任务出现在定时任务列表',
+    Boolean(task) && task.cadence.type === 'once' && task.projectPath.length > 0 && task.tools === undefined && Boolean(task.sourceSessionPath),
+    JSON.stringify(task)
+  )
+
+  const finishedName = 'CLI 完成测试'
+  execFileSync(cli, ['add', '--prompt', '完成后通知我', '--in', '1s', '--name', finishedName, '--project', dirs.base], {
+    encoding: 'utf8',
+    env: { ...process.env, PI_DESKTOP_SCHEDULES_DIR: join(dirs.userData, 'schedules') }
+  })
+  await page.waitForFunction(
+    (name) =>
+      [...document.querySelectorAll('.toast')].some(
+        (toast) => toast.textContent?.includes('定时任务运行完成') && toast.textContent?.includes(name)
+      ),
+    finishedName,
+    { timeout: 20_000 }
+  )
+  const finishedToast = page
+    .locator('.toast', { hasText: '定时任务运行完成' })
+    .filter({ hasText: finishedName })
+    .first()
+  check('任务完成后出现结果提示', (await finishedToast.innerText()).includes('定时任务运行完成'))
+  check('一次性任务完成后自动移除', !(await page.evaluate(
+    (name) => window.pi.listSchedules().then((list) => list.some((item) => item.name === name)),
+    finishedName
+  )))
+  await page.waitForFunction(
+    (name) => [...document.querySelectorAll('.custom-message')].some((node) =>
+      (node.textContent ?? '').includes(name)
+    ),
+    finishedName,
+    { timeout: 8000 }
+  )
+  check('CLI 创建的一次性任务在原对话留下完成消息', (await page.locator('.custom-message').filter({ hasText: finishedName }).count()) >= 1)
+  check('一次性任务结果提示不再提供查看结果', (await finishedToast.getByRole('button', { name: '查看结果' }).count()) === 0)
+  await app.close()
+}
+
+async function caseScheduleNotice() {
+  const dirs = freshDirs('schedule-notice')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [dirs.base], lastWorkspace: dirs.base })
+  )
+  const { app, page } = await launch(dirs)
+  const sessionPath = await page.evaluate(async () => {
+    const response = await window.pi.command({ type: 'get_state' })
+    return response?.data?.sessionFile ?? null
+  })
+  check('当前会话有路径', Boolean(sessionPath), String(sessionPath))
+  await page.evaluate(
+    async ({ sessionPath, cwd }) => {
+      await window.pi.createSchedule({
+        name: '一次性完成通知',
+        prompt: '检查完成通知',
+        projectPath: cwd,
+        sourceSessionPath: sessionPath,
+        cadence: { type: 'once', at: Date.now() + 1200 },
+        notifications: true,
+        enabled: true
+      })
+    },
+    { sessionPath, cwd: dirs.base }
+  )
+  await page.waitForFunction(
+    () =>
+      [...document.querySelectorAll('.custom-message')].some((node) =>
+        (node.textContent ?? '').includes('定时任务「一次性完成通知」已完成')
+      ),
+    { timeout: 20_000 }
+  )
+  check(
+    '一次性任务完成后在原先对话收到消息',
+    (await page.locator('.custom-message').filter({ hasText: '一次性完成通知' }).count()) >= 1
+  )
+  check(
+    '一次性任务完成后从列表移除',
+    !(await page.evaluate(() => window.pi.listSchedules())).some((item) => item.name === '一次性完成通知')
+  )
+  const notices = await page.evaluate((path) => window.pi.getSessionNotices(path), sessionPath)
+  check('完成通知持久化到会话', notices.some((notice) => notice.text.includes('一次性完成通知')), JSON.stringify(notices))
+  await app.close()
+}
+
+async function caseScratchChat() {
+  const dirs = freshDirs('scratch-chat')
   writeFileSync(
     join(dirs.userData, 'settings.json'),
     JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
   )
   const { app, page } = await launch(dirs)
-  await page.locator('.composer-input').fill('hello there')
-  await page.keyboard.press('Enter')
+  await page.locator('.new-session').click()
+  await page.waitForFunction(() => document.querySelector('.topbar-path')?.textContent?.includes('临时对话'))
+  const projectRows = await page.locator('.project-row').count()
+  check('临时对话不进入项目列表', projectRows === 1, String(projectRows))
+  await page.locator('.composer-input').fill('临时对话消息')
+  await page.locator('.composer-input').press('Enter')
+  await page.waitForTimeout(2500)
+  const recent = await page.locator('.recent-sessions .session-item').count()
+  check('临时对话出现在最近对话', recent >= 1, String(recent))
+  await app.close()
+}
+
+async function caseSkillsPage() {
+  const dirs = freshDirs('skills')
+  const writeSkill = (name, description, bins) => {
+    const dir = join(dirs.agent, 'skills', name)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'SKILL.md'),
+      `---\nname: ${name}\ndescription: ${description}\nversion: 1.0.0\nmetadata:\n  requires:\n    bins: [${bins}]\n---\n\n# ${name}\n\n示例正文 ${name}。\n`
+    )
+  }
+  writeSkill('alpha', '读取测试数据', 'node')
+  writeSkill('beta', '生成测试报告', 'definitely-missing-bin')
+  for (let index = 1; index <= 24; index += 1) {
+    writeSkill(`filler-${String(index).padStart(2, '0')}`, `填充技能 ${index}`, 'node')
+  }
+  writeSkill('gamma', '依赖 npm-global 里的命令', 'lark-cli')
+  const fakeBin = join(dirs.base, '.npm-global', 'bin')
+  mkdirSync(fakeBin, { recursive: true })
+  writeFileSync(join(fakeBin, 'lark-cli'), '#!/bin/sh\necho fake\n')
+  chmodSync(join(fakeBin, 'lark-cli'), 0o755)
+  const pkg = join(dirs.agent, 'npm', 'node_modules', 'fake-plugin')
+  mkdirSync(pkg, { recursive: true })
+  writeFileSync(
+    join(pkg, 'package.json'),
+    JSON.stringify({ name: 'fake-plugin', version: '2.3.4', description: '测试插件', main: 'index.js' })
+  )
+  writeFileSync(join(dirs.agent, 'settings.json'), JSON.stringify({ packages: ['npm:fake-plugin'] }))
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+  )
+
+  const { app, page } = await launch(dirs, 'default', { HOME: dirs.base })
+  const entryStyles = await page.evaluate(() => {
+    const pick = (selector) => {
+      const style = getComputedStyle(document.querySelector(selector))
+      return ['height', 'borderTopWidth', 'borderTopColor', 'backgroundColor', 'borderRadius', 'fontSize', 'paddingLeft', 'paddingRight'].map((key) => `${key}:${style[key]}`).join('|')
+    }
+    return { create: pick('.new-session'), skills: pick('.skills-page-entry') }
+  })
+  check('新建会话与技能入口样式一致', entryStyles.create === entryStyles.skills, JSON.stringify(entryStyles))
+  await page.locator('.skills-page-entry').click()
+  await page.waitForSelector('.skill-card')
+  const gallery = await page.evaluate(() => ({
+    cards: document.querySelectorAll('.skill-card').length,
+    missing: document.querySelectorAll('.skill-card .missing').length,
+    names: [...document.querySelectorAll('.skill-card-name')].map((node) => node.textContent ?? '')
+  }))
+  check('侧栏入口打开技能页并列出技能', gallery.cards === 27, JSON.stringify(gallery))
+  check('缺少依赖的技能有标记', gallery.missing === 1, JSON.stringify(gallery))
+  const scroller = await page.evaluate(() => {
+    const el = document.querySelector('.skills-scroll')
+    return { height: el?.scrollHeight ?? 0, client: el?.clientHeight ?? 0 }
+  })
+  check('技能列表内容超过视口', scroller.height > scroller.client, JSON.stringify(scroller))
+  await page.locator('.skills-scroll').hover()
+  await page.mouse.wheel(0, 500)
+  await page.waitForTimeout(250)
+  const scrollTop = await page.evaluate(() => document.querySelector('.skills-scroll')?.scrollTop ?? 0)
+  check('技能列表可以滚动', scrollTop > 0, String(scrollTop))
+  await page.evaluate(() => {
+    const el = document.querySelector('.skills-scroll')
+    if (el) el.scrollTop = 0
+  })
   await page.waitForTimeout(150)
-  const during = await page.evaluate(() => ({
-    liveSummary: document.querySelectorAll('.turn.is-streaming .turn-summary.is-live').length,
-    foldedAnswer: document.querySelectorAll('.turn.is-streaming .folded-answer').length,
-    actions: document.querySelectorAll('.turn.is-streaming .turn-summary-actions').length
+
+  const backFirst = await page.evaluate(() =>
+    document.querySelector('.skills-head')?.firstElementChild?.classList.contains('skills-back') ?? false
+  )
+  check(
+    '返回键位于左侧且不是叉号',
+    backFirst && (await page.locator('.skills-close').count()) === 0,
+    String(backFirst)
+  )
+
+  await page.locator('.skill-card', { hasText: 'alpha' }).click()
+  await page.waitForSelector('.skill-detail, .detail-page')
+  const detailBack = await page.locator('.skills-head .skills-back').boundingBox()
+  check('详情页返回键避开红绿灯', Boolean(detailBack && detailBack.y >= 44), JSON.stringify(detailBack))
+  const detail = await page.evaluate(() => ({
+    name: document.querySelector('.detail-heading h1')?.textContent ?? '',
+    body: document.querySelector('.skill-readme')?.textContent ?? ''
   }))
   check(
-    '流式中的轮次保持展开（只有运行中摘要，无折叠按钮）',
-    during.liveSummary === 1 && during.foldedAnswer === 0,
-    JSON.stringify(during)
+    '详情页显示 SKILL.md 正文且隐藏 frontmatter',
+    detail.name === 'alpha' &&
+      detail.body.includes('示例正文 alpha') &&
+      !detail.body.includes('description:'),
+    detail.body.slice(0, 80)
   )
-  await page.waitForTimeout(3500)
-  const after = await page.evaluate(() => ({
-    summaries: document.querySelectorAll('.turn-summary').length,
-    cards: document.querySelectorAll('.tool-card').length
+
+  await page.getByRole('button', { name: '在对话中使用' }).click()
+  await page.waitForTimeout(200)
+  const composer = await page.locator('.composer-input').inputValue()
+  check('「在对话中使用」填入 /alpha', composer.trim() === '/alpha', composer)
+
+  await page.locator('.skills-page-entry').click()
+  await page.waitForSelector('.skills-tab')
+  await page.locator('.skills-tab', { hasText: '插件' }).click()
+  await page.waitForSelector('.package-row')
+  const plugin = await page.evaluate(() => ({
+    name: document.querySelector('.package-name')?.textContent ?? '',
+    desc: document.querySelector('.package-desc')?.textContent ?? ''
   }))
-  check('结论落地后自动收起过程', after.summaries === 1, JSON.stringify(after))
+  check('插件 tab 列出已安装插件', /fake-plugin/.test(plugin.name) && /2\.3\.4/.test(plugin.name), JSON.stringify(plugin))
+  check('插件显示来源说明', /测试插件/.test(plugin.desc), plugin.desc)
+
+  const headPad = await page.locator('.skills-head').evaluate((el) => parseFloat(getComputedStyle(el).paddingTop))
+  check('页面标题避开窗口红绿灯', headPad >= 40, String(headPad))
+
+  await page.locator('.package-row').first().click()
+  await page.waitForSelector('.package-detail')
+  const packageDetail = await page.evaluate(() => ({
+    name: document.querySelector('.package-detail .detail-heading h1')?.textContent ?? '',
+    meta: document.querySelector('.package-detail .detail-info')?.textContent ?? ''
+  }))
+  check(
+    '点击插件进入详情页',
+    packageDetail.name === 'fake-plugin' && packageDetail.meta.includes('npm:fake-plugin'),
+    JSON.stringify(packageDetail)
+  )
+  await page.locator('.skills-head .skills-back').click()
+  await page.waitForSelector('.package-row')
+  check('插件详情可返回列表', (await page.locator('.package-detail').count()) === 0)
+
+  await page.locator('.skills-tab', { hasText: '连接器' }).click()
+  await page.waitForSelector('.connector-status')
+  const connectorSummary = await page.evaluate(() => ({
+    rows: document.querySelectorAll('.package-list .package-row').length,
+    ok: document.querySelectorAll('.connector-status.ok').length,
+    missing: document.querySelectorAll('.connector-status.missing').length
+  }))
+  check(
+    '连接器 tab 聚合外部命令并区分状态',
+    connectorSummary.rows === 3 && connectorSummary.ok === 2 && connectorSummary.missing === 1,
+    JSON.stringify(connectorSummary)
+  )
+
+  await page.locator('.package-row', { hasText: 'lark-cli' }).first().click()
+  await page.waitForSelector('.connector-detail')
+  const connector = await page.evaluate(() => ({
+    name: document.querySelector('.connector-detail .detail-heading h1')?.textContent ?? '',
+    body: document.querySelector('.connector-detail')?.textContent ?? ''
+  }))
+  check(
+    '连接器详情显示全局路径与使用它的技能',
+    connector.name === 'lark-cli' &&
+      connector.body.includes('.npm-global') &&
+      connector.body.includes('gamma'),
+    connector.body.slice(0, 120)
+  )
+
+  await page.locator('.skills-head .skills-back').click()
+  await page.waitForSelector('.skills-tab')
+  await page.locator('.skills-tab', { hasText: '插件' }).click()
+  await page.waitForSelector('.package-row')
+
+  await page.locator('.skills-toolbar .button.primary').click()
+  await page.waitForSelector('.modal')
+  const modalTitle = await page.locator('.modal h2').first().innerText()
+  check('安装插件对话框可打开', /安装插件/.test(modalTitle), modalTitle)
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(150)
+  check('Esc 关闭安装对话框', (await page.locator('.modal').count()) === 0)
+
+  await app.close()
+}
+
+async function caseComposerLayout() {
+  const dirs = freshDirs('composer-ui')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+  )
+  const { app, page } = await launch(dirs, 'default', { MOCK_TRANSCRIPT: '2', MOCK_TOOLS: '1' })
+  await page.waitForSelector('.composer-bar')
+  await page.waitForSelector('.chat-inner')
+
+  const layout = await page.evaluate(() => {
+    const left = document.querySelector('.composer-left')
+    const right = document.querySelector('.composer-right')
+    const chips = [...right.querySelectorAll('.chip')]
+    const ring = right.querySelector('.context-ring')
+    return {
+      plus: Boolean(left.querySelector('.add-attachment')),
+      leftChips: left.querySelectorAll('.chip').length,
+      rightChips: chips.length,
+      chipsBeforeRing: ring
+        ? chips.every((chip) => chip.getBoundingClientRect().left < ring.getBoundingClientRect().left)
+        : false
+    }
+  })
+  check('左侧是 + 号附件按钮', layout.plus && layout.leftChips === 0, JSON.stringify(layout))
+  check(
+    '模型 / 思考在上下文左边',
+    layout.rightChips === 2 && layout.chipsBeforeRing,
+    JSON.stringify(layout)
+  )
+
+  const column = await page.evaluate(() => {
+    const rect = (selector) => document.querySelector(selector)?.getBoundingClientRect()
+    const chat = rect('.chat-inner')
+    const composer = rect('.composer-wrap')
+    return chat && composer
+      ? {
+          left: Math.round(chat.left) - Math.round(composer.left),
+          right: Math.round(chat.right) - Math.round(composer.right),
+          width: Math.round(chat.width)
+        }
+      : null
+  })
+  check(
+    '对话列与输入框对齐且加宽到 900',
+    Boolean(column && Math.abs(column.left) <= 1 && Math.abs(column.right) <= 1 && column.width === 900),
+    JSON.stringify(column)
+  )
+
+  const chooser = page.waitForEvent('filechooser')
+  await page.locator('.add-attachment').click()
+  const file = await chooser
+  await file.setFiles([])
+  check('+ 号打开附件选择', Boolean(file), '')
+  await app.close()
+}
+
+async function caseTurnRailPreview() {
+  const dirs = freshDirs('rail')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root, turnAggregate: 0 })
+  )
+  const { app, page } = await launch(dirs, 'default', { MOCK_TRANSCRIPT: '8', MOCK_TOOLS: '2' })
+  const ticks = page.locator('.turn-rail-tick')
+  await ticks.first().waitFor({ timeout: 15000 })
+  const count = await ticks.count()
+  check('轮次导轨每轮一根', count === 8, `ticks=${count}`)
+  const idleWidths = await page.evaluate(() =>
+    [...document.querySelectorAll('.turn-rail-tick')].map((el) => el.getBoundingClientRect().width)
+  )
+  const spread = Math.max(...idleWidths) - Math.min(...idleWidths)
+  check('未悬停时刻度等长', spread <= 1.5, idleWidths.map((value) => value.toFixed(1)).join(','))
+
+  const hoverTick = async (index) => {
+    const box = await ticks.nth(index).boundingBox()
+    if (!box) throw new Error(`tick ${index} has no box`)
+    await page.mouse.move(box.x + 2, box.y + box.height / 2)
+  }
+
+  await hoverTick(3)
+  await page.waitForSelector('.turn-preview')
+  await page.waitForTimeout(260)
+  const question = await page.locator('.turn-preview-question').innerText()
+  check('悬停显示该轮聊天记录', /seeded question 3/.test(question), question)
+  check(
+    '预览里的回答按 Markdown 渲染',
+    (await page.locator('.turn-preview-answer .markdown').count()) === 1,
+    ''
+  )
+
+  const previewBox = await page.locator('.turn-preview').boundingBox()
+  const maxHeight = await page
+    .locator('.turn-preview')
+    .evaluate((el) => parseFloat(getComputedStyle(el).maxHeight))
+  check(
+    '预览卡上限更高、随内容增高',
+    maxHeight >= 400 && (previewBox?.height ?? 0) > 200,
+    `max=${maxHeight} h=${Math.round(previewBox?.height ?? 0)}`
+  )
+
+  const widths = await page.evaluate(() =>
+    [...document.querySelectorAll('.turn-rail-tick')]
+      .slice(0, 6)
+      .map((el) => el.getBoundingClientRect().width)
+  )
+  check(
+    '悬停处最高、向两侧衰减（坡度）',
+    widths[3] > widths[0] + 2 && widths[3] > widths[2] + 1,
+    widths.map((value) => value.toFixed(1)).join(',')
+  )
+
+  await hoverTick(6)
+  await page.waitForTimeout(260)
+  const moved = await page.locator('.turn-preview-question').innerText()
+  const movedWidths = await page.evaluate(() =>
+    [...document.querySelectorAll('.turn-rail-tick')]
+      .slice(3, 8)
+      .map((el) => el.getBoundingClientRect().width)
+  )
+  check('预览跟随指针换到该轮', /seeded question 6/.test(moved), moved)
+  check(
+    '坡度跟着指针移动',
+    movedWidths[3] > movedWidths[0] + 2,
+    movedWidths.map((value) => value.toFixed(1)).join(',')
+  )
+
+  await page.mouse.move(980, 220)
+  await page.waitForTimeout(420)
+  check('移开后预览消失', (await page.locator('.turn-preview').count()) === 0)
+
+  await ticks.nth(5).click()
+  await page.waitForTimeout(350)
+  check(
+    '点击导轨跳到该轮',
+    (await page.locator('.turn-rail-tick.is-active').count()) === 1
+  )
   await app.close()
 }
 
@@ -600,17 +1672,27 @@ async function caseStreamingGuard() {
     Array.from(document.querySelectorAll('.chip')).map((chip) => chip.disabled)
   )
   check('流式输出中模型 / 强度不可切换', disabled.every(Boolean), JSON.stringify(disabled))
-  await page.locator('.project-shortcut').filter({ hasText: 'streaming' }).click()
-  check('运行中的任务不会被项目切换中断', await page.locator('.workspace-name').innerText() === 'pi-desktop')
-  check('运行中切换项目有提示', await page.getByText('任务正在运行', { exact: true }).count() > 0)
+  await page.locator('.new-session').click()
+  await page.waitForSelector('.project-picker-trigger')
+  check('新建会话先落在临时对话', (await page.locator('.topbar-path').innerText()).includes('临时对话'))
+  await page.locator('.project-picker-trigger').click()
+  await page.locator('.project-picker-item').filter({ hasText: 'streaming' }).click()
+  await page.waitForFunction(() => document.querySelector('.project-row.active')?.textContent?.includes('streaming'))
+  check('运行中也可以在初始对话框切换项目', (await page.locator('.project-row.active').innerText()).includes('streaming'))
+  check('运行中切换项目不再弹阻止提示', (await page.getByText('任务正在运行', { exact: true }).count()) === 0)
   await page.waitForTimeout(2500)
   const after = await page.evaluate(() =>
     Array.from(document.querySelectorAll('.chip')).map((chip) => chip.disabled)
   )
-  check('输出结束后恢复可切换', after.every((value) => value === false), JSON.stringify(after))
-  await page.locator('.project-shortcut').filter({ hasText: 'streaming' }).click()
-  await page.waitForFunction(() => document.querySelector('.workspace-name')?.textContent === 'streaming')
-  check('任务完成后可以切换项目', true)
+  check('切换后的新会话可正常操作', after.every((value) => value === false), JSON.stringify(after))
+  await page.locator('.project-picker-trigger').click()
+  await page
+    .locator('.project-picker-item')
+    .filter({ has: page.locator('.project-picker-name', { hasText: 'pi-desktop' }) })
+    .click()
+  await page.waitForFunction(() => document.querySelector('.project-row.active')?.textContent?.includes('pi-desktop'))
+  const activeProject = await page.locator('.project-row.active').innerText()
+  check('可以切回原来的项目', activeProject.includes('pi-desktop'), activeProject)
   await app.close()
 }
 
@@ -688,12 +1770,16 @@ async function caseSidebarAffordance() {
     JSON.stringify({ theme: 'dark', workspaces: [root, dirs.base], lastWorkspace: root })
   )
   const { app, page } = await launch(dirs)
-  check('侧栏直接显示最近项目', (await page.locator('.project-shortcut').count()) === 2)
-  await page.locator('.project-shortcut').filter({ hasText: 'sidebar' }).click()
-  await page.waitForTimeout(500)
-  check('点击项目切换工作区', (await page.locator('.workspace-name').innerText()) === 'sidebar')
-  await page.locator('.project-shortcut').filter({ hasText: 'pi-desktop' }).click()
-  await page.waitForTimeout(500)
+  check('侧栏直接显示最近项目', (await page.locator('.project-row').count()) === 2)
+  const sidebarProject = page.locator('.project-row').filter({ hasText: 'sidebar' }).first()
+  await sidebarProject.hover()
+  await sidebarProject.locator('.project-new-chat').click()
+  await page.waitForTimeout(700)
+  check('项目 + 新建切换到该项目', (await page.locator('.project-row.active').innerText()).includes('sidebar'))
+  const rootProject = page.locator('.project-row').filter({ hasText: 'pi-desktop' }).first()
+  await rootProject.hover()
+  await rootProject.locator('.project-new-chat').click()
+  await page.waitForTimeout(700)
   const opacity = await page.evaluate(() => {
     const button = document.querySelector('.session-menu-button')
     return button ? getComputedStyle(button).opacity : 'missing'
@@ -749,9 +1835,12 @@ async function caseLanguage() {
   await page.locator('.sidebar-footer .settings-entry').click({ position: { x: 2, y: 2 } })
   check('侧栏设置按钮边缘可点击', await page.locator('.settings-page').count() === 1)
   await page.getByRole('button', { name: 'Back to chat' }).click()
-  await page.locator('.topbar .settings-entry').click({ position: { x: 2, y: 2 } })
-  check('顶栏设置按钮边缘可点击', await page.locator('.settings-page').count() === 1)
-  await page.getByRole('button', { name: 'Back to chat' }).click()
+  const topbarEntry = page.locator('.topbar .settings-entry')
+  if (await topbarEntry.count()) {
+    await topbarEntry.click({ position: { x: 2, y: 2 } })
+    check('顶栏设置按钮边缘可点击', await page.locator('.settings-page').count() === 1)
+    await page.getByRole('button', { name: 'Back to chat' }).click()
+  }
   await page.locator('.composer-input').fill('设置')
   await page.locator('.composer-input').press('Enter')
   await page.waitForSelector('.user-message')
@@ -776,47 +1865,61 @@ async function caseLanguage() {
   await app.close()
 }
 
-const only = (process.env.E2E_ONLY ?? '').trim()
-const should = (name) => !only || only.includes(name)
+const only = (process.env.E2E_ONLY ?? '').trim().toLowerCase()
+const wants = only ? only.split(/[,\s]+/).filter(Boolean) : []
+
+// Every scenario is addressable by tag, so a change can be checked against the
+// affected area without booting all twenty Electron instances.
+const CASES = [
+  { tags: ['language', 'settings'], label: 'language / settings menu', run: caseLanguage },
+  { tags: ['composer'], label: 'composer safety (IME, draft)', run: caseComposerSafety },
+  { tags: ['menu', 'keyboard'], label: 'model menu: scroll + keyboard', run: caseMenuScrollAndKeyboard },
+  { tags: ['panel'], label: 'work panel', run: caseWorkPanel },
+  { tags: ['polish', 'files', 'export'], label: 'polish: files / export / lightbox', run: casePolish },
+  { tags: ['virtual', 'scroll'], label: 'virtualization', run: caseVirtualization },
+  { tags: ['fold', 'turns'], label: 'turns / folding', run: caseTurnsFold },
+  { tags: ['fold', 'steps', 'tools'], label: 'process steps (merged tool calls)', run: caseProcessSteps },
+  { tags: ['fold'], label: 'fold persistence', run: caseFoldPersistence },
+  { tags: ['defaults', 'turns'], label: 'default: process visible', run: caseDefaultVisibility },
+  { tags: ['rail', 'hover'], label: 'turn rail: slope + preview', run: caseTurnRailPreview },
+  { tags: ['composer', 'composer-ui'], label: 'composer: plus + chip order', run: caseComposerLayout },
+  { tags: ['skills', 'plugins'], label: 'skills & plugins page', run: caseSkillsPage },
+  { tags: ['schedules'], label: 'scheduled tasks', run: caseSchedules },
+  { tags: ['schedules', 'schedules-recovery'], label: 'scheduled task restart recovery', run: caseScheduleRecovery },
+  { tags: ['schedules', 'schedules-interrupted'], label: 'scheduled run interrupted by quit', run: caseScheduleInterrupted },
+  { tags: ['schedules', 'schedules-phase3'], label: 'headless scheduler tick', run: caseScheduleHeadlessTick },
+  { tags: ['schedules', 'schedules-phase2'], label: 'cron, timezone, continue session, tools', run: caseScheduleAdvanced },
+  { tags: ['schedules', 'schedules-failures'], label: 'consecutive failures pause', run: caseScheduleFailures },
+  { tags: ['schedules', 'schedules-event'], label: 'file-change trigger', run: caseScheduleEvent },
+  { tags: ['sidebar', 'scratch'], label: 'temporary chat without project', run: caseScratchChat },
+  { tags: ['schedules', 'schedules-slash'], label: '/schedule composer command', run: caseScheduleSlash },
+  { tags: ['schedules', 'schedules-bridge'], label: 'chat scheduling bridge CLI', run: caseScheduleBridge },
+  { tags: ['schedules', 'schedules-notice'], label: 'one-time completion notice', run: caseScheduleNotice },
+  { tags: ['sidebar', 'sidebar-layout'], label: 'sidebar: projects + recent', run: caseSidebarLayout },
+  { tags: ['fold', 'autofold'], label: 'auto fold on answer', run: caseAutoFoldOnAnswer },
+  { tags: ['menu', 'wheel', 'scroll'], label: 'wheel isolation', run: caseWheelIsolation },
+  { tags: ['menu', 'typing'], label: 'menu typing', run: caseMenuTyping },
+  { tags: ['streaming'], label: 'streaming guard', run: caseStreamingGuard },
+  { tags: ['restore', 'session'], label: 'session restore', run: caseSessionRestore },
+  { tags: ['diagnostics'], label: 'diagnostics', run: caseDiagnostics },
+  { tags: ['delete', 'session'], label: 'delete + undo', run: caseDeleteUndo },
+  { tags: ['sidebar'], label: 'sidebar affordances', run: caseSidebarAffordance }
+]
+
+if (process.argv.includes('--list')) {
+  for (const item of CASES) console.log(`${item.tags.join(',').padEnd(22)} ${item.label}`)
+  process.exit(0)
+}
 
 try {
   rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
-  console.log('\nmenu / keyboard')
-  await caseLanguage()
-  await caseComposerSafety()
-  await caseMenuScrollAndKeyboard()
-  if (should('panel')) {
-    console.log('\nwork panel')
-    await caseWorkPanel()
+  for (const item of CASES) {
+    if (wants.length && !item.tags.some((tag) => wants.includes(tag))) continue
+    console.log(`\n${item.tags[0]}: ${item.label}`)
+    await item.run()
   }
-  console.log('\npolish: files / export / lightbox')
-  await casePolish()
-  console.log('\nvirtualization')
-  await caseVirtualization()
-  console.log('\nturns / folding')
-  await caseTurnsFold()
-  console.log('\nfold persistence')
-  await caseFoldPersistence()
-  console.log('\nauto fold on answer')
-  await caseAutoFoldOnAnswer()
-  console.log('\nwheel isolation')
-  await caseWheelIsolation()
-  console.log('\nmenu typing')
-  await caseMenuTyping()
-  console.log('\nstreaming guard')
-  await caseStreamingGuard()
-  console.log('\nsession restore')
-  await caseSessionRestore()
-  console.log('\ndiagnostics')
-  await caseDiagnostics()
-  console.log('\ndelete + undo')
-  await caseDeleteUndo()
-  console.log('\nsidebar affordances')
-  await caseSidebarAffordance()
-  try {
-    execFileSync('true')
-  } catch {
-    // ignore
+  if (wants.length) {
+    console.log(`\n(e2e filter: ${wants.join(',')})`)
   }
 } catch (error) {
   failures += 1

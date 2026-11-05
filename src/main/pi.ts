@@ -14,6 +14,7 @@ export interface PiStartOptions {
   piPath: string
   sessionPath?: string | null
   name?: string
+  appendSystemPrompt?: string
 }
 
 /**
@@ -41,6 +42,7 @@ export class PiProcess extends EventEmitter {
     const args = ['--mode', 'rpc']
     if (options.sessionPath) args.push('--session', options.sessionPath)
     if (options.name) args.push('--name', options.name)
+    if (options.appendSystemPrompt) args.push('--append-system-prompt', options.appendSystemPrompt)
 
     this.cwd = options.cwd
     this.stopping = false
@@ -49,11 +51,20 @@ export class PiProcess extends EventEmitter {
       let settled = false
       let child: ChildProcessWithoutNullStreams
       try {
-        child = spawn(options.piPath, args, {
-          cwd: options.cwd,
-          env: { ...process.env, PATH: augmentedPath() },
-          stdio: ['pipe', 'pipe', 'pipe']
-        })
+        child = spawn(
+          process.platform === 'win32' ? `"${options.piPath}"` : options.piPath,
+          args,
+          {
+            cwd: options.cwd,
+            env: {
+              ...process.env,
+              PATH: augmentedPath(),
+              ...(options.sessionPath ? { PI_DESKTOP_SESSION_PATH: options.sessionPath } : {})
+            },
+            stdio: ['pipe', 'pipe', 'pipe'],
+            shell: process.platform === 'win32'
+          }
+        )
       } catch (error) {
         reject(error instanceof Error ? error : new Error(String(error)))
         return

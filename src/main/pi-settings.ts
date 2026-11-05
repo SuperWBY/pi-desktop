@@ -33,7 +33,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function merge(base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
   const next: Record<string, unknown> = { ...base }
   for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) continue
+    if (value === undefined) {
+      if (key === 'defaultProvider' || key === 'defaultModel') delete next[key]
+      continue
+    }
     next[key] = isPlainObject(value) && isPlainObject(base[key])
       ? merge(base[key] as Record<string, unknown>, value)
       : value

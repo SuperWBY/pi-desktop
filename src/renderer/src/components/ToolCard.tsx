@@ -1,5 +1,5 @@
 import { useTranslation } from '../i18n'
-import { memo, useEffect, useState, type ReactNode } from 'react'
+import { memo, useState, type ReactNode } from 'react'
 import {
   ChevronDown,
   ChevronRight,
@@ -14,7 +14,8 @@ import {
 import clsx from 'clsx'
 import type { ContentBlock, ToolCallBlock, ToolResultMessage, ToolRun } from '@shared/types'
 import { baseName, formatDuration } from '../lib/format'
-import { contentText, editPairs, toolImages, toolMeta } from '../lib/tools'
+import { contentText, durationOf, editPairs, toolImages, toolMeta, toolPhrases } from '../lib/tools'
+import { useElapsed } from '../lib/use-elapsed'
 import { Spinner } from './ui'
 import { CopyButton } from './Markdown'
 import { DiffView } from './Diff'
@@ -106,57 +107,61 @@ export const ToolCard = memo(function ToolCard({
   call,
   run,
   result,
-  defaultOpen = false
+  defaultOpen = false,
+  expanded,
+  onExpandedChange
 }: {
   call: ToolCallBlock
   run?: ToolRun
   result?: ToolResultMessage
   defaultOpen?: boolean
+  expanded?: boolean
+  onExpandedChange?: (value: boolean) => void
 }): ReactNode {
   const t = useTranslation()
   const args = run?.args && Object.keys(run.args).length ? run.args : (call.arguments ?? {})
   const meta = toolMeta(call.name, args)
-  const status = run?.status ?? (result ? ((result as { isError?: boolean }).isError ? 'error' : 'done') : 'running')
+  const phrases = toolPhrases(call.name)
+  const status = run?.status === 'error' || result?.isError ? 'error' : run?.status ?? (result ? 'done' : 'running')
   const resultText = run?.resultText ?? contentText(result)
   const images = toolImages(run?.resultContent ?? (result?.content as ContentBlock[] | undefined))
   const running = status === 'running'
-  const [open, setOpen] = useState(defaultOpen)
+  const elapsed = useElapsed(run?.startedAt, running)
+  const duration = running ? elapsed : durationOf(run, result)
+  const [internalOpen, setInternalOpen] = useState(defaultOpen)
+  const open = expanded ?? internalOpen
   const [fullDiff, setFullDiff] = useState(false)
-
-  useEffect(() => {
-    if (status === 'running' || status === 'error') setOpen(true)
-    else setOpen(defaultOpen)
-  }, [status, defaultOpen])
 
   const Icon = ICONS[meta.kind]
   const path = typeof args.path === 'string' ? args.path : ''
   const pairs = meta.kind === 'edit' ? editPairs(args) : []
+  const verb = status === 'error' ? phrases.failed : running ? phrases.running : phrases.done
 
   return (
-    <div className={clsx('tool-card', `status-${status}`)}>
+    <div className={clsx('tool-card', `status-${status}`, open && 'is-open')}>
       <button
         type="button"
         className="tool-head"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          const next = !open
+          setInternalOpen(next)
+          onExpandedChange?.(next)
+        }}
         aria-expanded={open}
       >
         <span className="tool-chevron">
-          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         </span>
         <span className={clsx('tool-icon', `kind-${meta.kind}`)}>
-          <Icon size={13} />
+          <Icon size={12} />
         </span>
-        <span className="tool-title">{meta.kind === 'tool' ? meta.title : t(meta.title)}</span>
+        <span className="tool-title">{t(verb)}</span>
         <span className="tool-subtitle" title={meta.subtitle}>
           {meta.subtitle}
         </span>
         <span className="tool-status">
-          {running ? (
-            <Spinner size={12} />
-          ) : (
-            run?.durationMs && <span className="tool-duration">{formatDuration(run.durationMs)}</span>
-          )}
-          {status === 'error' && <span className="tool-failed">{t("failed")}</span>}
+          {duration !== undefined && <span className="tool-duration">{formatDuration(duration)}</span>}
+          {status === 'error' && !running && <span className="tool-failed">{t('failed')}</span>}
         </span>
       </button>
 
@@ -196,6 +201,7 @@ export const ToolCard = memo(function ToolCard({
               <div className="bash-command">
                 <span className="bash-prompt">$</span>
                 <code>{String(args.command ?? '')}</code>
+                <CopyButton text={String(args.command ?? '')} />
               </div>
               {(resultText || run?.partialText) && (
                 <CodeOutput text={resultText || run?.partialText || ''} maxLines={20} tail />

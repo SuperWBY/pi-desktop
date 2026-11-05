@@ -30,6 +30,7 @@ import type {
 } from '@shared/types'
 import { useApp } from '../store'
 import { shortenPath } from '../lib/format'
+import { shortcutKeys } from '../lib/platform'
 import { Popover } from './ui'
 
 const SHORTCUTS: { keys: string; label: string }[] = [
@@ -162,11 +163,11 @@ const EMPTY_DRAFT: ProviderDraft = {
   modelIds: '',
   contextWindow: '',
   maxTokens: '',
-  reasoning: true,
+  reasoning: false,
   images: false
 }
 
-function draftToEntry(draft: ProviderDraft): CustomProviderEntry {
+function draftToEntry(draft: ProviderDraft, existing?: CustomProviderEntry): CustomProviderEntry {
   const ids = draft.modelIds
     .split(/[\s,;]+/)
     .map((id) => id.trim())
@@ -179,7 +180,7 @@ function draftToEntry(draft: ProviderDraft): CustomProviderEntry {
   if (draft.api) entry.api = draft.api
   if (draft.apiKey.trim()) entry.apiKey = draft.apiKey.trim()
   if (ids.length) {
-    entry.models = ids.map((id) => ({
+    entry.models = ids.map((id) => existing?.models?.find((model) => model.id === id) ?? ({
       id,
       ...(draft.reasoning ? { reasoning: true } : {}),
       ...(draft.images ? { input: ['text', 'image'] } : {}),
@@ -422,6 +423,8 @@ export function SettingsPage(): ReactNode {
   const [modelsMessage, setModelsMessage] = useState<string | null>(null)
   const [customConfig, setCustomConfig] = useState<ModelsConfig | null>(null)
   const [showAdd, setShowAdd] = useState(false)
+  const [choosingProvider, setChoosingProvider] = useState(true)
+  const [editingProvider, setEditingProvider] = useState<string | null>(null)
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT)
   const [saving, setSaving] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -526,7 +529,10 @@ export function SettingsPage(): ReactNode {
   }
 
   const saveDefaultModel = async (value: string): Promise<void> => {
-    if (!value) return
+    if (!value) {
+      await actions.updatePiSettings({ defaultProvider: undefined, defaultModel: undefined })
+      return
+    }
     const [provider, id] = value.split('\u0000')
     await actions.updatePiSettings({ defaultProvider: provider, defaultModel: id })
     actions.notify('success', t('已更新默认模型'), t('新建会话时生效。'))
@@ -557,12 +563,21 @@ export function SettingsPage(): ReactNode {
       actions.notify('error', t('缺少服务商 ID'), t('例如 ollama、my-gateway。'))
       return
     }
+    if (!draft.modelIds.split(/[\s,;]+/).some(Boolean) && !(editingProvider && !customConfig?.providers[editingProvider]?.models?.length)) {
+      actions.notify('error', state.settings.language === 'en' ? 'Model ID required' : '请填写模型 ID')
+      return
+    }
+    if (!editingProvider && Object.keys(customConfig?.providers ?? {}).some((id) => id === draft.id.trim())) {
+      actions.notify('error', state.settings.language === 'en' ? 'Provider ID already exists' : '服务商 ID 已存在')
+      return
+    }
     setSaving(true)
     try {
-      const next = await window.pi.saveProvider(draft.id, draftToEntry(draft))
+      const next = await window.pi.saveProvider(draft.id, draftToEntry(draft, editingProvider ? customConfig?.providers[editingProvider] : undefined))
       setCustomConfig(next)
       setShowAdd(false)
       setDraft(EMPTY_DRAFT)
+      setEditingProvider(null)
       actions.notify('success', t('已写入 models.json'), state.settings.language === 'en' ? `${next.file} · Restart the session to load changes.` : `${next.file} · 重启会话后 pi 才会加载。`)
       if (!state.streaming) await actions.restartSession()
       await loadModels()
@@ -829,6 +844,12 @@ export function SettingsPage(): ReactNode {
                   ))}
                 </div>
               </div>
+              <button className="settings-button" onClick={() => {
+                setEditingProvider(id)
+                setDraft({ ...EMPTY_DRAFT, id, name: provider.name ?? '', baseUrl: provider.baseUrl ?? '', api: provider.api ?? '', apiKey: provider.apiKey ?? '', modelIds: (provider.models ?? []).map((model) => model.id).join('\n') })
+                setChoosingProvider(false)
+                setShowAdd(true)
+              }}>{state.settings.language === 'en' ? 'Edit' : '编辑'}</button>
               <button
                 className="settings-button danger"
                 onClick={() => void deleteProvider(id)}
@@ -841,7 +862,7 @@ export function SettingsPage(): ReactNode {
 
         {!showAdd && (
           <div className="custom-provider-actions">
-            <button className="settings-button primary" onClick={() => setShowAdd(true)}>
+            <button className="settings-button primary" onClick={() => { setEditingProvider(null); setChoosingProvider(true); setShowAdd(true) }}>
               <Plus size={12} />{t("添加服务商 / 模型")}</button>
             <span className="setting-desc">
               {state.settings.language === 'en' ? 'Writes to ' : '写入 '}<code>{customConfig?.file ?? '~/.pi/agent/models.json'}</code>{state.settings.language === 'en' ? ' in pi models.json format.' : '，格式即 pi 的 models.json'}
@@ -851,25 +872,36 @@ export function SettingsPage(): ReactNode {
 
         {showAdd && (
           <div className="provider-form">
+            {choosingProvider ? <>
+            <div className="provider-step-title">{state.settings.language === 'en' ? 'Choose a service' : '选择模型服务商'}</div>
+            <p className="setting-desc provider-step-desc">{state.settings.language === 'en' ? 'Select a service to start, or configure a custom endpoint.' : '选择常用服务，或配置自定义接口。'}</p>
             <div className="preset-row">
               {PRESETS.map((preset) => (
                 <button
                   key={preset.key}
                   className={clsx('preset-chip', draft.preset === preset.key && 'active')}
-                  onClick={() =>
-                    setDraft((prev) => ({
-                      ...prev,
+                  onClick={() => {
+                    setDraft({
+                      ...EMPTY_DRAFT,
                       preset: preset.key,
-                      id: preset.provider || prev.id,
-                      baseUrl: preset.baseUrl || prev.baseUrl,
+                      id: preset.provider,
+                      baseUrl: preset.baseUrl,
                       api: preset.api,
-                      apiKey: preset.apiKey || prev.apiKey
-                    }))
-                  }
+                      apiKey: preset.apiKey
+                    })
+                    setChoosingProvider(false)
+                  }}
                 >
                         {t(preset.label)}
                 </button>
               ))}
+            </div>
+            <button className="settings-button" onClick={() => setShowAdd(false)}>{t('取消')}</button>
+            </> : <>
+            <div className="provider-form-heading">
+              <div><div className="provider-step-title">{editingProvider ? (state.settings.language === 'en' ? 'Edit service' : '编辑服务商') : t(PRESETS.find((preset) => preset.key === draft.preset)?.label ?? '自定义')}</div>
+              <p className="setting-desc provider-step-desc">{state.settings.language === 'en' ? 'Enter the connection details and model IDs.' : '填写连接信息和要使用的模型 ID。'}</p></div>
+              {!editingProvider && <button className="settings-button" onClick={() => setChoosingProvider(true)}>{state.settings.language === 'en' ? 'Change service' : '更换服务商'}</button>}
             </div>
 
             <div className="form-grid">
@@ -877,6 +909,7 @@ export function SettingsPage(): ReactNode {
                 <span>{t("服务商 ID *")}</span>
                 <input
                   value={draft.id}
+                  disabled={Boolean(editingProvider)}
                   placeholder="ollama"
                   onChange={(event) => setDraft((prev) => ({ ...prev, id: event.target.value }))}
                 />
@@ -903,12 +936,14 @@ export function SettingsPage(): ReactNode {
                   label={t("API 协议")}
                   value={draft.api}
                   onChange={(value) => setDraft((prev) => ({ ...prev, api: value }))}
-                  options={API_OPTIONS.map((option) => ({ value: option.value, label: t(option.label) }))}
+                  options={[...(editingProvider ? [{ value: '', label: t('跟随内置协议') }] : []), ...API_OPTIONS.map((option) => ({ value: option.value, label: t(option.label) }))]}
                 />
               </label>
               <label className="form-field wide">
                 <span>API Key</span>
                 <input
+                  type="password"
+                  autoComplete="off"
                   value={draft.apiKey}
                   placeholder={t("$MY_API_KEY 或直接填 key；本地服务可留空或填占位")}
                   onChange={(event) => setDraft((prev) => ({ ...prev, apiKey: event.target.value }))}
@@ -925,7 +960,7 @@ export function SettingsPage(): ReactNode {
                   }
                 />
               </label>
-              <label className="form-field">
+              {!editingProvider && <><label className="form-field">
                 <span>{t("上下文窗口")}</span>
                 <input
                   value={draft.contextWindow}
@@ -944,9 +979,11 @@ export function SettingsPage(): ReactNode {
                     setDraft((prev) => ({ ...prev, maxTokens: event.target.value }))
                   }
                 />
-              </label>
+              </label></>}
             </div>
 
+            {!editingProvider && <details className="provider-advanced">
+              <summary>{state.settings.language === 'en' ? 'Model capabilities' : '模型能力设置'}</summary>
             <div className="form-switches">
               <Row title={t("支持推理 / 思维链")} query="">
                 <Switch
@@ -963,6 +1000,7 @@ export function SettingsPage(): ReactNode {
                 />
               </Row>
             </div>
+            </details>}
 
             <div className="form-actions">
               <button className="settings-button primary" disabled={saving} onClick={() => void saveProviderDraft()}>
@@ -972,11 +1010,13 @@ export function SettingsPage(): ReactNode {
                 className="settings-button"
                 onClick={() => {
                   setShowAdd(false)
+                  setEditingProvider(null)
                   setDraft(EMPTY_DRAFT)
                 }}
               >{t("取消")}</button>
-              <span className="setting-desc">{t("保存后会重启当前会话，让 pi 重新加载模型。")}</span>
+              <span className="setting-desc">{state.streaming ? (state.settings.language === 'en' ? 'Restart the session after the current run finishes to load changes.' : '当前任务结束后，重启会话以加载修改。') : t("保存后会重启当前会话，让 pi 重新加载模型。")}</span>
             </div>
+            </>}
           </div>
         )}
       </Block>
@@ -1049,7 +1089,7 @@ export function SettingsPage(): ReactNode {
         >
           <Switch
             label={t("结论出现后收起过程")}
-            checked={state.settings.turnAutoFold !== false}
+            checked={state.settings.turnAutoFold === true}
             onChange={(value) => void actions.updateSettings({ turnAutoFold: value })}
           />
         </Row>
@@ -1192,7 +1232,7 @@ export function SettingsPage(): ReactNode {
     <Block title={t("快捷键")} query={query} terms={SHORTCUTS.map((item) => item.label)}>
       {SHORTCUTS.map((shortcut) => (
         <Row key={shortcut.keys} title={t(shortcut.label)} query={query}>
-          <kbd>{shortcut.keys}</kbd>
+          <kbd>{shortcutKeys(shortcut.keys)}</kbd>
         </Row>
       ))}
     </Block>

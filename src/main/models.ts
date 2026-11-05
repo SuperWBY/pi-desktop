@@ -126,17 +126,30 @@ function sanitizeProvider(id: string, entry: CustomProviderEntry): CustomProvide
 }
 
 export function saveProvider(id: string, entry: CustomProviderEntry): ModelsConfig {
-  const { raw } = readRaw()
+  const { raw, error } = readRaw()
+  if (error) throw new Error(`无法读取 models.json，未保存任何修改：${error}`)
+  if (raw.providers !== undefined && (!raw.providers || typeof raw.providers !== 'object' || Array.isArray(raw.providers))) throw new Error('models.json 的 providers 格式无效，未保存任何修改')
   const providers =
     raw.providers && typeof raw.providers === 'object' && !Array.isArray(raw.providers)
       ? { ...(raw.providers as Record<string, unknown>) }
       : {}
-  providers[id.trim()] = sanitizeProvider(id, entry)
+  const clean = sanitizeProvider(id, entry)
+  const old = providers[id.trim()]
+  const existing = old && typeof old === 'object' && !Array.isArray(old) ? old as Record<string, unknown> : {}
+  const { name: _name, baseUrl: _baseUrl, api: _api, apiKey: _apiKey, models: oldModels, ...other } = existing
+  const models = clean.models?.map((model) => {
+    const previous = Array.isArray(oldModels) ? oldModels.find((item) => item && typeof item === 'object' && item.id === model.id) : undefined
+    const { id: _id, name: _modelName, reasoning: _reasoning, input: _input, contextWindow: _context, maxTokens: _max, ...extra } = previous ?? {}
+    return { ...extra, ...model }
+  })
+  providers[id.trim()] = { ...other, ...clean, ...(models ? { models } : {}) }
   return writeRaw({ ...raw, providers })
 }
 
 export function removeProvider(id: string): ModelsConfig {
-  const { raw } = readRaw()
+  const { raw, error } = readRaw()
+  if (error) throw new Error(`无法读取 models.json，未删除任何配置：${error}`)
+  if (raw.providers !== undefined && (!raw.providers || typeof raw.providers !== 'object' || Array.isArray(raw.providers))) throw new Error('models.json 的 providers 格式无效，未删除任何配置')
   const providers =
     raw.providers && typeof raw.providers === 'object' && !Array.isArray(raw.providers)
       ? { ...(raw.providers as Record<string, unknown>) }

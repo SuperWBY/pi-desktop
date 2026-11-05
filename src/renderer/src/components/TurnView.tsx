@@ -2,12 +2,14 @@ import { useTranslation } from '../i18n'
 import { useEffect, useState, type ReactNode } from 'react'
 import { AlertTriangle, ChevronDown, ChevronRight, Copy, RotateCcw, Rows3 } from 'lucide-react'
 import clsx from 'clsx'
-import type { AssistantMessage, ToolResultMessage, ToolRun, UserMessage } from '@shared/types'
+import type { AssistantMessage, ToolCallBlock, ToolResultMessage, ToolRun, UserMessage } from '@shared/types'
 import { formatCost, formatDuration, formatTokens, timeOfDay } from '../lib/format'
 import { summariseTools, type Turn } from '../lib/turns'
 import type { FoldLevel } from '../lib/turn-fold'
 import { AnswerOnly, AssistantMessageView, CustomMessageView, UserMessageView } from './Message'
 import { ToolCard } from './ToolCard'
+import { ToolGroup } from './ToolGroup'
+import { buildProcessSteps } from '../lib/process-steps'
 import { contentText } from '../lib/tools'
 import { collectSessionChanges } from '../lib/session-changes'
 import { requestReview } from '../lib/review-focus'
@@ -59,14 +61,13 @@ export function TurnSummary({
   const elapsed = stats.startedAt && (turn.streaming || stats.endedAt)
     ? formatDuration(Math.max(0, (turn.streaming ? Date.now() : stats.endedAt!) - stats.startedAt))
     : ''
-  const tools = summariseTools(stats.tools)
   const parts: string[] = [turn.streaming ? t('执行中') : turn.failed ? t('过程有错误') : t('已完成')]
-  if (stats.steps) parts.push(t('{count} steps').replace('{count}', String(stats.steps)))
-  if (tools) parts.push(tools)
+  const toolCount = Object.values(stats.tools).reduce((total, count) => total + count, 0)
+  if (toolCount) parts.push(t('{count} 次操作').replace('{count}', String(toolCount)))
   if (stats.files.length) parts.push(t('{count} files').replace('{count}', String(stats.files.length)))
   if (elapsed) parts.push(turn.streaming ? `${t('running')} ${elapsed}` : elapsed)
-  if (stats.tokens) parts.push(`${formatTokens(stats.tokens)} tokens`)
-  if (stats.cost) parts.push(formatCost(stats.cost))
+  if (!turn.streaming && stats.tokens) parts.push(`${formatTokens(stats.tokens)} tokens`)
+  if (!turn.streaming && stats.cost) parts.push(formatCost(stats.cost))
 
   const copy = async (): Promise<void> => {
     try {
@@ -140,6 +141,21 @@ function callIds(turn: Turn): Set<string> {
   return ids
 }
 
+function ProcessCalls({ calls, toolRuns, results }: {
+  calls: ToolCallBlock[]
+  toolRuns: Record<string, ToolRun>
+  results: Record<string, ToolResultMessage>
+}): ReactNode {
+  const [firstOpen, setFirstOpen] = useState(false)
+  const first = calls[0]
+  if (calls.length === 1) {
+    return <ToolCard call={first} run={toolRuns[first.id]} result={results[first.id]}
+      expanded={firstOpen} onExpandedChange={setFirstOpen} />
+  }
+  return <ToolGroup calls={calls} toolRuns={toolRuns} results={results}
+    defaultOpen={firstOpen} firstCallDefaultOpen={firstOpen} />
+}
+
 export function TurnView({
   turn,
   level,
@@ -161,8 +177,17 @@ export function TurnView({
 }): ReactNode {
   const { state } = useApp()
   const rendered = callIds(turn)
+  // Same-name tool calls merge across messages so a turn reads as a few steps
+  // instead of one card per call.
+  const steps = buildProcessSteps(turn.items, rendered)
   const changes = turn.streaming ? [] : collectSessionChanges([turn], toolRuns, state.workspace ?? '')
   const assistantCount = turn.items.filter((item) => item.role === 'assistant').length
+  const lastAssistantIndex = (() => {
+    for (let index = turn.items.length - 1; index >= 0; index -= 1) {
+      if (turn.items[index].role === 'assistant') return index
+    }
+    return -1
+  })()
   const hasProcess = assistantCount > 1 || turn.stats.thinkingLines > 0 ||
     Object.keys(turn.stats.tools).length > 0 || turn.items.some((item) => item.role === 'custom')
   const model = (() => {
@@ -193,8 +218,13 @@ export function TurnView({
         />
       )}
 
-      {level === 0 ? (
-        turn.items.map((item, index) => {
+      {level === 0 && (
+        <div className="turn-process-details">
+        {steps.map((step) => {
+          if (step.kind === 'calls') {
+            return <ProcessCalls key={`calls-${step.calls[0].id}`} calls={step.calls} toolRuns={toolRuns} results={results} />
+          }
+          const { item, index } = step
           if (item.role === 'assistant') {
             return (
               <AssistantMessageView
@@ -203,6 +233,7 @@ export function TurnView({
                 toolRuns={toolRuns}
                 results={results}
                 streaming={turn.streaming && index === turn.items.length - 1}
+                isLast={index === lastAssistantIndex && !turn.streaming && !hasProcess}
               />
             )
           }
@@ -238,10 +269,10 @@ export function TurnView({
             )
           }
           return null
-        })
-      ) : (
-        level === 1 && <AnswerOnly text={turn.finalText} model={model} message={turn.finalMessage} />
+        })}
+        </div>
       )}
+      {level === 1 && <AnswerOnly text={turn.finalText} model={model} message={turn.finalMessage} streaming={turn.streaming} />}
       {level !== 2 && changes.length > 0 && (
         <section className="turn-changes" aria-label={state.settings.language === 'en' ? 'Files changed in this turn' : '本轮文件变更'}>
           <div className="turn-changes-title">{state.settings.language === 'en' ? 'Files changed' : '本轮文件变更'} · {changes.length}</div>

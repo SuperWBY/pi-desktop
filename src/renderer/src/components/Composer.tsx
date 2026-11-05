@@ -19,15 +19,16 @@ import {
   Check,
   ChevronDown,
   Image as ImageIcon,
-  Paperclip,
+  Plus,
   Square,
   X
 } from 'lucide-react'
 import clsx from 'clsx'
-import type { ModelInfo, ThinkingLevel } from '@shared/types'
+import type { ModelInfo, ScheduleCadence, ThinkingLevel } from '@shared/types'
 import { useApp, type Attachment } from '../store'
-import { formatCost, formatTokens, truncate } from '../lib/format'
+import { formatCost, formatTokens } from '../lib/format'
 import { Popover, Spinner } from './ui'
+import { ProjectPicker } from './ProjectPicker'
 
 type Draft = { text: string; attachments: Attachment[] }
 const drafts = new Map<string, Draft>()
@@ -363,6 +364,27 @@ export function Composer(): ReactNode {
   const submit = useCallback(async () => {
     const value = text.trim()
     if ((!value && attachments.length === 0) || sending) return
+    if (value === '/schedule' || value.startsWith('/schedule ')) {
+      const rest = value.slice('/schedule'.length).trim()
+      if (!rest) {
+        actions.notify('warning', t('定时任务'), t('在 /schedule 后面写要定时执行的内容'))
+        return
+      }
+      const parts = rest.split(/\s+/)
+      let cadence: ScheduleCadence | undefined
+      let prompt = rest
+      if (parts.length >= 6 && parts.slice(0, 5).every((part) => /^[A-Za-z\d*/,\-]+$/.test(part))) {
+        const expression = parts.slice(0, 5).join(' ')
+        const error = await window.pi.validateCron(expression)
+        if (!error) {
+          cadence = { type: 'cron', expression }
+          prompt = parts.slice(5).join(' ')
+        }
+      }
+      actions.openSchedules(true, { prompt, cadence, name: prompt.slice(0, 24) })
+      setText('')
+      return
+    }
     if (state.status !== 'ready') {
       actions.notify('warning', t('Not connected'), t('Wait for the session to finish starting.'))
       return
@@ -381,8 +403,9 @@ export function Composer(): ReactNode {
       setText((current) => (current === text ? '' : current))
       const sentIds = new Set(attachments.map((attachment) => attachment.id))
       setAttachments((current) => current.filter((attachment) => !sentIds.has(attachment.id)))
+      if (streaming && state.sendMode === 'steer') actions.setSendMode('followUp')
     }
-  }, [actions, attachments, sending, state.status, text, t])
+  }, [actions, attachments, sending, state.status, state.sendMode, streaming, text, t])
 
   const stop = useCallback(async () => {
     if (stopping) return
@@ -482,17 +505,21 @@ export function Composer(): ReactNode {
       )}
 
       {(state.queue.steering.length > 0 || state.queue.followUp.length > 0) && (
-        <div className="queue-strip">
-          <span className="queue-label">{t("Queued")}</span>
-          {[...state.queue.steering, ...state.queue.followUp].map((item, index) => (
-            <span className="queue-item" key={index}>
-              {truncate(item, 80)}
-            </span>
-          ))}
-        </div>
+        <details className="queue-strip">
+          <summary className="queue-label">{t("Queued")} · {state.queue.steering.length + state.queue.followUp.length}</summary>
+          <div className="queue-list">
+            {state.queue.steering.map((item, index) => <div className="queue-item" key={`steer-${index}`}><span>{state.settings.language === 'en' ? 'Steer' : '待插话'} {index + 1}</span><p>{item}</p></div>)}
+            {state.queue.followUp.map((item, index) => <div className="queue-item" key={`follow-${index}`}><span>{state.settings.language === 'en' ? 'Next' : '任务后发送'} {index + 1}</span><p>{item}</p></div>)}
+          </div>
+        </details>
       )}
 
       <div className="composer">
+        {state.messages.length === 0 && (
+          <div className="composer-project-row">
+            <ProjectPicker />
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className="attachment-row">
             {attachments.map((attachment) => (
@@ -543,7 +570,7 @@ export function Composer(): ReactNode {
           spellCheck={false}
           aria-label={t("输入消息")}
           placeholder={
-            streaming ? t("插话（steer）或排队一条后续消息…") : t("让 pi 帮你写代码、查问题、解释代码…")
+            streaming ? (state.settings.language === 'en' ? 'Add a follow-up message…' : '输入后续消息…') : t("让 pi 帮你写代码、查问题、解释代码…")
           }
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setText(event.target.value)}
           onKeyDown={onKeyDown}
@@ -553,11 +580,12 @@ export function Composer(): ReactNode {
         <div className="composer-bar">
           <div className="composer-left">
             <button
-              className="icon-button"
+              className="icon-button add-attachment"
               title={t("添加图片")}
+              aria-label={t("添加图片")}
               onClick={() => fileRef.current?.click()}
             >
-              <Paperclip size={15} />
+              <Plus size={16} />
             </button>
             <input
               ref={fileRef}
@@ -570,7 +598,9 @@ export function Composer(): ReactNode {
                 event.target.value = ''
               }}
             />
+          </div>
 
+          <div className="composer-right">
             <Popover
               width={320}
               keyboardNav={false}
@@ -619,24 +649,6 @@ export function Composer(): ReactNode {
             >
               {(close) => <ThinkingMenu close={close} />}
             </Popover>
-
-            {streaming && (
-              <div className="mode-toggle" role="group" aria-label={t("发送方式")}>
-                <button
-                  className={clsx(state.sendMode === 'steer' && 'active')}
-                  onClick={() => actions.setSendMode('steer')}
-                  title={t("Deliver after the current tool calls")}
-                >{t("Steer")}</button>
-                <button
-                  className={clsx(state.sendMode === 'followUp' && 'active')}
-                  onClick={() => actions.setSendMode('followUp')}
-                  title={t("Deliver after pi finishes")}
-                >{t("Follow-up")}</button>
-              </div>
-            )}
-          </div>
-
-          <div className="composer-right">
             {context?.tokens ? (
               <div
                 className="context-ring"
@@ -657,21 +669,36 @@ export function Composer(): ReactNode {
               </div>
             ) : null}
 
-            {streaming ? (
+            {streaming && (
               <button
                 className="send-button stop"
                 onClick={() => void stop()}
                 disabled={stopping}
                 title={t("Stop (Esc)")}
+                aria-label={t("Stop (Esc)")}
               >
                 {stopping ? <Spinner size={14} /> : <Square size={12} fill="currentColor" />}
               </button>
-            ) : (
+            )}
+            {streaming && canSend && (
+              <Popover width={235} align="right" trigger={(_open, toggle, expanded) => (
+                <button className="send-mode-button" onClick={toggle} aria-label={state.settings.language === 'en' ? 'Message delivery' : '选择发送方式'} title={state.sendMode === 'steer' ? t('Deliver after the current tool calls') : t('Deliver after pi finishes')} {...expanded}>
+                  <span>{state.sendMode === 'steer' ? t('Steer') : (state.settings.language === 'en' ? 'Queue' : '排队')}</span><ChevronDown size={12} />
+                </button>
+              )}>
+                {(close) => <div className="menu">
+                  <button className="menu-item" role="menuitemradio" aria-checked={state.sendMode === 'followUp'} onClick={() => { actions.setSendMode('followUp'); close() }}><span className="menu-item-main"><span className="menu-item-title">{state.settings.language === 'en' ? 'Queue' : '排队发送'}</span><span className="menu-item-sub">{t('Deliver after pi finishes')}</span></span>{state.sendMode === 'followUp' && <Check size={14} />}</button>
+                  <button className="menu-item" role="menuitemradio" aria-checked={state.sendMode === 'steer'} onClick={() => { actions.setSendMode('steer'); close() }}><span className="menu-item-main"><span className="menu-item-title">{t('Steer')}</span><span className="menu-item-sub">{t('Deliver after the current tool calls')}</span></span>{state.sendMode === 'steer' && <Check size={14} />}</button>
+                </div>}
+              </Popover>
+            )}
+            {(!streaming || canSend || sending) && (
               <button
                 className="send-button"
                 onClick={() => void submit()}
                 disabled={!canSend}
-                title={t("Send (Enter)")}
+                title={streaming ? (state.sendMode === 'steer' ? t('Steer') : (state.settings.language === 'en' ? 'Queue message' : '排队发送')) : t("Send (Enter)")}
+                aria-label={streaming ? (state.sendMode === 'steer' ? t('Steer') : (state.settings.language === 'en' ? 'Queue message' : '排队发送')) : t("Send (Enter)")}
               >
                 {sending ? <Spinner size={14} /> : <ArrowUp size={16} />}
               </button>
@@ -682,7 +709,7 @@ export function Composer(): ReactNode {
 
       <div className="composer-hint">
         {streaming
-          ? 'Enter to queue · Esc to stop'
+          ? (state.settings.language === 'en' ? `Enter to ${state.sendMode === 'steer' ? 'steer' : 'queue'} · Esc to stop` : `Enter ${state.sendMode === 'steer' ? '插话' : '排队发送'} · Esc 停止`)
           : t("Enter 发送 · Shift+Enter 换行")}
       </div>
     </div>

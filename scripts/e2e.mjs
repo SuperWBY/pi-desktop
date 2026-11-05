@@ -1762,6 +1762,31 @@ async function caseDeleteUndo() {
   await app.close()
 }
 
+async function caseProjectStability() {
+  const dirs = freshDirs('project-stability')
+  seedSession(dirs.sessions, 'project-session', '项目里的会话', 1, dirs.base)
+  seedSession(dirs.sessions, 'loose-session', '无项目会话', 1, '/tmp/loose-project')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: dirs.base })
+  )
+  const { app, page } = await launch(dirs)
+  await page.waitForFunction(() => [...document.querySelectorAll('.project-row')].some((row) => row.textContent?.includes('project-stability')))
+  await page.locator('.new-session').click()
+  await page.waitForFunction(() => document.querySelector('.topbar-path')?.textContent?.includes('临时对话'))
+  await page.waitForTimeout(1200)
+  check(
+    '切到临时对话后原项目仍在项目列表',
+    (await page.locator('.project-row').filter({ hasText: 'project-stability' }).count()) === 1
+  )
+  check(
+    '项目会话仍在项目下、不进入最近对话',
+    (await page.locator('.project-tree-sessions .session-item').filter({ hasText: '项目里的会话' }).count()) === 1 &&
+      (await page.locator('.recent-sessions .session-item').filter({ hasText: '项目里的会话' }).count()) === 0
+  )
+  await app.close()
+}
+
 async function caseSidebarAffordance() {
   const dirs = freshDirs('sidebar')
   seedSession(dirs.sessions, 'mock-session', 'Mock session')
@@ -1903,6 +1928,7 @@ const CASES = [
   { tags: ['restore', 'session'], label: 'session restore', run: caseSessionRestore },
   { tags: ['diagnostics'], label: 'diagnostics', run: caseDiagnostics },
   { tags: ['delete', 'session'], label: 'delete + undo', run: caseDeleteUndo },
+  { tags: ['sidebar', 'project-stability'], label: 'project stays in sidebar', run: caseProjectStability },
   { tags: ['sidebar'], label: 'sidebar affordances', run: caseSidebarAffordance }
 ]
 

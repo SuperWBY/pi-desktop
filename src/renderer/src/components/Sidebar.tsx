@@ -192,7 +192,7 @@ export function Sidebar(): ReactNode {
   // A session that belongs to a project lives only under that project; the
   // recent list is for conversations without a project.
   const recent = useMemo(
-    () => matching.filter((session) => !workspaces.includes(session.cwd)).slice(0, 8),
+    () => matching.filter((session) => !workspaces.includes(session.cwd)),
     [matching, workspaces]
   )
 

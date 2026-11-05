@@ -151,6 +151,15 @@ async function doOpenSession(options: {
         )
         const existingPath = stateResponse.data?.sessionFile ?? options.sessionPath ?? null
         if (existingPath) rememberActiveSession(existing.cwd, existingPath)
+        if (!scratch) {
+          saveSettings({
+            lastWorkspace: existing.cwd,
+            workspaces: [...loadSettings().workspaces, existing.cwd]
+          })
+        } else {
+          saveSettings({})
+        }
+        send('app:settings', loadSettings())
         return {
           ok: true,
           cwd: existing.cwd,

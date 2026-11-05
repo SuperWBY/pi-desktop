@@ -1352,6 +1352,16 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     [applySettings]
   )
 
+  // The current project may have been restored from lastWorkspace before it
+  // was written to settings. Persist it once the session is ready so switching
+  // to a temporary chat cannot make the project (and its sessions) disappear.
+  useEffect(() => {
+    const workspace = state.workspace
+    if (!workspace || state.scratchWorkspace || state.status !== 'ready') return
+    if (state.settings.workspaces.includes(workspace)) return
+    void updateSettings({ workspaces: [...state.settings.workspaces, workspace] })
+  }, [state.scratchWorkspace, state.settings.workspaces, state.status, state.workspace, updateSettings])
+
   const updatePiSettings = useCallback(async (patch: PiSettings) => {
     const piSettings = await window.pi.updatePiSettings(patch)
     dispatch({ type: 'SET_PI_SETTINGS', piSettings })

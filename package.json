@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "A desktop client for pi",
   "main": "./out/main/index.js",
   "license": "MIT",

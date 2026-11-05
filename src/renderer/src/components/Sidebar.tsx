@@ -162,7 +162,7 @@ export function Sidebar(): ReactNode {
     return () => window.clearInterval(timer)
   }, [])
 
-  const workspace = state.workspace ?? state.settings.lastWorkspace ?? null
+  const workspace = state.workspace ?? (state.scratchWorkspace ? null : state.settings.lastWorkspace ?? null)
 
   const language = state.settings.language ?? 'zh-CN'
   const queryText = query.trim().toLowerCase()
@@ -172,7 +172,8 @@ export function Sidebar(): ReactNode {
   const workspaces = useMemo(() => {
     const set = new Set(state.settings.workspaces)
     if (workspace && !state.scratchWorkspace) set.add(workspace)
-    if (workspace && state.scratchWorkspace) set.delete(workspace)
+    // Never delete a persisted project because the active chat is unbound.
+    // Doing so made a project vanish and pushed its sessions into Recent.
     return Array.from(set)
   }, [state.scratchWorkspace, state.settings.workspaces, workspace])
 

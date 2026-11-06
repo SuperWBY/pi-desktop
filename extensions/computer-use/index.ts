@@ -6,8 +6,10 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { createRequire } from 'node:module'
 
 const execFileAsync = promisify(execFile)
+const nodeRequire = createRequire(import.meta.url)
 const isWindows = process.platform === 'win32'
 const helperPath = fileURLToPath(new URL(isWindows ? './bin/computer-use-helper.ps1' : './bin/computer-use-helper', import.meta.url))
 const helperCommand = isWindows ? 'powershell.exe' : helperPath
@@ -87,7 +89,7 @@ async function ensureCdpPage(url?: string): Promise<any> {
     return cdpPage
   }
   await mkdir(cdpProfileDir, { recursive: true })
-  const { chromium } = await import('playwright')
+  const { chromium } = nodeRequire('playwright') as typeof import('playwright')
   cdpContext = await chromium.launchPersistentContext(cdpProfileDir, {
     executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     headless: process.env.PI_BROWSER_HEADLESS === '1',
@@ -147,7 +149,7 @@ async function cdpObserve(url?: string): Promise<Array<Record<string, unknown>>>
   const result = await withTimeout((async () => {
     if (url) await ensureCdpPage(url)
     return await cdpEval<Array<Record<string, unknown>>>(cdpObserveCode)
-  })(), 45_000, 'CDP Chrome did not respond within 45 seconds.')
+  })(), 10_000, 'CDP Chrome did not respond within 10 seconds.')
   return Array.isArray(result) ? result : []
 }
 

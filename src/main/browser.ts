@@ -205,3 +205,66 @@ export function browserClose(): void {
   currentUrl = ''
   send({ open: false, url: '', title: '', favicon: null, loading: false, error: null })
 }
+
+const domObserveCode = `(() => {
+  const selector = 'a,button,input,textarea,select,[role="button"],[role="link"],[contenteditable="true"]'
+  const candidates = []
+  for (const el of document.querySelectorAll(selector)) {
+    if (!(el instanceof HTMLElement)) continue
+    const rect = el.getBoundingClientRect()
+    if (rect.width < 2 || rect.height < 2) continue
+    const style = getComputedStyle(el)
+    if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue
+    const type = (el.getAttribute('type') || '').toLowerCase()
+    const secure = type === 'password' || el.getAttribute('autocomplete') === 'current-password'
+    const name = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.innerText || el.value || el.getAttribute('name') || el.getAttribute('title') || '').replace(/\\s+/g, ' ').trim().slice(0, 160)
+    const id = 'b' + (candidates.length + 1)
+    el.setAttribute('data-pi-cua-id', id)
+    candidates.push({
+      id,
+      role: el.getAttribute('role') || el.tagName.toLowerCase(),
+      name,
+      type,
+      value: secure ? '' : String(el.value ?? '').slice(0, 160),
+      secure,
+      bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+    })
+    if (candidates.length >= 120) break
+  }
+  return candidates
+})()`
+
+export function browserState(): Record<string, unknown> {
+  if (!view) return { open: false, url: '', title: '' }
+  const wc = view.webContents
+  return { open: true, url: wc.getURL() || currentUrl, title: wc.getTitle(), loading: wc.isLoading() }
+}
+
+export async function browserDomObserve(): Promise<Array<Record<string, unknown>>> {
+  if (!view) throw new Error('Open the in-app browser before observing a page.')
+  const result = await view.webContents.executeJavaScript(domObserveCode, true)
+  return Array.isArray(result) ? result as Array<Record<string, unknown>> : []
+}
+
+export async function browserDomAct(action: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!view) throw new Error('Open the in-app browser before acting on a page.')
+  const candidateId = String(action.candidateId ?? '')
+  if (!/^b\d+$/.test(candidateId)) throw new Error('candidateId must look like b1')
+  const type = String(action.type ?? '')
+  const selector = `[data-pi-cua-id="${candidateId}"]`
+  const text = String(action.text ?? '')
+  const key = String(action.key ?? 'Enter')
+  let code = ''
+  if (type === 'click') {
+    code = `(() => { const el = document.querySelector('${selector}'); if (!el) throw new Error('candidate not found'); el.scrollIntoView({block:'center'}); el.click(); return { ok: true, title: document.title, url: location.href }; })()`
+  } else if (type === 'type') {
+    if (!text) throw new Error('type requires text')
+    code = `(() => { const el = document.querySelector('${selector}'); if (!el) throw new Error('candidate not found'); if (el instanceof HTMLInputElement && el.type === 'password') throw new Error('secure field'); el.focus(); if (el.isContentEditable) el.textContent = ${JSON.stringify(text)}; else { const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set; if (setter) setter.call(el, ${JSON.stringify(text)}); else el.value = ${JSON.stringify(text)}; } el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return { ok: true, value: el.value }; })()`
+  } else if (type === 'press') {
+    code = `(() => { const el = document.querySelector('${selector}'); if (!el) throw new Error('candidate not found'); el.focus(); const key = ${JSON.stringify(key)}; el.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles:true})); el.dispatchEvent(new KeyboardEvent('keyup', {key, bubbles:true})); if (key === 'Enter' && el.form) el.form.requestSubmit(); return { ok: true }; })()`
+  } else {
+    throw new Error(`Unknown browser action: ${type}`)
+  }
+  const result = await view.webContents.executeJavaScript(code, true)
+  return result && typeof result === 'object' ? result as Record<string, unknown> : { ok: true }
+}

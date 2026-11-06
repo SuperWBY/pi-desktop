@@ -163,6 +163,39 @@ function compileCandidates(snapshot: Snapshot): Candidate[] {
   return candidates
 }
 
+interface BrowserBridge {
+  port: number
+  token: string
+}
+
+async function readBrowserBridge(): Promise<BrowserBridge | null> {
+  try {
+    const raw = await readFile(join(auditDir, 'browser-bridge.json'), 'utf8')
+    const value = JSON.parse(raw) as BrowserBridge
+    if (!Number.isFinite(value.port) || !value.token) return null
+    return value
+  } catch {
+    return null
+  }
+}
+
+async function bridgeRequest<T>(path: string, body?: Record<string, unknown>): Promise<T> {
+  const bridge = await readBrowserBridge()
+  if (!bridge) throw new Error('In-app browser bridge is not available. Open Pi Desktop and the browser panel first.')
+  const response = await fetch(`http://127.0.0.1:${bridge.port}${path}`, {
+    method: body ? 'POST' : 'GET',
+    headers: {
+      authorization: `Bearer ${bridge.token}`,
+      ...(body ? { 'content-type': 'application/json' } : {})
+    },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(20_000)
+  })
+  const value = await response.json() as { ok?: boolean; error?: string } & Record<string, unknown>
+  if (!response.ok || value.ok === false) throw new Error(value.error || `Browser bridge failed (${response.status})`)
+  return value as T
+}
+
 async function chromeJS<T>(code: string): Promise<T> {
   const escaped = code.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
   const script = `tell application "Google Chrome"
@@ -215,7 +248,14 @@ const browserObserveCode = `(() => {
   return JSON.stringify(candidates)
 })()`
 
-async function browserObserve(): Promise<BrowserCandidate[]> {
+async function browserObserve(url?: string): Promise<BrowserCandidate[]> {
+  const bridge = await readBrowserBridge()
+  if (bridge) {
+    if (url) await bridgeRequest('/navigate', { url })
+    const result = await bridgeRequest<{ candidates: BrowserCandidate[] }>('/observe', {})
+    return Array.isArray(result.candidates) ? result.candidates : []
+  }
+  if (url) throw new Error('The in-app browser is not open. Open the browser panel first, or use computer_use_browser_observe without a URL for Chrome AppleScript.')
   const candidates = await chromeJS<BrowserCandidate[]>(browserObserveCode)
   return Array.isArray(candidates) ? candidates : []
 }
@@ -223,6 +263,11 @@ async function browserObserve(): Promise<BrowserCandidate[]> {
 async function browserAction(action: Record<string, unknown>): Promise<string> {
   const candidateId = String(action.candidateId ?? '')
   if (!/^b\d+$/.test(candidateId)) throw new Error('candidateId must be a browser candidate such as b1')
+  const bridge = await readBrowserBridge()
+  if (bridge) {
+    const result = await bridgeRequest<{ result: Record<string, unknown> }>('/act', { ...action, candidateId })
+    return `in-app browser ${String(action.type ?? 'action')} ${candidateId}`
+  }
   const type = String(action.type ?? '')
   const selector = `[data-pi-cua-id="${candidateId}"]`
   if (type === 'click') {

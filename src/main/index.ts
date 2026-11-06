@@ -44,6 +44,7 @@ import {
   initBrowser
 } from './browser'
 import { importChromeCookies, listChromeProfiles, previewChromeProfile } from './chrome-import'
+import { startBrowserBridge, stopBrowserBridge } from './browser-bridge'
 import { locatePi, piVersion } from './pi-locate'
 import { deleteSession, listSessions, restoreSession, sessionExists, sessionsRoot } from './sessions'
 import { loadSettings, saveSettings } from './settings'
@@ -787,6 +788,7 @@ function createWindow(): void {
 
   const background = process.argv.includes('--background')
   initBrowser(mainWindow)
+  void startBrowserBridge().catch(() => undefined)
   mainWindow.on('ready-to-show', () => {
     if (!background) mainWindow?.show()
   })
@@ -900,6 +902,7 @@ if (!gotLock) {
   })
 
   app.on('before-quit', () => {
+    void stopBrowserBridge()
     scheduler.shutdown()
     for (const process of new Set(processes.values())) process.stop()
     processes.clear()

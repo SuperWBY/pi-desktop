@@ -238,6 +238,21 @@ export function BrowserTab({
             <Globe2 size={26} />
             <strong>{t("应用内浏览器")}</strong>
             <span>{t("从对话中点击链接，或在上方输入网址。")}</span>
+            <div className="browser-guide">
+              <div className="browser-guide-title">{t("使用前请了解")}</div>
+              <div className="browser-guide-item">
+                <span className="browser-guide-index">1</span>
+                <span>{t("在这个面板里登录目标网站，登录状态会保留。")}</span>
+              </div>
+              <div className="browser-guide-item">
+                <span className="browser-guide-index">2</span>
+                <span>{t("让 Pi 观察页面时，会读取页面 DOM，而不是猜截图坐标。")}</span>
+              </div>
+              <div className="browser-guide-item">
+                <span className="browser-guide-index">3</span>
+                <span>{t("密码框不会返回值；点击、提交和敏感操作仍需要你确认。")}</span>
+              </div>
+            </div>
           </div>
         )}
       </div>

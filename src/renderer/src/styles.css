@@ -7052,6 +7052,43 @@ html[data-platform='win32'] .app.sidebar-collapsed .topbar {
   padding: 20px;
 }
 .browser-empty strong { color: var(--text); font-size: 13px; font-weight: 500; }
+.browser-guide {
+  width: min(100%, 360px);
+  margin-top: 12px;
+  padding: 12px 13px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--card);
+  text-align: left;
+}
+.browser-guide-title {
+  margin-bottom: 8px;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.browser-guide-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 7px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.browser-guide-index {
+  display: inline-flex;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 50%;
+  color: var(--accent);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
 
 /* Chrome cookie import */
 .chrome-import-warning,

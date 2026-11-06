@@ -168,28 +168,103 @@ export function previewChromeProfile(id: string): { domains: ChromeDomain[]; run
   }
 }
 
-let cachedKey: string | null = null
+let cachedMacKey: Buffer | null = null
+let cachedWindowsKey: Buffer | null = null
 
-function chromeKey(): string {
-  if (process.platform !== 'darwin') throw new Error('Importing encrypted Chrome cookies is currently supported on macOS only.')
-  if (cachedKey) return cachedKey
+function macCookieKey(): Buffer {
+  if (cachedMacKey) return cachedMacKey
   const services = ['Chrome Safe Storage', 'Chromium Safe Storage', 'Chrome Beta Safe Storage', 'Chrome Canary Safe Storage']
   for (const service of services) {
     try {
-      const key = execFileSync('/usr/bin/security', ['find-generic-password', '-w', '-s', service], {
+      const password = execFileSync('/usr/bin/security', ['find-generic-password', '-w', '-s', service], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
         timeout: 15_000
       }).trim()
-      if (key) {
-        cachedKey = key
-        return key
+      if (password) {
+        cachedMacKey = pbkdf2Sync(password, 'saltysalt', 1003, 16, 'sha1')
+        return cachedMacKey
       }
     } catch {
       // Try the next Chrome channel.
     }
   }
   throw new Error('Chrome Safe Storage was not available in Keychain.')
+}
+
+function dpapiUnprotect(encrypted: Buffer): Buffer {
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    'try { Add-Type -AssemblyName System.Security } catch {}',
+    'try { Add-Type -AssemblyName System.Security.Cryptography.ProtectedData } catch {}',
+    '$raw=[Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())',
+    '$clear=[System.Security.Cryptography.ProtectedData]::Unprotect($raw,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser)',
+    '[Convert]::ToBase64String($clear)'
+  ].join(';')
+  const candidates = ['powershell.exe', 'pwsh.exe']
+  let lastError: unknown = null
+  for (const executable of candidates) {
+    try {
+      const output = execFileSync(executable, ['-NoProfile', '-NonInteractive', '-Command', script], {
+        input: encrypted.toString('base64'),
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+        timeout: 15_000,
+        windowsHide: true
+      })
+      return Buffer.from(output.trim(), 'base64')
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw new Error(lastError instanceof Error ? lastError.message : 'DPAPI decryption failed.')
+}
+
+function windowsCookieKey(): Buffer {
+  if (cachedWindowsKey) return cachedWindowsKey
+  const stateFile = join(chromeRoot(), 'Local State')
+  let state: { os_crypt?: { encrypted_key?: string; app_bound_encrypted_key?: string } }
+  try {
+    state = JSON.parse(readFileSync(stateFile, 'utf8'))
+  } catch {
+    throw new Error('Could not read Chrome Local State.')
+  }
+  const encoded = state.os_crypt?.encrypted_key
+  if (!encoded) {
+    throw new Error(
+      state.os_crypt?.app_bound_encrypted_key
+        ? 'This Chrome version uses app-bound cookie encryption, which is not supported yet.'
+        : 'Chrome cookie key is missing from Local State.'
+    )
+  }
+  const raw = Buffer.from(encoded, 'base64')
+  const dpapi = raw.subarray(0, 5).toString('ascii') === 'DPAPI' ? raw.subarray(5) : raw
+  const key = dpapiUnprotect(dpapi)
+  if (key.length !== 32) throw new Error('Unexpected Chrome cookie key length.')
+  cachedWindowsKey = key
+  return key
+}
+
+function decryptWindowsCookie(raw: Buffer): string {
+  const key = windowsCookieKey()
+  if (raw.length < 3 + 12 + 16) throw new Error('Invalid Chrome cookie payload.')
+  const nonce = raw.subarray(3, 15)
+  const tag = raw.subarray(raw.length - 16)
+  const ciphertext = raw.subarray(15, raw.length - 16)
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', key, nonce)
+    decipher.setAuthTag(tag)
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8')
+  } catch {
+    // Very old Chromium builds used AES-CBC for v10 cookies.
+    const decipher = createDecipheriv('aes-256-cbc', key, Buffer.alloc(16, 0x20))
+    return Buffer.concat([decipher.update(raw.subarray(3)), decipher.final()]).toString('utf8')
+  }
+}
+
+function decryptMacCookie(raw: Buffer): string {
+  const decipher = createDecipheriv('aes-128-cbc', macCookieKey(), Buffer.alloc(16, 0x20))
+  return Buffer.concat([decipher.update(raw.subarray(3)), decipher.final()]).toString('utf8')
 }
 
 function decryptCookie(row: CookieRow): string {
@@ -202,9 +277,9 @@ function decryptCookie(row: CookieRow): string {
   if (prefix !== 'v10' && prefix !== 'v11') {
     return row.value ?? raw.toString('utf8')
   }
-  const key = pbkdf2Sync(chromeKey(), 'saltysalt', 1003, 16, 'sha1')
-  const decipher = createDecipheriv('aes-128-cbc', key, Buffer.alloc(16, 0x20))
-  return Buffer.concat([decipher.update(raw.subarray(3)), decipher.final()]).toString('utf8')
+  if (process.platform === 'darwin') return decryptMacCookie(raw)
+  if (process.platform === 'win32') return decryptWindowsCookie(raw)
+  throw new Error('Encrypted Chrome cookies are supported on macOS and Windows only.')
 }
 
 function chromeExpiry(value: number): number | undefined {

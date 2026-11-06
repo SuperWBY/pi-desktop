@@ -26,9 +26,22 @@ interface UiElement {
   depth: number
 }
 
+interface OcrLine {
+  text: string
+  bounds: { x: number; y: number; width: number; height: number }
+  confidence: number
+}
+
+interface Candidate extends UiElement {
+  source: 'ax' | 'ocr'
+  confidence: number
+  actions: string[]
+}
+
 interface Snapshot {
   app: string
   bundleId: string | null
+  active: boolean
   windowTitle: string | null
   windowBounds: { x: number; y: number; width: number; height: number } | null
   windowId: number | null
@@ -39,6 +52,8 @@ interface Snapshot {
   accessibility: boolean
   screenRecording: boolean
   elements: UiElement[]
+  ocr?: OcrLine[]
+  candidates?: Candidate[]
 }
 
 interface SnapshotState {
@@ -80,9 +95,66 @@ async function runHelper(args: string[]): Promise<Record<string, unknown>> {
   }
 }
 
+function actionsFor(element: UiElement, source: 'ax' | 'ocr'): string[] {
+  if (source === 'ocr') return ['click']
+  const role = element.role
+  if (role.includes('Button') || role.includes('Link') || role.includes('MenuItem')) return ['press', 'click']
+  if (role.includes('TextField') || role.includes('TextArea')) return ['focus', 'set_value', 'type']
+  if (role.includes('CheckBox') || role.includes('RadioButton')) return ['toggle', 'click']
+  if (role.includes('PopUpButton')) return ['press', 'menu']
+  if (role.includes('Tab')) return ['press', 'click']
+  return ['click']
+}
+
+function compileCandidates(snapshot: Snapshot): Candidate[] {
+  const candidates: Candidate[] = []
+  const seen = new Set<string>()
+  for (const element of snapshot.elements) {
+    const key = `${element.role}|${element.title ?? ''}|${element.bounds?.x ?? -1},${element.bounds?.y ?? -1},${element.bounds?.width ?? -1},${element.bounds?.height ?? -1}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    candidates.push({
+      ...element,
+      source: 'ax',
+      confidence: 0.95,
+      actions: actionsFor(element, 'ax')
+    })
+  }
+  for (const [index, line] of (snapshot.ocr ?? []).entries()) {
+    if (line.confidence < 0.3 || !line.text.trim() || !line.bounds) continue
+    const duplicate = candidates.some((candidate) => {
+      if (!candidate.bounds) return false
+      const a = candidate.bounds
+      const b = line.bounds
+      const overlapX = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x))
+      const overlapY = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y))
+      const overlap = overlapX * overlapY
+      return overlap > 0.5 * b.width * b.height
+    })
+    if (duplicate) continue
+    candidates.push({
+      id: `o${index + 1}`,
+      role: 'text',
+      title: line.text,
+      description: null,
+      value: null,
+      identifier: null,
+      enabled: true,
+      focused: false,
+      secure: false,
+      bounds: line.bounds,
+      depth: 0,
+      source: 'ocr',
+      confidence: line.confidence,
+      actions: ['click']
+    })
+  }
+  return candidates
+}
+
 function describeSnapshot(snapshot: Snapshot, id: string): string {
   const lines = [
-    `App: ${snapshot.app}${snapshot.bundleId ? ` (${snapshot.bundleId})` : ''}`,
+    `App: ${snapshot.app}${snapshot.bundleId ? ` (${snapshot.bundleId})` : ''}${snapshot.active ? ' [active]' : ' [background]'}`,
     `Window: ${snapshot.windowTitle ?? '(untitled)'}`,
     `Snapshot: ${id}`,
     `Capture: ${snapshot.captureMode}${snapshot.windowBounds ? ` @ ${Math.round(snapshot.windowBounds.x)},${Math.round(snapshot.windowBounds.y)} ${Math.round(snapshot.windowBounds.width)}×${Math.round(snapshot.windowBounds.height)}` : ''}`,
@@ -90,24 +162,27 @@ function describeSnapshot(snapshot: Snapshot, id: string): string {
     `Accessibility: ${snapshot.accessibility ? 'granted' : 'missing'}`,
     `Screen recording: ${snapshot.screenRecording ? 'granted' : 'missing'}`,
     '',
-    'Elements:'
+    `Candidates: ${snapshot.candidates?.length ?? snapshot.elements.length} (AX ${snapshot.elements.length}, OCR ${snapshot.ocr?.length ?? 0})`
   ]
-  for (const element of snapshot.elements) {
+  const rows = snapshot.candidates ?? snapshot.elements
+  for (const element of rows) {
     const label = element.title || element.description || element.value || ''
     const bounds = element.bounds
       ? ` @ ${Math.round(element.bounds.x)},${Math.round(element.bounds.y)} ${Math.round(element.bounds.width)}×${Math.round(element.bounds.height)}`
       : ''
+    const source = 'source' in element ? ` ${element.source}` : ''
+    const actions = 'actions' in element && Array.isArray(element.actions) ? ` [${element.actions.join(',')}]` : ''
     lines.push(
-      `${element.id} ${element.role}${label ? ` “${label.slice(0, 120)}”` : ''}${element.secure ? ' [secure]' : ''}${element.enabled ? '' : ' [disabled]'}${bounds}`
+      `${element.id} ${element.role}${source}${label ? ` “${label.slice(0, 120)}”` : ''}${element.secure ? ' [secure]' : ''}${element.enabled ? '' : ' [disabled]'}${actions}${bounds}`
     )
   }
-  if (!snapshot.elements.length) lines.push('(no accessible elements; use the screenshot and x/y coordinates)')
+  if (!rows.length) lines.push('(no accessible elements or OCR text; use the screenshot and x/y coordinates)')
   return lines.join('\n')
 }
 
 function findElement(snapshot: Snapshot | undefined, id: string): UiElement {
   if (!snapshot) throw new Error('Snapshot not found. Call computer_use_observe again.')
-  const element = snapshot.elements.find((item) => item.id === id)
+  const element = (snapshot.candidates ?? snapshot.elements).find((item) => item.id === id) ?? snapshot.elements.find((item) => item.id === id)
   if (!element) throw new Error(`Element ${id} is no longer in the snapshot. Observe again.`)
   if (!element.bounds) throw new Error(`Element ${id} has no bounds; observe again.`)
   return element
@@ -239,12 +314,23 @@ export default function computerUse(pi: ExtensionAPI): void {
       const screenshotPath = join(tmpdir(), `pi-cua-${Date.now()}.png`)
       const result = await runHelper(['observe', '--app', params.app ?? '', '--screenshot', screenshotPath])
       const snapshot = result.snapshot as Snapshot
+      const candidates = compileCandidates(snapshot)
+      snapshot.candidates = candidates
       const id = `s${Date.now()}`
       snapshots.set(id, { id, snapshot, stale: false })
       const text = describeSnapshot(snapshot, id)
       const content: Array<Record<string, unknown>> = [{ type: 'text', text }]
       if (params.includeScreenshot !== false) content.push(...(await screenshotContent(screenshotPath)))
-      return { content, details: { snapshotId: id, app: snapshot.app, elements: snapshot.elements.length } }
+      return {
+        content,
+        details: {
+          snapshotId: id,
+          app: snapshot.app,
+          elements: snapshot.elements.length,
+          ocr: snapshot.ocr?.length ?? 0,
+          candidates: candidates.length
+        }
+      }
     }
   })
 

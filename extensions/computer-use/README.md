@@ -65,3 +65,8 @@ Pi extension (TypeScript)
 - semantic post-action verification
 - per-app allowlist / deny list
 - sandbox backend (Cua / Docker)
+
+
+## Hybrid observation
+
+`computer_use_observe` now compiles Accessibility elements and Vision OCR lines into one candidate list. Each candidate carries `source` (`ax` or `ocr`), `confidence`, bounds, and suggested actions. AX candidates keep their element IDs; OCR-only candidates use `oN` IDs.

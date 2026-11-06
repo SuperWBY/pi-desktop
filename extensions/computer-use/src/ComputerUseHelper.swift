@@ -2,6 +2,8 @@ import Foundation
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import Vision
+import ImageIO
 
 struct Rect: Encodable {
     let x: Double
@@ -24,9 +26,16 @@ struct Element: Encodable {
     let depth: Int
 }
 
+struct OcrLine: Encodable {
+    let text: String
+    let bounds: Rect
+    let confidence: Double
+}
+
 struct Snapshot: Encodable {
     let app: String
     let bundleId: String?
+    let active: Bool
     let windowTitle: String?
     let windowBounds: Rect?
     let windowId: Int?
@@ -37,6 +46,7 @@ struct Snapshot: Encodable {
     let accessibility: Bool
     let screenRecording: Bool
     let elements: [Element]
+    let ocr: [OcrLine]
 }
 
 func emit(_ object: [String: Any], code: Int32 = 0) -> Never {
@@ -195,6 +205,42 @@ func findWindowId(pid: pid_t, title: String?, bounds: Rect?) -> Int? {
     return fallback.sorted { $0.area > $1.area }.first?.id
 }
 
+func imageSize(path: String) -> CGSize? {
+    guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+          let width = properties[kCGImagePropertyPixelWidth as String] as? Double,
+          let height = properties[kCGImagePropertyPixelHeight as String] as? Double else { return nil }
+    return CGSize(width: width, height: height)
+}
+
+func recognizeText(path: String, origin: Rect?) -> [OcrLine] {
+    guard let imageSize = imageSize(path: path), imageSize.width > 0, imageSize.height > 0 else { return [] }
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.usesLanguageCorrection = true
+    request.recognitionLanguages = ["zh-Hans", "en-US"]
+    let handler = VNImageRequestHandler(url: URL(fileURLWithPath: path), options: [:])
+    guard (try? handler.perform([request])) != nil else { return [] }
+    let baseX = origin?.x ?? 0
+    let baseY = origin?.y ?? 0
+    var lines: [OcrLine] = []
+    for observation in request.results ?? [] {
+        guard let text = observation.topCandidates(1).first?.string.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { continue }
+        let box = observation.boundingBox
+        let rect = Rect(
+            x: baseX + box.minX * imageSize.width,
+            y: baseY + (1 - box.maxY) * imageSize.height,
+            width: box.width * imageSize.width,
+            height: box.height * imageSize.height
+        )
+        let confidence = Double(observation.topCandidates(1).first?.confidence ?? 0)
+        lines.append(OcrLine(text: String(text.prefix(160)), bounds: rect, confidence: confidence))
+        if lines.count >= 120 { break }
+    }
+    return lines
+}
+
 func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
     let app = runningApplication(appName)
     let pid = app?.processIdentifier ?? 0
@@ -251,10 +297,12 @@ func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
         try? resize.run()
         resize.waitUntilExit()
     }
+    let ocrLines = screenshotPath.map { recognizeText(path: $0, origin: windowBounds) } ?? []
     let size = screenSize()
     return Snapshot(
         app: app?.localizedName ?? appName ?? "frontmost",
         bundleId: app?.bundleIdentifier,
+        active: app?.isActive ?? false,
         windowTitle: windowTitle,
         windowBounds: windowBounds,
         windowId: windowId,
@@ -264,7 +312,8 @@ func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
         screenHeight: size.height,
         accessibility: AXIsProcessTrusted(),
         screenRecording: CGPreflightScreenCaptureAccess(),
-        elements: elements
+        elements: elements,
+        ocr: ocrLines
     )
 }
 
@@ -413,6 +462,11 @@ case "activate":
     guard let app = argument("--app") else { fail("Missing --app") }
     activate(app)
     emit(["ok": true])
+case "ocr":
+    guard let image = argument("--image") else { fail("Missing --image") }
+    let lines = recognizeText(path: image, origin: nil)
+    let encoded = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(lines))
+    emit(["ok": true, "lines": encoded])
 case "observe":
     let app = argument("--app")
     let screenshot = argument("--screenshot")

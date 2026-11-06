@@ -57,11 +57,14 @@ try {
   assert.ok(['region', 'window'].includes(snapshot.captureMode), `Unexpected capture mode: ${snapshot.captureMode}`)
   assert.ok(snapshot.windowBounds, 'Observation should return window bounds')
 
+  const ocr = run(['ocr', '--image', screenshot])
+  assert.ok(Array.isArray(ocr.lines), 'OCR should return a line array')
+
   const size = imageSize(screenshot)
   assert.ok(Math.abs(size.width - snapshot.windowBounds.width) <= 2, 'Screenshot width should match window bounds')
   assert.ok(Math.abs(size.height - snapshot.windowBounds.height) <= 2, 'Screenshot height should match window bounds')
 
-  console.log(`PASS computer-use observation: ${snapshot.elements.length} elements, ${snapshot.captureMode} ${size.width}x${size.height}`)
+  console.log(`PASS computer-use observation: ${snapshot.elements.length} elements, ${ocr.lines.length} OCR lines, ${snapshot.captureMode} ${size.width}x${size.height}`)
 } finally {
   if (created) {
     spawnSync('osascript', ['-e', 'tell application "TextEdit" to close front window saving no'], {

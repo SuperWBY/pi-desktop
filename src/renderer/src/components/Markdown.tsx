@@ -38,7 +38,7 @@ export function CopyButton({ text, label }: { text: string; label?: string }): R
 }
 
 export const Markdown = memo(function Markdown({ children }: { children: string }): ReactNode {
-  const { actions } = useApp()
+  const { state, actions } = useApp()
 
   const components: Components = {
     pre: ({ children }) => {
@@ -67,7 +67,18 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
         href={href}
         onClick={(event) => {
           event.preventDefault()
-          if (href) actions.openExternal(href)
+          if (!href) return
+          if (href.startsWith('#')) {
+            event.currentTarget.ownerDocument.getElementById(href.slice(1))?.scrollIntoView()
+            return
+          }
+          const external =
+            event.metaKey ||
+            event.ctrlKey ||
+            (state.settings.linkOpenMode ?? 'browser') === 'external' ||
+            !/^https?:\/\//i.test(href)
+          if (external) actions.openExternal(href)
+          else actions.openBrowser(href)
         }}
       >
         {children}

@@ -42,6 +42,7 @@ const SHORTCUTS: { keys: string; label: string }[] = [
   { keys: '⌘B', label: '收起 / 展开侧栏' },
   { keys: '⌘⇧L', label: '切换主题' },
   { keys: '⌘⇧E', label: '右侧工作面板' },
+  { keys: '⌘⇧B', label: '应用内浏览器' },
   { keys: '⌘⇧O', label: '完整记录' },
   { keys: '⌘.', label: '收起所有轮次' },
   { keys: '⇧⌘.', label: '展开所有轮次' },
@@ -737,6 +738,26 @@ export function SettingsPage(): ReactNode {
             label={t("自动重试")}
             checked={autoRetry}
             onChange={(value) => void actions.setAutoRetry(value)}
+          />
+        </Row>
+      </Block>
+
+      <Block title={t("链接")} query={query} terms={['浏览器', '链接', 'browser', '外链', '网址']}>
+        <Row
+          title={t("对话中的链接")}
+          desc={t("默认在右侧应用内浏览器打开；按住 ⌘/Ctrl 点击可改用系统浏览器。")}
+          query={query}
+        >
+          <Select
+            label={t("链接打开方式")}
+            value={state.settings.linkOpenMode ?? 'browser'}
+            onChange={(value) =>
+              void actions.updateSettings({ linkOpenMode: value as 'browser' | 'external' })
+            }
+            options={[
+              { value: 'browser', label: t('右侧浏览器') },
+              { value: 'external', label: t('系统浏览器') }
+            ]}
           />
         </Row>
       </Block>

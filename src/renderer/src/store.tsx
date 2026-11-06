@@ -902,6 +902,7 @@ interface AppActions {
   compact: () => Promise<void>
   fillComposer: (text: string) => void
   openExternal: (url: string) => void
+  openBrowser: (url: string) => void
   revealSession: (path: string) => void
 }
 
@@ -1596,6 +1597,14 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     void window.pi.openExternal(url)
   }, [])
 
+  const openBrowser = useCallback((url: string) => {
+    if (!/^https?:\/\//i.test(url)) {
+      void window.pi.openExternal(url)
+      return
+    }
+    window.dispatchEvent(new CustomEvent('pi:open-browser', { detail: { url } }))
+  }, [])
+
   const revealSession = useCallback((path: string) => {
     void window.pi.showItem(path)
   }, [])
@@ -1822,6 +1831,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       compact,
       fillComposer,
       openExternal,
+      openBrowser,
       revealSession
     }),
     [
@@ -1870,6 +1880,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       compact,
       fillComposer,
       openExternal,
+      openBrowser,
       revealSession
     ]
   )

@@ -31,6 +31,18 @@ import type {
   Settings
 } from '@shared/types'
 import { PiProcess } from './pi'
+import {
+  browserBack,
+  browserBounds,
+  browserClose,
+  browserForward,
+  browserNavigate,
+  browserOpen,
+  browserReload,
+  browserSetVisible,
+  browserStop,
+  initBrowser
+} from './browser'
 import { locatePi, piVersion } from './pi-locate'
 import { deleteSession, listSessions, restoreSession, sessionExists, sessionsRoot } from './sessions'
 import { loadSettings, saveSettings } from './settings'
@@ -479,6 +491,16 @@ function registerIpc(): void {
     await shell.openExternal(url)
   })
 
+  ipcMain.handle('browser:open', (_event, url: string) => browserOpen(url))
+  ipcMain.handle('browser:navigate', (_event, url: string) => browserNavigate(url))
+  ipcMain.handle('browser:back', () => browserBack())
+  ipcMain.handle('browser:forward', () => browserForward())
+  ipcMain.handle('browser:reload', () => browserReload())
+  ipcMain.handle('browser:stop', () => browserStop())
+  ipcMain.handle('browser:close', () => browserClose())
+  ipcMain.handle('browser:bounds', (_event, bounds) => browserBounds(bounds))
+  ipcMain.handle('browser:visible', (_event, visible: boolean) => browserSetVisible(visible))
+
   ipcMain.handle('shell:show-item', (_event, path: string) => {
     if (path) shell.showItemInFolder(path)
   })
@@ -758,6 +780,7 @@ function createWindow(): void {
   })
 
   const background = process.argv.includes('--background')
+  initBrowser(mainWindow)
   mainWindow.on('ready-to-show', () => {
     if (!background) mainWindow?.show()
   })

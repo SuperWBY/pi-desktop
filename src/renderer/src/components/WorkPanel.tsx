@@ -1,23 +1,25 @@
 import { useTranslation } from '../i18n'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { FileText, Files, FolderTree, Image, Maximize2, Minimize2, Plus, SquareTerminal, X } from 'lucide-react'
+import { FileText, Files, FolderTree, Globe2, Image, Maximize2, Minimize2, Plus, SquareTerminal, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useApp } from '../store'
 import { ChangesTab } from './work/ChangesTab'
 import { FilesTab } from './work/FilesTab'
 import { TerminalTab } from './work/TerminalTab'
 import { ArtifactsTab } from './work/ArtifactsTab'
+import { BrowserTab, type BrowserRequest } from './work/BrowserTab'
 import { FilePreview } from './work/FilePreview'
 import { Popover } from './ui'
 import { baseName } from '../lib/format'
 
-type TabId = 'changes' | 'files' | 'terminal' | 'artifacts'
+type TabId = 'changes' | 'files' | 'terminal' | 'artifacts' | 'browser'
 
 const TABS: { id: TabId; label: string; icon: typeof Files }[] = [
   { id: 'changes', label: '变更', icon: Files },
   { id: 'files', label: '文件', icon: FolderTree },
   { id: 'terminal', label: '终端', icon: SquareTerminal },
-  { id: 'artifacts', label: '产物', icon: Image }
+  { id: 'artifacts', label: '产物', icon: Image },
+  { id: 'browser', label: '浏览器', icon: Globe2 }
 ]
 
 const MIN_WIDTH = 280
@@ -40,6 +42,8 @@ export function WorkPanel(): ReactNode {
   })
   const [fileTabs, setFileTabs] = useState<string[]>([])
   const [activeFile, setActiveFile] = useState<string | null>(null)
+  const [browserRequest, setBrowserRequest] = useState<BrowserRequest | null>(null)
+  const [browserTitle, setBrowserTitle] = useState('')
   const cancelResize = useRef<(() => void) | null>(null)
   const tabListRef = useRef<HTMLDivElement>(null)
   const workspaceRef = useRef(state.workspace)
@@ -96,6 +100,10 @@ export function WorkPanel(): ReactNode {
   )
 
   const closeTab = (id: string): void => {
+    if (id === 'browser') {
+      void window.pi.browserClose()
+      setBrowserRequest(null)
+    }
     if (id.startsWith('file:')) {
       const path = id.slice(5)
       setFileTabs((current) => current.filter((item) => item !== path))
@@ -138,6 +146,49 @@ export function WorkPanel(): ReactNode {
     window.addEventListener('pi:review-request', onReview)
     return () => window.removeEventListener('pi:review-request', onReview)
   }, [tabs, actions])
+
+  useEffect(() => {
+    const onOpenBrowser = (event: Event): void => {
+      const detail = (event as CustomEvent<{ url: string }>).detail
+      if (!detail?.url) return
+      const next = tabs.includes('browser') ? tabs : [...tabs, 'browser' as const]
+      setTabs(next)
+      setActiveFile(null)
+      setVisited((current) => new Set([...current, 'browser']))
+      setBrowserRequest({ url: detail.url, nonce: Date.now() })
+      actions.setWorkPanelOpen(true)
+      const targetWidth = Math.max(width, 520)
+      if (targetWidth !== width) {
+        setWidth(targetWidth)
+        void actions.updateSettings({ workPanelWidth: targetWidth })
+      }
+      void actions.updateSettings({ workPanelTabs: next, workPanelTab: 'browser' })
+    }
+    window.addEventListener('pi:open-browser', onOpenBrowser)
+    return () => window.removeEventListener('pi:open-browser', onOpenBrowser)
+  }, [tabs, actions, width])
+
+  useEffect(() => {
+    const onToggleBrowser = (): void => {
+      if (open && tab === 'browser') {
+        actions.setWorkPanelOpen(false)
+        return
+      }
+      const next = tabs.includes('browser') ? tabs : [...tabs, 'browser' as const]
+      setTabs(next)
+      setActiveFile(null)
+      setVisited((current) => new Set([...current, 'browser']))
+      actions.setWorkPanelOpen(true)
+      const targetWidth = Math.max(width, 520)
+      if (targetWidth !== width) {
+        setWidth(targetWidth)
+        void actions.updateSettings({ workPanelWidth: targetWidth })
+      }
+      void actions.updateSettings({ workPanelTabs: next, workPanelTab: 'browser' })
+    }
+    window.addEventListener('pi:toggle-browser', onToggleBrowser)
+    return () => window.removeEventListener('pi:toggle-browser', onToggleBrowser)
+  }, [actions, open, tab, tabs])
 
   // Drag locally (instant) and persist once on release. Persisting on every
   // mousemove made the edge lag behind the cursor, which felt like the panel
@@ -187,6 +238,14 @@ export function WorkPanel(): ReactNode {
   }, [open])
   useEffect(() => () => cancelResize.current?.(), [])
 
+  const browserActive =
+    open &&
+    tab === 'browser' &&
+    !state.settingsOpen &&
+    !state.skillsOpen &&
+    !state.schedulesOpen &&
+    !state.diagnosticsOpen
+
   return (
     <aside className={clsx('work-panel', maximized && 'is-maximized')} style={{ width }} hidden={!open}>
       <div
@@ -227,7 +286,7 @@ export function WorkPanel(): ReactNode {
           {allTabs.map((id) => {
             const file = id.startsWith('file:') ? id.slice(5) : null
             const item = TABS.find((candidate) => candidate.id === id)
-            const label = file ? baseName(file) : t(item!.label)
+            const label = file ? baseName(file) : item!.id === 'browser' && browserTitle ? browserTitle : t(item!.label)
             const Icon = file ? FileText : item!.icon
             return <div className={clsx('work-tab-item', tab === id && 'active', file && 'is-file')} key={id}>
             <button
@@ -281,6 +340,16 @@ export function WorkPanel(): ReactNode {
         {(visited.has('files') || tab === 'files') && <div className="work-tab-container" hidden={tab !== 'files'}><FilesTab onOpenFile={openFile} /></div>}
         {(visited.has('terminal') || tab === 'terminal') && <div className="work-tab-container" hidden={tab !== 'terminal'}><TerminalTab /></div>}
         {(visited.has('artifacts') || tab === 'artifacts') && <div className="work-tab-container" hidden={tab !== 'artifacts'}><ArtifactsTab /></div>}
+        {(visited.has('browser') || tab === 'browser') && (
+          <div className="work-tab-container" hidden={tab !== 'browser'}>
+            <BrowserTab
+              active={browserActive}
+              request={browserRequest}
+              onRequestConsumed={() => setBrowserRequest(null)}
+              onTitle={setBrowserTitle}
+            />
+          </div>
+        )}
         {fileTabs.map((path) => <div key={path} className="work-tab-container" hidden={tab !== `file:${path}`}><FilePreview path={path} /></div>)}
       </div>
     </aside>

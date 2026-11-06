@@ -9,6 +9,7 @@
  */
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
@@ -259,6 +260,72 @@ async function caseWorkPanel() {
   await dragHandle(600)
   check('拖到最窄再放手会收起面板', !(await page.locator('.work-panel').isVisible()))
   await app.close()
+}
+
+async function caseBrowser() {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end('<!doctype html><title>Browser Fixture</title><h1>browser ok</h1>')
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  const dirs = freshDirs('browser')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({
+      theme: 'dark',
+      workspaces: [root],
+      lastWorkspace: root,
+      workPanelTabs: ['browser'],
+      workPanelTab: 'browser'
+    })
+  )
+  let app
+  try {
+    const launched = await launch(dirs, 'default')
+    app = launched.app
+    const page = launched.page
+
+    await page.keyboard.press('Meta+Shift+B')
+    await page.waitForSelector('.browser-toolbar')
+    check('⌘⇧B 打开右侧浏览器', await page.locator('.browser-toolbar').isVisible())
+    check('空白浏览器显示空状态', (await page.locator('.browser-empty').count()) === 1)
+
+    await page.locator('.browser-address input').fill(`http://127.0.0.1:${port}/`)
+    await page.keyboard.press('Enter')
+    await page.waitForFunction(
+      () => (document.querySelector('.browser-address input')?.value ?? '').includes('127.0.0.1'),
+      null,
+      { timeout: 8000 }
+    )
+    await page.waitForTimeout(700)
+    const state = await page.evaluate(() => ({
+      url: document.querySelector('.browser-address input')?.value ?? '',
+      error: document.querySelector('.browser-error')?.textContent ?? '',
+      surface: Boolean(document.querySelector('.browser-surface'))
+    }))
+    check('浏览器加载 localhost 页面', state.url.includes('127.0.0.1') && !state.error, JSON.stringify(state))
+    check('浏览器渲染页面容器', state.surface)
+
+    const native = await app.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows()[0]
+      const children = win?.contentView?.children ?? []
+      const view = children.find((child) => child.constructor?.name?.includes('WebContentsView'))
+      return { count: children.length, bounds: view?.getBounds?.() ?? null, visible: view?.getVisibility?.() ?? null }
+    })
+    check('浏览器原生视图有有效 bounds', Boolean(native.bounds && native.bounds.width > 100 && native.bounds.height > 100), JSON.stringify(native))
+
+    await page.locator('.browser-address input').fill('javascript:alert(1)')
+    await page.keyboard.press('Enter')
+    await page.waitForSelector('.browser-error')
+    check('拒绝 javascript: 地址', (await page.locator('.browser-error').textContent()).includes('http'))
+    await page.locator('.browser-icon[aria-label="关闭浏览器"]').click()
+    await page.waitForTimeout(300)
+    check('关闭浏览器后回到空状态', (await page.locator('.browser-empty').count()) === 1)
+  } finally {
+    if (app) await app.close()
+    await new Promise((resolve) => server.close(resolve))
+  }
 }
 
 async function casePolish() {
@@ -1900,6 +1967,7 @@ const CASES = [
   { tags: ['composer'], label: 'composer safety (IME, draft)', run: caseComposerSafety },
   { tags: ['menu', 'keyboard'], label: 'model menu: scroll + keyboard', run: caseMenuScrollAndKeyboard },
   { tags: ['panel'], label: 'work panel', run: caseWorkPanel },
+  { tags: ['browser'], label: 'in-app browser', run: caseBrowser },
   { tags: ['polish', 'files', 'export'], label: 'polish: files / export / lightbox', run: casePolish },
   { tags: ['virtual', 'scroll'], label: 'virtualization', run: caseVirtualization },
   { tags: ['fold', 'turns'], label: 'turns / folding', run: caseTurnsFold },

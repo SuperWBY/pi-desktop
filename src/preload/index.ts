@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { PiDesktopApi } from '@shared/api'
-import type { CustomProviderEntry, PiRecord, PiSettings, Settings } from '@shared/types'
+import type { BrowserBounds, BrowserState, CustomProviderEntry, PiRecord, PiSettings, Settings } from '@shared/types'
 
 function subscribe<T>(channel: string, callback: (value: T) => void): () => void {
   const listener = (_event: Electron.IpcRendererEvent, value: T): void => callback(value)
@@ -30,6 +30,16 @@ const api: PiDesktopApi = {
   command: (command, timeoutMs) => ipcRenderer.invoke('pi:command', command, timeoutMs),
   uiResponse: (response) => ipcRenderer.send('pi:ui-response', response),
   openExternal: (url: string) => ipcRenderer.invoke('shell:open-external', url),
+  browserOpen: (url: string) => ipcRenderer.invoke('browser:open', url),
+  browserNavigate: (url: string) => ipcRenderer.invoke('browser:navigate', url),
+  browserBack: () => ipcRenderer.invoke('browser:back'),
+  browserForward: () => ipcRenderer.invoke('browser:forward'),
+  browserReload: () => ipcRenderer.invoke('browser:reload'),
+  browserStop: () => ipcRenderer.invoke('browser:stop'),
+  browserClose: () => ipcRenderer.invoke('browser:close'),
+  browserBounds: (bounds: BrowserBounds) => ipcRenderer.invoke('browser:bounds', bounds),
+  browserVisible: (visible: boolean) => ipcRenderer.invoke('browser:visible', visible),
+  onBrowserState: (callback: (state: BrowserState) => void) => subscribe('browser:state', callback),
   showItem: (path: string) => ipcRenderer.invoke('shell:show-item', path),
   openPath: (path: string) => ipcRenderer.invoke('shell:open-path', path),
   notify: (payload) => ipcRenderer.invoke('notify:desktop', payload),

@@ -1,6 +1,8 @@
 import type {
   BackgroundSchedulerStatus,
   Bootstrap,
+  BrowserBounds,
+  BrowserState,
   ConnectorEntry,
   CustomProviderEntry,
   DeletedSession,
@@ -46,6 +48,16 @@ export interface PiDesktopApi {
   command<T = unknown>(command: Record<string, unknown>, timeoutMs?: number): Promise<PiResponse<T>>
   uiResponse(response: Record<string, unknown>): void
   openExternal(url: string): Promise<void>
+  browserOpen(url: string): Promise<BrowserState>
+  browserNavigate(url: string): Promise<BrowserState>
+  browserBack(): Promise<void>
+  browserForward(): Promise<void>
+  browserReload(): Promise<void>
+  browserStop(): Promise<void>
+  browserClose(): Promise<void>
+  browserBounds(bounds: BrowserBounds): Promise<void>
+  browserVisible(visible: boolean): Promise<void>
+  onBrowserState(callback: (state: BrowserState) => void): () => void
   showItem(path: string): Promise<void>
   openPath(path: string): Promise<boolean>
   notify(payload: { title?: string; body?: string }): Promise<boolean>

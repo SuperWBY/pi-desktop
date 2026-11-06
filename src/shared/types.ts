@@ -200,6 +200,30 @@ export interface BackgroundSchedulerStatus {
   detail?: string
 }
 
+export interface BrowserBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface BrowserDownload {
+  filename: string
+  state: 'completed' | 'cancelled' | 'interrupted'
+}
+
+export interface BrowserState {
+  open: boolean
+  url: string
+  title: string
+  favicon: string | null
+  loading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+  error: string | null
+  download?: BrowserDownload
+}
+
 export interface Settings {
   piPath?: string
   language?: 'zh-CN' | 'en'
@@ -217,8 +241,10 @@ export interface Settings {
   notifyOnFinish?: boolean
   workPanelOpen?: boolean
   workPanelWidth?: number
-  workPanelTab?: 'changes' | 'files' | 'terminal' | 'artifacts'
-  workPanelTabs?: ('changes' | 'files' | 'terminal' | 'artifacts')[]
+  workPanelTab?: 'changes' | 'files' | 'terminal' | 'artifacts' | 'browser'
+  workPanelTabs?: ('changes' | 'files' | 'terminal' | 'artifacts' | 'browser')[]
+  /** Where links in chat open: the in-app browser panel or the OS browser. */
+  linkOpenMode?: 'browser' | 'external'
   toolCardsExpanded?: boolean
   followStream?: boolean
   launchAtLogin?: boolean

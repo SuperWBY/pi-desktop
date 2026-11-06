@@ -71,6 +71,9 @@ function Shell(): ReactNode {
       if (key === 'b' && !event.shiftKey) {
         event.preventDefault()
         actions.toggleSidebar()
+      } else if (key === 'b' && event.shiftKey) {
+        event.preventDefault()
+        window.dispatchEvent(new CustomEvent('pi:toggle-browser'))
       } else if (key === 'e' && event.shiftKey) {
         event.preventDefault()
         actions.toggleWorkPanel()

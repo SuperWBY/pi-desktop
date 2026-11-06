@@ -787,10 +787,10 @@ export function SettingsPage(): ReactNode {
         </Row>
         <Row
           title={t("独立 Chrome（CDP）")}
-          desc={t("使用专用 Chrome profile，适合隔离任务、并行测试和自动化验证。")}
+          desc={t("使用专用 Chrome profile，适合隔离任务、并行测试和自动化验证。首次使用需在专用窗口登录。")}
           query={query}
         >
-          <span className="settings-pill warn">{t("规划中")}</span>
+          <span className="settings-pill ok">{t("可用")}</span>
         </Row>
         <Row
           title={t("Chrome 扩展桥")}

@@ -1,15 +1,13 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { appendFile, mkdir, readFile, unlink } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { createRequire } from 'node:module'
 
 const execFileAsync = promisify(execFile)
-const nodeRequire = createRequire(import.meta.url)
 const isWindows = process.platform === 'win32'
 const helperPath = fileURLToPath(new URL(isWindows ? './bin/computer-use-helper.ps1' : './bin/computer-use-helper', import.meta.url))
 const helperCommand = isWindows ? 'powershell.exe' : helperPath
@@ -80,38 +78,137 @@ const auditDir = join(homedir(), '.pi', 'computer-use')
 const auditFile = join(auditDir, 'audit.jsonl')
 const approvalMode = process.env.PI_COMPUTER_USE_APPROVAL ?? 'always'
 const cdpProfileDir = join(homedir(), '.pi', 'computer-use', 'chrome-cdp-profile')
-let cdpContext: any = null
-let cdpPage: any = null
+let cdpProcess: ReturnType<typeof spawn> | null = null
+let cdpSocket: WebSocket | null = null
+const cdpPort = Number(process.env.PI_CDP_PORT ?? '9223')
+let cdpMessageId = 0
+const cdpPending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>()
 
-async function ensureCdpPage(url?: string): Promise<any> {
-  if (cdpPage && !cdpPage.isClosed()) {
-    if (url) await cdpPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-    return cdpPage
+function cdpSend(method: string, params: Record<string, unknown> = {}): Promise<any> {
+  if (!cdpSocket || cdpSocket.readyState !== WebSocket.OPEN) {
+    return Promise.reject(new Error('CDP socket is not connected.'))
   }
-  await mkdir(cdpProfileDir, { recursive: true })
-  const { chromium } = nodeRequire('playwright') as typeof import('playwright')
-  cdpContext = await chromium.launchPersistentContext(cdpProfileDir, {
-    executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    headless: process.env.PI_BROWSER_HEADLESS === '1',
-    args: ['--no-first-run', '--no-default-browser-check']
+  return new Promise((resolve, reject) => {
+    const id = ++cdpMessageId
+    const timer = setTimeout(() => {
+      cdpPending.delete(id)
+      reject(new Error(`CDP ${method} timed out`))
+    }, 20_000)
+    cdpPending.set(id, { resolve, reject, timer })
+    cdpSocket!.send(JSON.stringify({ id, method, params }))
   })
-  cdpPage = cdpContext.pages().find((page: any) => page.url() !== 'about:blank') ?? await cdpContext.newPage()
-  if (url) await cdpPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-  return cdpPage
+}
+
+async function cdpConnect(profileDir: string, timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${cdpPort}/json/list`)
+      if (response.ok) break
+    } catch {
+      // Chrome is still starting.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150))
+  }
+  const list = await fetch(`http://127.0.0.1:${cdpPort}/json/list`).then((response) => response.json()) as Array<Record<string, any>>
+  const page = list.find((target) => target.type === 'page' && target.webSocketDebuggerUrl)
+  if (!page) throw new Error('Chrome did not expose a page target.')
+  cdpSocket = new WebSocket(page.webSocketDebuggerUrl)
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('CDP WebSocket connection timed out.')), 10_000)
+    cdpSocket!.addEventListener('open', () => {
+      clearTimeout(timer)
+      resolve()
+    }, { once: true })
+    cdpSocket!.addEventListener('error', () => {
+      clearTimeout(timer)
+      reject(new Error('CDP WebSocket connection failed.'))
+    }, { once: true })
+  })
+  cdpSocket.addEventListener('message', (event) => {
+    const message = JSON.parse(String(event.data)) as { id?: number; result?: any; error?: { message?: string } }
+    if (!message.id || !cdpPending.has(message.id)) return
+    const pending = cdpPending.get(message.id)!
+    clearTimeout(pending.timer)
+    cdpPending.delete(message.id)
+    if (message.error) pending.reject(new Error(message.error.message || 'CDP command failed'))
+    else pending.resolve(message.result)
+  })
+  await cdpSend('Page.enable')
+  await cdpSend('Runtime.enable')
+}
+
+async function ensureCdpPage(url?: string): Promise<void> {
+  if (!cdpSocket || cdpSocket.readyState !== WebSocket.OPEN) {
+    // A previous Pi process may have left the dedicated Chrome running.
+    // Try its fixed CDP port before spawning another profile holder.
+    try {
+      await cdpConnect(cdpProfileDir, 700)
+    } catch {
+      // No live CDP endpoint; start one below.
+    }
+    if (!cdpSocket && cdpProcess && cdpProcess.exitCode === null) {
+      try {
+        await cdpConnect(cdpProfileDir)
+      } catch {
+        cdpProcess.kill()
+        cdpProcess = null
+      }
+    }
+    if (!cdpSocket) {
+      await mkdir(cdpProfileDir, { recursive: true })
+      await unlink(join(cdpProfileDir, 'DevToolsActivePort')).catch(() => undefined)
+      cdpProcess = spawn('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', [
+      `--remote-debugging-port=${cdpPort}`,
+      `--user-data-dir=${cdpProfileDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      ...(process.env.PI_BROWSER_HEADLESS === '1' ? ['--headless=new'] : []),
+      'about:blank'
+    ], { stdio: 'ignore', detached: true })
+    cdpProcess.unref()
+    cdpProcess.once('exit', () => {
+      cdpProcess = null
+      cdpSocket = null
+    })
+    await cdpConnect(cdpProfileDir, 20_000)
+    }
+  }
+  if (url) {
+    await cdpSend('Page.navigate', { url })
+    await new Promise((resolve) => setTimeout(resolve, 700))
+  }
 }
 
 async function cdpEval<T>(code: string): Promise<T> {
-  const page = await ensureCdpPage()
-  await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => undefined)
-  await page.waitForTimeout(150)
-  return await page.evaluate(code) as T
+  const result = await cdpSend('Runtime.evaluate', {
+    expression: code,
+    returnByValue: true,
+    awaitPromise: true,
+    userGesture: true
+  }) as { result?: { value?: T }; exceptionDetails?: { exception?: { description?: string }; text?: string } }
+  if (result.exceptionDetails) {
+    throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'CDP evaluation failed')
+  }
+  return result.result?.value as T
+}
+
+function releaseCdpSocket(): void {
+  cdpSocket?.close()
+  cdpSocket = null
 }
 
 async function closeCdp(): Promise<void> {
-  if (cdpContext) {
-    await cdpContext.close().catch(() => undefined)
-    cdpContext = null
-    cdpPage = null
+  for (const pending of cdpPending.values()) {
+    clearTimeout(pending.timer)
+    pending.reject(new Error('CDP browser closed.'))
+  }
+  cdpPending.clear()
+  cdpSocket?.close()
+  cdpSocket = null
+  if (cdpProcess) {
+    cdpProcess.kill()
+    cdpProcess = null
   }
 }
 
@@ -135,28 +232,18 @@ const cdpObserveCode = `(() => {
   return out
 })()`
 
-async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms)
-  })
+async function cdpObserve(url?: string): Promise<Array<Record<string, unknown>>> {
   try {
-    return await Promise.race([promise, timeout])
+    await ensureCdpPage(url)
+    const result = await cdpEval<Array<Record<string, unknown>>>(cdpObserveCode)
+    return Array.isArray(result) ? result : []
   } finally {
-    if (timer) clearTimeout(timer)
+    releaseCdpSocket()
   }
 }
 
-async function cdpObserve(url?: string): Promise<Array<Record<string, unknown>>> {
-  const result = await withTimeout((async () => {
-    if (url) await ensureCdpPage(url)
-    return await cdpEval<Array<Record<string, unknown>>>(cdpObserveCode)
-  })(), 10_000, 'CDP Chrome did not respond within 10 seconds.')
-  return Array.isArray(result) ? result : []
-}
-
 async function cdpAction(action: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const page = await ensureCdpPage()
+  await ensureCdpPage()
   const candidateId = String(action.candidateId ?? '')
   if (!/^c\d+$/.test(candidateId)) throw new Error('candidateId must look like c1')
   const type = String(action.type ?? '')
@@ -174,9 +261,13 @@ async function cdpAction(action: Record<string, unknown>): Promise<Record<string
   } else {
     throw new Error(`Unknown CDP action: ${type}`)
   }
-  const result = await cdpEval<Record<string, unknown>>(code)
-  const state = await cdpEval<Record<string, unknown>>('({ title: document.title, url: location.href })')
-  return { ...result, page: state }
+  try {
+    const result = await cdpEval<Record<string, unknown>>(code)
+    const state = await cdpEval<Record<string, unknown>>('({ title: document.title, url: location.href })')
+    return { ...result, page: state }
+  } finally {
+    releaseCdpSocket()
+  }
 }
 
 async function audit(entry: Record<string, unknown>): Promise<void> {

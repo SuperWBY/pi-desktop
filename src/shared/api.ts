@@ -62,6 +62,7 @@ export interface PiDesktopApi {
   browserVisible(visible: boolean): Promise<void>
   onBrowserState(callback: (state: BrowserState) => void): () => void
   chromeBridgeInfo(): Promise<string>
+  chromeBridgeCheck(): Promise<{ connected: boolean; busy: boolean }>
   openChromeExtensions(): Promise<void>
   chromeProfiles(): Promise<{ profiles: ChromeProfile[]; running: boolean; error?: string }>
   chromePreview(profileId: string): Promise<{ domains: ChromeDomain[]; running: boolean }>

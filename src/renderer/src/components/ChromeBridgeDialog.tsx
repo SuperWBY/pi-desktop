@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Check, Copy, ExternalLink, ShieldCheck, Zap } from 'lucide-react'
+import { Check, Copy, ExternalLink, FolderOpen, RefreshCw, ShieldCheck, Zap } from 'lucide-react'
 import { Modal } from './ui'
 import { useTranslation } from '../i18n'
 
@@ -14,11 +14,14 @@ export function ChromeBridgeDialog({
   const [path, setPath] = useState('')
   const [copied, setCopied] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [connection, setConnection] = useState<'unknown' | 'connected' | 'missing' | 'busy'>('unknown')
 
   useEffect(() => {
     if (!open) return
     setCopied(false)
     setNotice(null)
+    setConnection('unknown')
     void window.pi.chromeBridgeInfo().then(setPath).catch(() => setPath(''))
   }, [open])
 
@@ -41,6 +44,28 @@ export function ChromeBridgeDialog({
     }
   }
 
+  const openFolder = async (): Promise<void> => {
+    if (!path) return
+    try {
+      await window.pi.showItem(path)
+    } catch {
+      setNotice(t('无法打开扩展目录，请手动复制上面的路径。'))
+    }
+  }
+
+  const checkConnection = async (): Promise<void> => {
+    setChecking(true)
+    setConnection('unknown')
+    try {
+      const result = await window.pi.chromeBridgeCheck()
+      setConnection(result.busy ? 'busy' : result.connected ? 'connected' : 'missing')
+    } catch {
+      setConnection('missing')
+    } finally {
+      setChecking(false)
+    }
+  }
+
   return (
     <Modal
       open={open}
@@ -52,6 +77,10 @@ export function ChromeBridgeDialog({
         <>
           <button className="button ghost" onClick={onClose}>
             {t('稍后再说')}
+          </button>
+          <button className="button ghost" onClick={() => void checkConnection()} disabled={checking}>
+            <RefreshCw size={12} className={checking ? 'spin' : ''} />
+            {t('检测连接')}
           </button>
           <button className="button primary" onClick={() => void openExtensions()}>
             <ExternalLink size={13} />
@@ -77,15 +106,29 @@ export function ChromeBridgeDialog({
 
       <ol className="chrome-bridge-steps">
         <li>
-          <strong>{t('打开扩展页')}</strong>
-          <span>{t('点击下方按钮，或手动打开 chrome://extensions。')}</span>
+          <div className="chrome-bridge-step-head">
+            <strong>{t('打开扩展页')}</strong>
+            <button className="button ghost" onClick={() => void openExtensions()}>
+              <ExternalLink size={12} />
+              {t('打开')}
+            </button>
+          </div>
+          <span>{t('点击「打开」，或手动打开 chrome://extensions。')}</span>
         </li>
         <li>
-          <strong>{t('打开开发者模式')}</strong>
+          <div className="chrome-bridge-step-head">
+            <strong>{t('打开开发者模式')}</strong>
+          </div>
           <span>{t('打开页面右上角的「开发者模式」开关。')}</span>
         </li>
         <li>
-          <strong>{t('加载已解压的扩展')}</strong>
+          <div className="chrome-bridge-step-head">
+            <strong>{t('加载已解压的扩展')}</strong>
+            <button className="button ghost" onClick={() => void openFolder()} disabled={!path}>
+              <FolderOpen size={12} />
+              {t('打开文件夹')}
+            </button>
+          </div>
           <span>{t('点击「加载已解压的扩展程序」，选择下面的目录。')}</span>
         </li>
       </ol>
@@ -96,6 +139,16 @@ export function ChromeBridgeDialog({
           {copied ? <Check size={13} /> : <Copy size={13} />}
           {copied ? t('已复制') : t('复制路径')}
         </button>
+      </div>
+
+      <div className="chrome-bridge-check">
+        <button className="button ghost" onClick={() => void checkConnection()} disabled={checking}>
+          <RefreshCw size={12} className={checking ? 'spin' : ''} />
+          {checking ? t('检测中…') : t('检测连接')}
+        </button>
+        {connection === 'connected' && <span className="chrome-bridge-status ok">{t('已连接，可以开始使用')}</span>}
+        {connection === 'missing' && <span className="chrome-bridge-status">{t('未检测到扩展')}</span>}
+        {connection === 'busy' && <span className="chrome-bridge-status">{t('端口被占用，请关闭其他 Pi 任务后重试')}</span>}
       </div>
 
       <p className="chrome-bridge-note">

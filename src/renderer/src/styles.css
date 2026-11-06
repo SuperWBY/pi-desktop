@@ -7403,3 +7403,23 @@ html[data-platform='win32'] .app.sidebar-collapsed .topbar {
 }
 .chrome-bridge-note { margin: 11px 0 0; color: var(--text-dim); font-size: 11px; line-height: 1.55; }
 .chrome-bridge-notice { margin-top: 9px; color: var(--danger, #d66); font-size: 11px; }
+.chrome-bridge-step-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.chrome-bridge-step-head .button {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  font-size: 10.5px;
+}
+.chrome-bridge-check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 12px;
+}
+.chrome-bridge-check .button { flex: 0 0 auto; }
+.chrome-bridge-status { color: var(--text-dim); font-size: 11px; }
+.chrome-bridge-status.ok { color: var(--success, #4caf78); }

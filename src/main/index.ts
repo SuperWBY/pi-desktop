@@ -10,6 +10,7 @@ import {
   type MenuItemConstructorOptions
 } from 'electron'
 import { execFileSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import {
   cpSync,
   existsSync,
@@ -511,6 +512,7 @@ function registerIpc(): void {
   )
 
   ipcMain.handle('chrome:bridge-info', () => prepareChromeBridge())
+  ipcMain.handle('chrome:bridge-check', () => checkChromeBridge())
   ipcMain.handle('chrome:open-extensions', () => {
     if (process.platform === 'darwin') execFileSync('open', ['-a', 'Google Chrome', 'chrome://extensions'])
     else if (process.platform === 'win32') execFileSync('cmd', ['/c', 'start', 'chrome', 'chrome://extensions'])
@@ -764,6 +766,42 @@ function buildMenu(): void {
   ]
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+function checkChromeBridge(): Promise<{ connected: boolean; busy: boolean }> {
+  return new Promise((resolve) => {
+    let settled = false
+    const server = createServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/next') {
+        settled = true
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ id: 'bridge-check', type: 'ping' }))
+        cleanup()
+        resolve({ connected: true, busy: false })
+        return
+      }
+      res.writeHead(404)
+      res.end()
+    })
+    const cleanup = (): void => {
+      clearTimeout(timer)
+      server.close()
+      server.closeAllConnections?.()
+    }
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve({ connected: false, busy: false })
+    }, 2500)
+    server.once('error', () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve({ connected: false, busy: true })
+    })
+    server.listen(9317, '127.0.0.1')
+  })
 }
 
 function prepareChromeBridge(): string {

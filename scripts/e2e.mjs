@@ -281,6 +281,17 @@ async function caseUsageTrend() {
       }
     })
   }
+  lines.push({
+    type: 'message',
+    timestamp: new Date(now).toISOString(),
+    message: {
+      role: 'assistant',
+      content: [{ type: 'toolCall', id: 'skill-call', name: 'read', arguments: { path: '~/.pi/agent/skills/demo-skill/SKILL.md' } }],
+      provider: 'mock',
+      model: 'mock-fast',
+      usage: { input: 50, output: 10, totalTokens: 60, cost: { total: 0.002 } }
+    }
+  })
   writeFileSync(
     join(project, 'usage.jsonl'),
     `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`
@@ -308,12 +319,12 @@ async function caseUsageTrend() {
   check('趋势图悬停显示 Tokens 和调用次数', /tokens/i.test(tooltip) && tooltip.includes('次调用'), tooltip)
   await page.getByRole('button', { name: 'Tokens' }).click()
   await page.waitForTimeout(200)
-  check('趋势图可切换 Tokens', (await page.locator('.usage-chart-tab.active').textContent()) === 'Tokens')
-  check('套餐额度区显示服务商', (await page.locator('.usage-quota-row').count()) >= 1)
-  await page.locator('.usage-quota-input').first().fill('100')
-  await page.keyboard.press('Tab')
-  await page.waitForTimeout(300)
-  check('可以设置套餐月额度', (await page.locator('.usage-quota-numbers').first().textContent()).includes('$100.00'))
+  check('趋势图可切换 Tokens', (await page.locator('.usage-metric-tabs .usage-chart-tab.active').textContent()) === 'Tokens')
+  await page.getByRole('button', { name: '柱状' }).click()
+  await page.waitForTimeout(200)
+  check('图表可以切换柱状', (await page.locator('.usage-trend-bar').count()) > 0)
+  check('技能调用统计显示', (await page.locator('.usage-skill-table').innerText()).includes('demo-skill'))
+  check('会话按 Tokens 排序', (await page.locator('.usage-tab').filter({ hasText: '按会话' }).count()) === 1)
   await app.close()
 }
 

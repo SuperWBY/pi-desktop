@@ -235,21 +235,6 @@ export interface ChromeDomain {
   count: number
 }
 
-export interface OpenCodeUsageWindow {
-  percent: number
-  status: string
-  resetsAt: string | null
-}
-
-export interface OpenCodeUsage {
-  available: boolean
-  error?: string
-  rolling: OpenCodeUsageWindow | null
-  weekly: OpenCodeUsageWindow | null
-  monthly: OpenCodeUsageWindow | null
-  fetchedAt: number
-}
-
 export interface ChromeImportResult {
   ok: boolean
   imported: number
@@ -280,8 +265,6 @@ export interface Settings {
   workPanelTabs?: ('changes' | 'files' | 'terminal' | 'artifacts' | 'browser')[]
   /** Where links in chat open: the in-app browser panel or the OS browser. */
   linkOpenMode?: 'browser' | 'external'
-  /** Optional monthly spend caps by provider, used by the usage page. */
-  usageBudgets?: Record<string, number>
   toolCardsExpanded?: boolean
   followStream?: boolean
   launchAtLogin?: boolean
@@ -586,6 +569,14 @@ export interface UsageDay extends UsageTotals {
   date: string
 }
 
+export interface UsageSkillRow {
+  name: string
+  calls: number
+  sessions: number
+  tokens: number
+  cost: number
+}
+
 export interface UsageSessionRow extends UsageTotals {
   path: string
   name: string
@@ -603,6 +594,7 @@ export interface UsageSummary {
   byDay: UsageDay[]
   byModel: UsageModelRow[]
   byProject: UsageProjectRow[]
+  bySkill: UsageSkillRow[]
   sessions: UsageSessionRow[]
   generatedAt: number
 }

@@ -8,16 +8,23 @@ import type {
   UsageProjectRow,
   UsageRange,
   UsageSessionRow,
+  UsageSkillRow,
   UsageSummary,
   UsageTotals
 } from '@shared/types'
 import { sessionsRoot } from './sessions'
+
+interface SkillCall {
+  name: string
+  at: number
+}
 
 interface FileCache {
   mtimeMs: number
   size: number
   session: UsageSessionRow | null
   entries: UsageEntry[]
+  skillCalls: SkillCall[]
 }
 
 const cache = new Map<string, FileCache>()
@@ -84,6 +91,18 @@ function projectFor(cwd: string): { path: string; name: string } {
   return { path: cwd, name: basename(cwd) || cwd }
 }
 
+function skillFromCall(name: unknown, args: unknown): string | null {
+  if (typeof name !== 'string' || !args || typeof args !== 'object') return null
+  const values = args as Record<string, unknown>
+  if (name === 'skill' && typeof values.name === 'string') return values.name
+  const raw = values.path ?? values.file
+  if (typeof raw !== 'string') return null
+  const path = raw.replace(/\\/g, '/')
+  if (!/\/skills\/[^/]+\/SKILL\.md$/i.test(path)) return null
+  const parts = path.split('/')
+  return parts[parts.length - 2] || null
+}
+
 async function readSession(file: string): Promise<FileCache | null> {
   let stat
   try {
@@ -98,7 +117,7 @@ async function readSession(file: string): Promise<FileCache | null> {
   try {
     raw = await fs.readFile(file, 'utf8')
   } catch {
-    cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, session: null, entries: [] })
+    cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, session: null, entries: [], skillCalls: [] })
     return null
   }
 
@@ -106,6 +125,7 @@ async function readSession(file: string): Promise<FileCache | null> {
   let name = ''
   let updatedAt = stat.mtimeMs
   const entries: UsageEntry[] = []
+  const skillCalls: SkillCall[] = []
 
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue
@@ -126,6 +146,18 @@ async function readSession(file: string): Promise<FileCache | null> {
     if (record.type !== 'message') continue
     const message = record.message as Record<string, unknown> | undefined
     if (!message || message.role !== 'assistant') continue
+    const content = message.content
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (!block || typeof block !== 'object') continue
+        const item = block as Record<string, unknown>
+        if (item.type !== 'toolCall') continue
+        const skill = skillFromCall(item.name, item.arguments)
+        if (skill) {
+          skillCalls.push({ name: skill, at: timestampOf(message.timestamp) || entryTimestamp || stat.mtimeMs })
+        }
+      }
+    }
     const usage = message.usage as Record<string, unknown> | undefined
     if (!usage) continue
     const at = timestampOf(message.timestamp) || entryTimestamp || stat.mtimeMs
@@ -146,7 +178,7 @@ async function readSession(file: string): Promise<FileCache | null> {
     projectName: project.name,
     updatedAt
   }
-  const next: FileCache = { mtimeMs: stat.mtimeMs, size: stat.size, session, entries }
+  const next: FileCache = { mtimeMs: stat.mtimeMs, size: stat.size, session, entries, skillCalls }
   cache.set(file, next)
   return next
 }
@@ -165,6 +197,7 @@ export async function usageSummary(range: UsageRange): Promise<UsageSummary> {
       byDay: [],
       byModel: [],
       byProject: [],
+      bySkill: [],
       sessions: [],
       generatedAt: Date.now()
     }
@@ -206,6 +239,7 @@ export async function usageSummary(range: UsageRange): Promise<UsageSummary> {
   const dayMap = new Map<string, UsageTotals>()
   const modelMap = new Map<string, UsageModelRow>()
   const projectMap = new Map<string, UsageProjectRow>()
+  const skillMap = new Map<string, { name: string; calls: number; sessions: Set<string>; tokens: number; cost: number }>()
   const sessions: UsageSessionRow[] = []
 
   for (const file of files) {
@@ -219,6 +253,14 @@ export async function usageSummary(range: UsageRange): Promise<UsageSummary> {
     if (!inRange.length) continue
 
     const session = parsed.session
+    for (const call of parsed.skillCalls) {
+      if (from != null && call.at < from) continue
+      if (call.at > now) continue
+      const current = skillMap.get(call.name) ?? { name: call.name, calls: 0, sessions: new Set<string>(), tokens: 0, cost: 0 }
+      current.calls += 1
+      current.sessions.add(session.path)
+      skillMap.set(call.name, current)
+    }
     const sessionTotals = emptyTotals()
     for (const entry of inRange) {
       addUsage(sessionTotals, entry.usage)
@@ -275,9 +317,12 @@ export async function usageSummary(range: UsageRange): Promise<UsageSummary> {
           return value ? { date, ...value } : { date, ...emptyTotals() }
         })
       : activeDays
-  const byModel = Array.from(modelMap.values()).sort((a, b) => b.cost - a.cost)
-  const byProject = Array.from(projectMap.values()).sort((a, b) => b.cost - a.cost)
-  sessions.sort((a, b) => b.cost - a.cost || b.updatedAt - a.updatedAt)
+  const byModel = Array.from(modelMap.values()).sort((a, b) => b.total - a.total || b.cost - a.cost)
+  const byProject = Array.from(projectMap.values()).sort((a, b) => b.total - a.total || b.cost - a.cost)
+  const bySkill: UsageSkillRow[] = Array.from(skillMap.values())
+    .map((row) => ({ name: row.name, calls: row.calls, sessions: row.sessions.size, tokens: 0, cost: 0 }))
+    .sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name))
+  sessions.sort((a, b) => b.total - a.total || b.cost - a.cost || b.updatedAt - a.updatedAt)
 
   return {
     range,
@@ -287,6 +332,7 @@ export async function usageSummary(range: UsageRange): Promise<UsageSummary> {
     byDay,
     byModel,
     byProject,
+    bySkill,
     sessions: sessions.slice(0, 100),
     generatedAt: now
   }

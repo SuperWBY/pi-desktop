@@ -29,8 +29,7 @@ import type {
   PiSettings,
   ThinkingLevel,
   UsageRange,
-  UsageSummary,
-  OpenCodeUsage
+  UsageSummary
 } from '@shared/types'
 import { useApp } from '../store'
 import { formatCost, formatTokens, shortenPath } from '../lib/format'
@@ -423,143 +422,6 @@ function Block({
   )
 }
 
-function UsageQuotaRow({
-  provider,
-  cost,
-  budget,
-  onSave
-}: {
-  provider: string
-  cost: number
-  budget?: number
-  onSave: (value: number | null) => void
-}): ReactNode {
-  const t = useTranslation()
-  const [value, setValue] = useState(budget ? String(budget) : '')
-  useEffect(() => setValue(budget ? String(budget) : ''), [budget])
-  const percent = budget && budget > 0 ? Math.min(100, (cost / budget) * 100) : 0
-  const label =
-    provider === 'opencode-go'
-      ? 'OpenCode Go'
-      : provider === 'unknown'
-        ? t('未知服务商')
-        : provider
-  const save = (): void => {
-    const parsed = Number(value)
-    if (!value.trim()) {
-      onSave(null)
-      return
-    }
-    if (Number.isFinite(parsed) && parsed >= 0) onSave(parsed)
-    else setValue(budget ? String(budget) : '')
-  }
-  return (
-    <div className="usage-quota-row">
-      <div className="usage-quota-head">
-        <span className="usage-quota-name">{label}</span>
-        <span className="usage-quota-numbers">
-          {formatCost(cost)}
-          {budget ? ` / ${formatCost(budget)}` : ` · ${t('未设置额度')}`}
-        </span>
-      </div>
-      <div className="usage-quota-track" aria-hidden="true">
-        <span style={{ width: `${percent}%` }} />
-      </div>
-      <input
-        className="usage-quota-input"
-        type="number"
-        min="0"
-        step="1"
-        inputMode="decimal"
-        placeholder={t('设置月额度')}
-        value={value}
-        onChange={(event) => setValue(event.target.value)}
-        onBlur={save}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') event.currentTarget.blur()
-        }}
-        aria-label={`${label} ${t('月额度')}`}
-      />
-    </div>
-  )
-}
-
-function OpenCodeQuotaCard({
-  usage,
-  loading,
-  onRefresh
-}: {
-  usage: OpenCodeUsage | null
-  loading: boolean
-  onRefresh: () => void
-}): ReactNode {
-  const t = useTranslation()
-  const windows = [
-    ['rolling', t('滚动 5 小时')],
-    ['weekly', t('本周')],
-    ['monthly', t('本月')]
-  ] as const
-  const reset = (value: string | null): string => {
-    if (!value) return t('重置时间未知')
-    const date = new Date(value)
-    if (Number.isNaN(date.getTime())) return t('重置时间未知')
-    return new Intl.DateTimeFormat('zh-CN', {
-      month: 'numeric',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    }).format(date)
-  }
-  return (
-    <div className="opencode-quota">
-      <div className="opencode-quota-head">
-        <div>
-          <strong>OpenCode Go</strong>
-          <span>{t('自动读取 · 官方 usage API')}</span>
-        </div>
-        <button className="settings-button" onClick={onRefresh} disabled={loading}>
-          <RefreshCw size={12} className={loading ? 'spin' : undefined} />
-          {t('刷新')}
-        </button>
-      </div>
-      {loading && !usage ? (
-        <div className="opencode-quota-loading">
-          <RefreshCw size={14} className="spin" />
-          {t('正在读取 OpenCode Go 额度…')}
-        </div>
-      ) : usage?.available ? (
-        <div className="opencode-windows">
-          {windows.map(([key, label]) => {
-            const item = usage[key]
-            const value = item?.percent ?? 0
-            return (
-              <div className="opencode-window" key={key}>
-                <div className="opencode-window-head">
-                  <span>{label}</span>
-                  <strong className={clsx(value >= 100 && 'is-full', value >= 80 && 'is-warn')}>
-                    {item ? `${Math.round(value)}%` : '—'}
-                  </strong>
-                </div>
-                <div className="opencode-track" aria-hidden="true">
-                  <span
-                    className={clsx(value >= 100 && 'is-full', value >= 80 && 'is-warn')}
-                    style={{ width: `${Math.min(100, value)}%` }}
-                  />
-                </div>
-                <small>{item ? `${t('重置')} ${reset(item.resetsAt)}` : t('不可用')}</small>
-              </div>
-            )
-          })}
-        </div>
-      ) : (
-        <div className="opencode-quota-error">
-          {usage?.error || t('未检测到 OpenCode Go 登录。')}
-        </div>
-      )}
-    </div>
-  )
-}
-
 export function SettingsPage(): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
@@ -581,10 +443,9 @@ export function SettingsPage(): ReactNode {
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [usageTab, setUsageTab] = useState<'model' | 'project' | 'session'>('model')
-  const [usageMetric, setUsageMetric] = useState<'cost' | 'tokens'>('cost')
+  const [usageMetric, setUsageMetric] = useState<'cost' | 'tokens'>('tokens')
+  const [usageChart, setUsageChart] = useState<'trend' | 'bars'>('trend')
   const [usageHover, setUsageHover] = useState<{ index: number; x: number; y: number } | null>(null)
-  const [opencodeUsage, setOpencodeUsage] = useState<OpenCodeUsage | null>(null)
-  const [opencodeLoading, setOpencodeLoading] = useState(false)
   const usageChartId = useId().replace(/:/g, '')
   const [usageNonce, setUsageNonce] = useState(0)
   const [chromeOpen, setChromeOpen] = useState(false)
@@ -610,35 +471,6 @@ export function SettingsPage(): ReactNode {
       alive = false
     }
   }, [active, open, usageRange, usageNonce])
-
-  useEffect(() => {
-    if (!open || active !== 'usage') return
-    let alive = true
-    setOpencodeLoading(true)
-    void window.pi
-      .opencodeUsage(usageNonce > 0)
-      .then((value) => {
-        if (alive) setOpencodeUsage(value)
-      })
-      .catch((error: unknown) => {
-        if (alive) {
-          setOpencodeUsage({
-            available: false,
-            error: error instanceof Error ? error.message : String(error),
-            rolling: null,
-            weekly: null,
-            monthly: null,
-            fetchedAt: Date.now()
-          })
-        }
-      })
-      .finally(() => {
-        if (alive) setOpencodeLoading(false)
-      })
-    return () => {
-      alive = false
-    }
-  }, [active, open, usageNonce])
 
   const piSettings: PiSettings = state.piSettings
   const piPath = state.settings.piPath ?? state.boot?.piPath ?? ''
@@ -1560,17 +1392,6 @@ export function SettingsPage(): ReactNode {
       ? `${linePath} L ${trendPoints[trendPoints.length - 1].x.toFixed(1)} ${chartBottom} L ${trendPoints[0].x.toFixed(1)} ${chartBottom} Z`
       : ''
     const trendStep = Math.max(1, Math.ceil(trendDays.length / 7))
-    const providerRows = (() => {
-      const rows = new Map<string, { provider: string; cost: number; total: number; requests: number }>()
-      for (const row of data?.byModel ?? []) {
-        const current = rows.get(row.provider) ?? { provider: row.provider, cost: 0, total: 0, requests: 0 }
-        current.cost += row.cost
-        current.total += row.total
-        current.requests += row.requests
-        rows.set(row.provider, current)
-      }
-      return [...rows.values()].sort((a, b) => b.cost - a.cost)
-    })()
     const tabRows =
       usageTab === 'model'
         ? data?.byModel ?? []
@@ -1618,12 +1439,7 @@ export function SettingsPage(): ReactNode {
         ) : (
           <>
             <div className="usage-kpis">
-              <div className="usage-kpi">
-                <span>{t('总费用')}</span>
-                <strong>{formatCost(totals?.cost)}</strong>
-                <small>{t('按模型单价估算')}</small>
-              </div>
-              <div className="usage-kpi">
+              <div className="usage-kpi usage-kpi-primary">
                 <span>Tokens</span>
                 <strong>{formatTokens(totals?.total)}</strong>
                 <small>
@@ -1634,7 +1450,7 @@ export function SettingsPage(): ReactNode {
                 <span>{t('请求数')}</span>
                 <strong>{totals?.requests ?? 0}</strong>
                 <small>
-                  {t('平均')} {formatCost((totals?.cost ?? 0) / Math.max(1, totals?.requests ?? 0))}
+                  {t('平均')} {formatTokens((totals?.total ?? 0) / Math.max(1, totals?.requests ?? 0))} / {t('请求')}
                 </small>
               </div>
               <div className="usage-kpi">
@@ -1644,18 +1460,31 @@ export function SettingsPage(): ReactNode {
                   {t('缓存读取')} {formatTokens(totals?.cacheRead)}
                 </small>
               </div>
+              <div className="usage-kpi">
+                <span>{t('估算费用')}</span>
+                <strong>{formatCost(totals?.cost)}</strong>
+                <small>{t('按模型单价估算')}</small>
+              </div>
             </div>
 
             <section className="usage-section">
               <div className="usage-section-head">
                 <h3>{t('每日趋势')}</h3>
                 <div className="usage-chart-tools">
-                  <div className="usage-chart-tabs" role="tablist" aria-label={t('趋势指标')}>
+                  <div className="usage-chart-tabs usage-metric-tabs" role="tablist" aria-label={t('趋势指标')}>
+                    <button className={clsx('usage-chart-tab', usageMetric === 'tokens' && 'active')} onClick={() => setUsageMetric('tokens')}>
+                      Tokens
+                    </button>
                     <button className={clsx('usage-chart-tab', usageMetric === 'cost' && 'active')} onClick={() => setUsageMetric('cost')}>
                       {t('费用')}
                     </button>
-                    <button className={clsx('usage-chart-tab', usageMetric === 'tokens' && 'active')} onClick={() => setUsageMetric('tokens')}>
-                      Tokens
+                  </div>
+                  <div className="usage-chart-tabs usage-type-tabs" role="tablist" aria-label={t('图表类型')}>
+                    <button className={clsx('usage-chart-tab', usageChart === 'trend' && 'active')} onClick={() => setUsageChart('trend')}>
+                      {t('趋势')}
+                    </button>
+                    <button className={clsx('usage-chart-tab', usageChart === 'bars' && 'active')} onClick={() => setUsageChart('bars')}>
+                      {t('柱状')}
                     </button>
                   </div>
                   <span>{t('按本机时区统计')}</span>
@@ -1676,8 +1505,24 @@ export function SettingsPage(): ReactNode {
                     {[40, 90, 140].map((y) => (
                       <line key={y} x1="0" y1={y} x2={chartWidth} y2={y} className="usage-trend-grid" />
                     ))}
-                    <path d={areaPath} fill={`url(#trend-${chartId})`} />
-                    <path d={linePath} className="usage-trend-line" vectorEffect="non-scaling-stroke" />
+                    {usageChart === 'trend' ? (
+                      <>
+                        <path d={areaPath} fill={`url(#trend-${chartId})`} />
+                        <path d={linePath} className="usage-trend-line" vectorEffect="non-scaling-stroke" />
+                      </>
+                    ) : (
+                      trendPoints.map((point, index) => (
+                        <rect
+                          key={`bar-${trendDays[index].date}`}
+                          x={Math.max(0, point.x - Math.min(18, chartWidth / Math.max(1, trendDays.length) / 3))}
+                          y={point.y}
+                          width={Math.min(36, (chartWidth / Math.max(1, trendDays.length)) * 0.55)}
+                          height={Math.max(1, chartBottom - point.y)}
+                          className="usage-trend-bar"
+                          rx="3"
+                        />
+                      ))
+                    )}
                     {trendPoints.map((point, index) => (
                       <g key={trendDays[index].date}>
                         <circle
@@ -1721,42 +1566,30 @@ export function SettingsPage(): ReactNode {
               )}
             </section>
 
-            <section className="usage-section">
-              <div className="usage-section-head">
-                <h3>{t('套餐额度')}</h3>
-                <span>{t('手动设置 · 按本地估算')}</span>
-              </div>
-              <OpenCodeQuotaCard
-                usage={opencodeUsage}
-                loading={opencodeLoading}
-                onRefresh={() => setUsageNonce((value) => value + 1)}
-              />
-              {providerRows.length ? (
-                <div className="usage-quota-list">
-                  {providerRows
-                    .filter((row) => !(opencodeUsage?.available && row.provider === 'opencode-go'))
-                    .map((row) => (
-                    <UsageQuotaRow
-                      key={row.provider}
-                      provider={row.provider}
-                      cost={row.cost}
-                      budget={state.settings.usageBudgets?.[row.provider]}
-                      onSave={(value) => {
-                        const next = { ...(state.settings.usageBudgets ?? {}) }
-                        if (value === null) delete next[row.provider]
-                        else next[row.provider] = value
-                        void actions.updateSettings({ usageBudgets: next })
-                      }}
-                    />
-                    ))}
+            {data.bySkill.length > 0 && (
+              <section className="usage-section">
+                <div className="usage-section-head">
+                  <h3>{t('技能调用')}</h3>
+                  <span>{t('按读取 SKILL.md 的次数统计')}</span>
                 </div>
-              ) : (
-                <div className="usage-empty">{t('这个范围内还没有用量记录。')}</div>
-              )}
-              <p className="usage-note">
-                {t('套餐额度需要手动填写；服务商实际余额和套餐额度以控制台为准。')}
-              </p>
-            </section>
+                <div className="usage-table-wrap">
+                  <table className="usage-table usage-skill-table">
+                    <thead>
+                      <tr><th>{t('技能')}</th><th>{t('调用')}</th><th>{t('会话')}</th></tr>
+                    </thead>
+                    <tbody>
+                      {data.bySkill.map((skill) => (
+                        <tr key={skill.name}>
+                          <td>{skill.name}</td>
+                          <td>{skill.calls}</td>
+                          <td>{skill.sessions}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
 
             <section className="usage-section">
               <div className="usage-section-head">

@@ -43,7 +43,6 @@ const api: PiDesktopApi = {
   chromeProfiles: () => ipcRenderer.invoke('chrome:profiles'),
   chromePreview: (profileId: string) => ipcRenderer.invoke('chrome:preview', profileId),
   chromeImport: (profileId: string, domains: string[]) => ipcRenderer.invoke('chrome:import', profileId, domains),
-  opencodeUsage: (force?: boolean) => ipcRenderer.invoke('usage:opencode', force),
   showItem: (path: string) => ipcRenderer.invoke('shell:show-item', path),
   openPath: (path: string) => ipcRenderer.invoke('shell:open-path', path),
   notify: (payload) => ipcRenderer.invoke('notify:desktop', payload),

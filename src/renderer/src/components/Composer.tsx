@@ -551,12 +551,16 @@ export function Composer(): ReactNode {
               >
                 <span
                   className="queue-drag"
-                  draggable={state.streaming}
+                  draggable={state.streaming && item !== '[图片]'}
                   role="button"
                   tabIndex={-1}
                   aria-label={t('拖动调整排队顺序')}
                   title={t('拖动调整排队顺序')}
                   onDragStart={(event) => {
+                    if (item === '[图片]') {
+                      event.preventDefault()
+                      return
+                    }
                     setDragQueueIndex(index)
                     event.dataTransfer.effectAllowed = 'move'
                     event.dataTransfer.setData('text/plain', String(index))

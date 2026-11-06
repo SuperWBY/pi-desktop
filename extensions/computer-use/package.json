@@ -1,0 +1,21 @@
+{
+  "name": "pi-desktop-computer-use",
+  "version": "0.1.0",
+  "description": "macOS computer-use tools for Pi: accessibility tree, screenshots and native input.",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "files": [
+    "index.ts",
+    "bin",
+    "README.md",
+    "skills",
+    "src"
+  ]
+}

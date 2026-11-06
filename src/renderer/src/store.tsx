@@ -33,6 +33,8 @@ import { buildTurns, turnsToMarkdown } from './lib/turns'
 import { translate } from './i18n/dictionary'
 
 export type SendMode = 'steer' | 'followUp'
+export interface QueuedImage { type: 'image'; data: string; mimeType: string }
+export interface QueuedMessage { id: string; text: string; display?: string; images?: QueuedImage[] }
 export type NoticeLevel = 'info' | 'success' | 'warning' | 'error'
 
 export interface Notice {
@@ -75,7 +77,7 @@ export interface AppState {
   streaming: boolean
   streamingIndex: number
   toolRuns: Record<string, ToolRun>
-  queue: { steering: string[]; followUp: string[] }
+  queue: { steering: QueuedMessage[]; followUp: QueuedMessage[] }
   notices: Notice[]
   uiRequests: ExtensionUiRequest[]
   compacting: boolean
@@ -193,6 +195,25 @@ export function normalizeQueue(value: unknown): string[] {
     .filter(Boolean)
 }
 
+function queuedMessage(text: string, images?: QueuedImage[], display?: string): QueuedMessage {
+  return {
+    id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    text,
+    display,
+    images: images?.length ? images : undefined
+  }
+}
+
+/** Preserve local image metadata when pi reports the queue as text only. */
+function queuedFromTexts(texts: string[], previous: QueuedMessage[] = []): QueuedMessage[] {
+  const available = [...previous]
+  return texts.map((text) => {
+    const index = available.findIndex((item) => (item.display ?? item.text) === text)
+    if (index >= 0) return available.splice(index, 1)[0]
+    return queuedMessage(text)
+  })
+}
+
 function applyAssistantEvent(
   message: AssistantMessage,
   event: Record<string, unknown>
@@ -284,8 +305,8 @@ function reduceRecord(state: AppState, record: Record<string, unknown>): AppStat
         const blocks = (message as { content?: unknown }).content
         const content = contentText(blocks)
         const value = content || (Array.isArray(blocks) && blocks.some((block) => block?.type === 'image') ? '[图片]' : '')
-        const kind = queue.steering.includes(value) ? 'steering' : 'followUp'
-        const index = queue[kind].indexOf(value)
+        const kind = queue.steering.some((item) => (item.display ?? item.text) === value) ? 'steering' : 'followUp'
+        const index = queue[kind].findIndex((item) => (item.display ?? item.text) === value)
         if (index >= 0) queue = { ...queue, [kind]: queue[kind].filter((_, i) => i !== index) }
       }
       const base =
@@ -397,8 +418,8 @@ function reduceRecord(state: AppState, record: Record<string, unknown>): AppStat
       return {
         ...state,
         queue: {
-          steering: normalizeQueue(record.steering),
-          followUp: normalizeQueue(record.followUp)
+          steering: queuedFromTexts(normalizeQueue(record.steering), state.queue.steering),
+          followUp: queuedFromTexts(normalizeQueue(record.followUp), state.queue.followUp)
         }
       }
 
@@ -514,8 +535,9 @@ export type Action =
   | { type: 'SET_MODEL'; model: ModelInfo }
   | { type: 'SET_THINKING'; level: ThinkingLevel }
   | { type: 'SET_SEND_MODE'; mode: SendMode }
-  | { type: 'QUEUE_ADD' | 'QUEUE_REMOVE'; kind: 'steering' | 'followUp'; value: string }
-  | { type: 'QUEUE_SET'; steering: string[]; followUp: string[] }
+  | { type: 'QUEUE_ADD'; kind: 'steering' | 'followUp'; item: QueuedMessage }
+  | { type: 'QUEUE_REMOVE'; kind: 'steering' | 'followUp'; value: string }
+  | { type: 'QUEUE_SET'; steering: QueuedMessage[]; followUp: QueuedMessage[] }
   | { type: 'SET_STREAMING'; streaming: boolean }
   | { type: 'TOGGLE_SIDEBAR' }
   | { type: 'SET_SETTINGS_OPEN'; open: boolean }
@@ -775,13 +797,13 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, sendMode: action.mode }
 
     case 'QUEUE_ADD':
-      return { ...state, queue: { ...state.queue, [action.kind]: [...state.queue[action.kind], action.value] } }
+      return { ...state, queue: { ...state.queue, [action.kind]: [...state.queue[action.kind], action.item] } }
 
     case 'QUEUE_SET':
       return { ...state, queue: { steering: action.steering, followUp: action.followUp } }
 
     case 'QUEUE_REMOVE': {
-      const index = state.queue[action.kind].indexOf(action.value)
+      const index = state.queue[action.kind].findIndex((item) => (item.display ?? item.text) === action.value)
       if (index < 0) return state
       return { ...state, queue: { ...state.queue, [action.kind]: state.queue[action.kind].filter((_, i) => i !== index) } }
     }
@@ -1168,7 +1190,8 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
 
       const kind = 'followUp'
       const queuedValue = text || (images.length ? '[图片]' : '')
-      if (current.streaming) dispatch({ type: 'QUEUE_ADD', kind, value: queuedValue })
+      const queuedItem = queuedMessage(text, images, text ? undefined : queuedValue)
+      if (current.streaming) dispatch({ type: 'QUEUE_ADD', kind, item: queuedItem })
 
       const response = await safeCommand<{ disposition?: string }>(command, 120_000)
       if (!response) {
@@ -1200,7 +1223,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       const current = stateRef.current
       if (!current.streaming) return false
       const selected = current.queue.followUp[index]
-      if (!selected || selected === '[图片]') return false
+      if (!selected) return false
 
       // pi only exposes a whole-queue clear. Take the queue back, put the
       // selected item in the steering lane, and restore the rest as follow-ups.
@@ -1212,22 +1235,35 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         notify('error', '无法引导', cleared?.error ?? 'pi 没有响应。')
         return false
       }
-      const steering = normalizeQueue(cleared.data?.steering)
-      const followUp = normalizeQueue(cleared.data?.followUp)
-      const at = followUp.indexOf(selected)
-      if (at < 0) return false
-      followUp.splice(at, 1)
+      const steering = [...current.queue.steering]
+      const followUp = current.queue.followUp.filter((item) => item.id !== selected.id)
+      const guided = selected
 
-      dispatch({ type: 'QUEUE_SET', steering: [...steering, selected], followUp })
-      const guided = await safeCommand({ type: 'steer', message: selected }, 120_000)
-      if (!guided?.success) {
-        await safeCommand({ type: 'follow_up', message: selected }, 120_000)
-        dispatch({ type: 'QUEUE_SET', steering, followUp: [selected, ...followUp] })
-        notify('error', '无法引导', guided?.error ?? 'pi 没有响应。')
+      dispatch({ type: 'QUEUE_SET', steering: [...steering, guided], followUp })
+      for (const item of steering) {
+        await safeCommand(
+          { type: 'steer', message: item.text, images: item.images },
+          120_000
+        )
+      }
+      const response = await safeCommand(
+        { type: 'steer', message: guided.text, images: guided.images },
+        120_000
+      )
+      if (!response?.success) {
+        await safeCommand(
+          { type: 'follow_up', message: guided.text, images: guided.images },
+          120_000
+        )
+        dispatch({ type: 'QUEUE_SET', steering, followUp: [guided, ...followUp] })
+        notify('error', '无法引导', response?.error ?? 'pi 没有响应。')
         return false
       }
-      for (const message of followUp) {
-        await safeCommand({ type: 'follow_up', message }, 120_000)
+      for (const item of followUp) {
+        await safeCommand(
+          { type: 'follow_up', message: item.text, images: item.images },
+          120_000
+        )
       }
       return true
     },
@@ -1270,15 +1306,19 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         })
         return false
       }
-      const pendingSteering = normalizeQueue(cleared.data?.steering)
-      const pendingFollowUp = normalizeQueue(cleared.data?.followUp)
-      const available = new Set(pendingFollowUp)
-      const ordered = queue.filter((message) => available.has(message))
-      for (const message of pendingSteering) {
-        await safeCommand({ type: 'steer', message }, 120_000)
+      const pendingSteering = [...current.queue.steering]
+      const ordered = queue
+      for (const item of pendingSteering) {
+        await safeCommand(
+          { type: 'steer', message: item.text, images: item.images },
+          120_000
+        )
       }
-      for (const message of ordered) {
-        await safeCommand({ type: 'follow_up', message }, 120_000)
+      for (const item of ordered) {
+        await safeCommand(
+          { type: 'follow_up', message: item.text, images: item.images },
+          120_000
+        )
       }
       dispatch({ type: 'QUEUE_SET', steering: pendingSteering, followUp: ordered })
       return true

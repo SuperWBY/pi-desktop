@@ -515,10 +515,10 @@ export function Composer(): ReactNode {
             <span className="queue-hint">{t('到当前任务结束后发送')}</span>
           </div>
           <div className="queue-list">
-            {state.queue.steering.map((item, index) => (
-              <div className="queue-item is-guiding" key={`steer-${index}`}>
+            {state.queue.steering.map((item) => (
+              <div className="queue-item is-guiding" key={item.id}>
                 <span className="queue-kind">{t('引导中')}</span>
-                <p>{item}</p>
+                <p>{item.display ?? item.text}</p>
               </div>
             ))}
             {state.queue.followUp.map((item, index) => (
@@ -528,7 +528,7 @@ export function Composer(): ReactNode {
                   dragQueueIndex === index && 'is-dragging',
                   dragOverQueue === index && dragQueueIndex !== index && 'is-drag-over'
                 )}
-                key={`follow-${index}`}
+                key={item.id}
                 onDragOver={(event) => {
                   if (!state.streaming || dragQueueIndex === null) return
                   event.preventDefault()
@@ -551,16 +551,12 @@ export function Composer(): ReactNode {
               >
                 <span
                   className="queue-drag"
-                  draggable={state.streaming && item !== '[图片]'}
+                  draggable={state.streaming}
                   role="button"
                   tabIndex={-1}
                   aria-label={t('拖动调整排队顺序')}
                   title={t('拖动调整排队顺序')}
                   onDragStart={(event) => {
-                    if (item === '[图片]') {
-                      event.preventDefault()
-                      return
-                    }
                     setDragQueueIndex(index)
                     event.dataTransfer.effectAllowed = 'move'
                     event.dataTransfer.setData('text/plain', String(index))
@@ -573,10 +569,10 @@ export function Composer(): ReactNode {
                   <GripVertical size={12} />
                 </span>
                 <span className="queue-index">{index + 1}</span>
-                <p>{item}</p>
+                <p>{item.display ?? item.text}</p>
                 <button
                   className="queue-guide"
-                  disabled={!state.streaming || item === '[图片]'}
+                  disabled={!state.streaming}
                   onClick={() => void actions.guideQueued(index)}
                   title={t('把这条消息作为引导，当前工具结束后立即发送')}
                 >

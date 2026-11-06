@@ -1,6 +1,6 @@
 # Pi Desktop Computer Use
 
-A native macOS computer-use layer for Pi, built around the Accessibility API, screen capture and CoreGraphics input.
+A native macOS computer-use layer for Pi, built around the Accessibility API, screen capture and CoreGraphics input. An experimental PowerShell UIAutomation backend is included for Windows.
 
 ## Install
 

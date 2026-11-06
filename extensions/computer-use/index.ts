@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
-const helperPath = fileURLToPath(new URL('./bin/computer-use-helper', import.meta.url))
+const isWindows = process.platform === 'win32'
+const helperPath = fileURLToPath(new URL(isWindows ? './bin/computer-use-helper.ps1' : './bin/computer-use-helper', import.meta.url))
+const helperCommand = isWindows ? 'powershell.exe' : helperPath
 
 interface UiElement {
   id: string
@@ -59,9 +61,13 @@ async function audit(entry: Record<string, unknown>): Promise<void> {
 
 async function runHelper(args: string[]): Promise<Record<string, unknown>> {
   try {
-    const { stdout } = await execFileAsync(helperPath, args, {
+    const commandArgs = isWindows
+      ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helperPath, ...args]
+      : args
+    const { stdout } = await execFileAsync(helperCommand, commandArgs, {
       timeout: 30_000,
-      maxBuffer: 16 * 1024 * 1024
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true
     })
     const parsed = JSON.parse(stdout) as Record<string, unknown>
     if (parsed.ok === false) throw new Error(String(parsed.error ?? 'Computer Use helper failed'))

@@ -776,6 +776,30 @@ export function SettingsPage(): ReactNode {
           </button>
         </Row>
       </Block>
+
+      <Block title={t("浏览器自动化")} query={query} terms={['浏览器', '自动化', 'browser', 'cdp', '扩展']}>
+        <Row
+          title={t("应用内浏览器")}
+          desc={t("默认方式。登录状态保留在右侧面板，Agent 读取 DOM 后按元素操作。")}
+          query={query}
+        >
+          <span className="settings-pill ok">{t("当前默认")}</span>
+        </Row>
+        <Row
+          title={t("独立 Chrome（CDP）")}
+          desc={t("使用专用 Chrome profile，适合隔离任务、并行测试和自动化验证。")}
+          query={query}
+        >
+          <span className="settings-pill warn">{t("规划中")}</span>
+        </Row>
+        <Row
+          title={t("Chrome 扩展桥")}
+          desc={t("复用日常 Chrome 登录态，需要安装扩展并按站点授权。")}
+          query={query}
+        >
+          <span className="settings-pill warn">{t("规划中")}</span>
+        </Row>
+      </Block>
     </>
   )
 

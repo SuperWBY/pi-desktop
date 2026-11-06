@@ -36,6 +36,7 @@ import { formatCost, formatTokens, shortenPath } from '../lib/format'
 import { shortcutKeys } from '../lib/platform'
 import { Popover } from './ui'
 import { ChromeImportDialog } from './ChromeImportDialog'
+import { ChromeBridgeDialog } from './ChromeBridgeDialog'
 
 const SHORTCUTS: { keys: string; label: string }[] = [
   { keys: '⌘N', label: '新建会话' },
@@ -449,6 +450,7 @@ export function SettingsPage(): ReactNode {
   const usageChartId = useId().replace(/:/g, '')
   const [usageNonce, setUsageNonce] = useState(0)
   const [chromeOpen, setChromeOpen] = useState(false)
+  const [chromeBridgeOpen, setChromeBridgeOpen] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -794,10 +796,12 @@ export function SettingsPage(): ReactNode {
         </Row>
         <Row
           title={t("Chrome 扩展桥")}
-          desc={t("复用日常 Chrome 登录态；在 chrome://extensions 加载 extensions/chrome-bridge。")}
+          desc={t("复用日常 Chrome 登录态；安装扩展后，Pi 可以直接操作当前网页。")}
           query={query}
         >
-          <span className="settings-pill warn">{t("需安装扩展")}</span>
+          <button className="settings-button" onClick={() => setChromeBridgeOpen(true)}>
+            {t("安装指引")}
+          </button>
         </Row>
       </Block>
     </>
@@ -1830,6 +1834,7 @@ export function SettingsPage(): ReactNode {
         </div>
       </main>
       <ChromeImportDialog open={chromeOpen} onClose={() => setChromeOpen(false)} />
+      <ChromeBridgeDialog open={chromeBridgeOpen} onClose={() => setChromeBridgeOpen(false)} />
     </div>
   )
 }

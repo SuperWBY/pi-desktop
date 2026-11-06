@@ -40,6 +40,8 @@ const api: PiDesktopApi = {
   browserBounds: (bounds: BrowserBounds) => ipcRenderer.invoke('browser:bounds', bounds),
   browserVisible: (visible: boolean) => ipcRenderer.invoke('browser:visible', visible),
   onBrowserState: (callback: (state: BrowserState) => void) => subscribe('browser:state', callback),
+  chromeBridgeInfo: () => ipcRenderer.invoke('chrome:bridge-info'),
+  openChromeExtensions: () => ipcRenderer.invoke('chrome:open-extensions'),
   chromeProfiles: () => ipcRenderer.invoke('chrome:profiles'),
   chromePreview: (profileId: string) => ipcRenderer.invoke('chrome:preview', profileId),
   chromeImport: (profileId: string, domains: string[]) => ipcRenderer.invoke('chrome:import', profileId, domains),

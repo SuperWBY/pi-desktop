@@ -9,7 +9,9 @@ import {
   shell,
   type MenuItemConstructorOptions
 } from 'electron'
+import { execFileSync } from 'node:child_process'
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -508,6 +510,12 @@ function registerIpc(): void {
     importChromeCookies(profileId, domains)
   )
 
+  ipcMain.handle('chrome:bridge-info', () => prepareChromeBridge())
+  ipcMain.handle('chrome:open-extensions', () => {
+    if (process.platform === 'darwin') execFileSync('open', ['-a', 'Google Chrome', 'chrome://extensions'])
+    else if (process.platform === 'win32') execFileSync('cmd', ['/c', 'start', 'chrome', 'chrome://extensions'])
+    else execFileSync('google-chrome', ['chrome://extensions'])
+  })
   ipcMain.handle('shell:show-item', (_event, path: string) => {
     if (path) shell.showItemInFolder(path)
   })
@@ -758,6 +766,20 @@ function buildMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+function prepareChromeBridge(): string {
+  const source = join(app.getAppPath(), 'extensions', 'chrome-bridge')
+  const destination = join(app.getPath('userData'), 'chrome-bridge')
+  try {
+    if (!existsSync(join(destination, 'manifest.json'))) {
+      cpSync(source, destination, { recursive: true })
+    }
+  } catch {
+    // The source may not be present in a development build; the UI will
+    // still show the configured path and the user can load it manually.
+  }
+  return destination
+}
+
 function createWindow(): void {
   const settings = loadSettings()
   const bounds = settings.windowBounds
@@ -788,6 +810,7 @@ function createWindow(): void {
 
   const background = process.argv.includes('--background')
   initBrowser(mainWindow)
+  prepareChromeBridge()
   void startBrowserBridge().catch(() => undefined)
   mainWindow.on('ready-to-show', () => {
     if (!background) mainWindow?.show()

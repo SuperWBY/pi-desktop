@@ -7295,3 +7295,23 @@ html[data-platform='win32'] .app.sidebar-collapsed .topbar {
   transition: opacity 0.12s ease;
 }
 .usage-trend-bar:hover { opacity: 0.72; }
+.usage-trend-hover {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  left: 18px;
+  z-index: 2;
+  height: 178px;
+  cursor: crosshair;
+}
+.usage-trend-guide {
+  stroke: color-mix(in srgb, var(--accent) 45%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+.usage-trend-bar.is-active {
+  fill: var(--accent);
+  opacity: 0.95;
+}

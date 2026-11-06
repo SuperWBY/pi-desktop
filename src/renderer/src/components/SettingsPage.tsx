@@ -1518,29 +1518,48 @@ export function SettingsPage(): ReactNode {
                           y={point.y}
                           width={Math.min(36, (chartWidth / Math.max(1, trendDays.length)) * 0.55)}
                           height={Math.max(1, chartBottom - point.y)}
-                          className="usage-trend-bar"
+                          className={clsx('usage-trend-bar', usageHover?.index === index && 'is-active')}
                           rx="3"
                         />
                       ))
                     )}
-                    {trendPoints.map((point, index) => (
-                      <g key={trendDays[index].date}>
-                        <circle
-                          cx={point.x}
-                          cy={point.y}
-                          r="9"
-                          className="usage-trend-hit"
-                          onMouseEnter={() => setUsageHover({ index, ...point })}
-                          onMouseLeave={() => setUsageHover(null)}
-                        >
-                          <title>
-                            {`${trendDays[index].date} · ${formatCost(trendDays[index].cost)} · ${formatTokens(trendDays[index].total)} tokens · ${trendDays[index].requests} 次调用`}
-                          </title>
-                        </circle>
-                        <circle cx={point.x} cy={point.y} r="2.6" className="usage-trend-point" />
-                      </g>
-                    ))}
+                    {usageHover && trendPoints[usageHover.index] && (
+                      <line
+                        x1={trendPoints[usageHover.index].x}
+                        y1={chartTop}
+                        x2={trendPoints[usageHover.index].x}
+                        y2={chartBottom}
+                        className="usage-trend-guide"
+                      />
+                    )}
+                    {usageChart === 'trend' &&
+                      trendPoints.map((point, index) => (
+                        <g key={trendDays[index].date}>
+                          <circle
+                            cx={point.x}
+                            cy={point.y}
+                            r="9"
+                            className="usage-trend-hit"
+                          >
+                            <title>
+                              {`${trendDays[index].date} · ${formatCost(trendDays[index].cost)} · ${formatTokens(trendDays[index].total)} tokens · ${trendDays[index].requests} 次调用`}
+                            </title>
+                          </circle>
+                          <circle cx={point.x} cy={point.y} r="2.6" className="usage-trend-point" />
+                        </g>
+                      ))}
                   </svg>
+                  <div
+                    className="usage-trend-hover"
+                    onMouseMove={(event) => {
+                      const rect = event.currentTarget.getBoundingClientRect()
+                      const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)))
+                      const index = trendDays.length <= 1 ? 0 : Math.round(ratio * (trendDays.length - 1))
+                      const point = trendPoints[index]
+                      if (point) setUsageHover({ index, ...point })
+                    }}
+                    onMouseLeave={() => setUsageHover(null)}
+                  />
                   {usageHover && (
                     <div
                       className="usage-trend-tooltip"
@@ -1551,6 +1570,10 @@ export function SettingsPage(): ReactNode {
                     >
                       <strong>{trendDays[usageHover.index]?.date}</strong>
                       <span>{formatTokens(trendDays[usageHover.index]?.total)} tokens</span>
+                      <span>
+                        {t('输入')} {formatTokens(trendDays[usageHover.index]?.input)} · {t('输出')} {formatTokens(trendDays[usageHover.index]?.output)}
+                      </span>
+                      <span>{t('缓存读取')} {formatTokens(trendDays[usageHover.index]?.cacheRead)}</span>
                       <span>{trendDays[usageHover.index]?.requests ?? 0} {t('次调用')}</span>
                       <span>{formatCost(trendDays[usageHover.index]?.cost)}</span>
                     </div>

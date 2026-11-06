@@ -442,7 +442,7 @@ export function SettingsPage(): ReactNode {
   const [usage, setUsage] = useState<UsageSummary | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
-  const [usageTab, setUsageTab] = useState<'model' | 'project' | 'session'>('model')
+  const [usageTab, setUsageTab] = useState<'plan' | 'model' | 'project' | 'session'>('plan')
   const [usageMetric, setUsageMetric] = useState<'cost' | 'tokens'>('tokens')
   const [usageChart, setUsageChart] = useState<'trend' | 'bars'>('trend')
   const [usageHover, setUsageHover] = useState<{ index: number; x: number; y: number } | null>(null)
@@ -1393,7 +1393,7 @@ export function SettingsPage(): ReactNode {
       : ''
     const trendStep = Math.max(1, Math.ceil(trendDays.length / 7))
     const tabRows =
-      usageTab === 'model'
+      usageTab === 'plan' || usageTab === 'model'
         ? data?.byModel ?? []
         : usageTab === 'project'
           ? data?.byProject ?? []
@@ -1596,6 +1596,7 @@ export function SettingsPage(): ReactNode {
                 <h3>{t('用量明细')}</h3>
                 <div className="usage-tabs" role="tablist">
                   {([
+                    ['plan', t('按套餐 + 模型')],
                     ['model', t('按模型')],
                     ['project', t('按项目')],
                     ['session', t('按会话')]
@@ -1643,7 +1644,8 @@ export function SettingsPage(): ReactNode {
                   <table className="usage-table">
                     <thead>
                       <tr>
-                        <th>{usageTab === 'model' ? t('模型') : t('项目')}</th>
+                        <th>{usageTab === 'plan' ? t('套餐') : usageTab === 'model' ? t('模型') : t('项目')}</th>
+                        {usageTab === 'plan' && <th>{t('模型')}</th>}
                         <th>{t('请求')}</th>
                         <th>{t('输入')}</th>
                         <th>{t('输出')}</th>
@@ -1653,13 +1655,20 @@ export function SettingsPage(): ReactNode {
                     </thead>
                     <tbody>
                       {tabRows.map((row) => (
-                        <tr key={'model' in row ? `${row.provider}/${row.model}` : row.path}>
+                        <tr key={'model' in row ? `${row.planId}/${row.provider}/${row.model}` : row.path}>
                           <td>
                             {'model' in row ? (
-                              <>
-                                <span className="usage-model">{row.model}</span>
-                                <span className="usage-dim">{row.provider}</span>
-                              </>
+                              usageTab === 'plan' ? (
+                                <>
+                                  <span className="usage-model">{row.planLabel}</span>
+                                  <span className="usage-dim">{row.provider}</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="usage-model">{row.model}</span>
+                                  <span className="usage-dim">{row.provider}</span>
+                                </>
+                              )
                             ) : (
                               <>
                                 <span className="usage-model">{row.name}</span>
@@ -1667,6 +1676,7 @@ export function SettingsPage(): ReactNode {
                               </>
                             )}
                           </td>
+                          {usageTab === 'plan' && <td>{'model' in row ? row.model : ''}</td>}
                           <td>{row.requests}</td>
                           <td>{formatTokens(row.input)}</td>
                           <td>{formatTokens(row.output)}</td>

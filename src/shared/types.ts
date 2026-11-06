@@ -558,6 +558,13 @@ export interface UsageEntry {
 export interface UsageModelRow extends UsageTotals {
   provider: string
   model: string
+  planId: string
+  planLabel: string
+}
+
+export interface UsagePlanRow extends UsageTotals {
+  id: string
+  label: string
 }
 
 export interface UsageProjectRow extends UsageTotals {
@@ -593,6 +600,7 @@ export interface UsageSummary {
   totals: UsageTotals
   byDay: UsageDay[]
   byModel: UsageModelRow[]
+  byPlan: UsagePlanRow[]
   byProject: UsageProjectRow[]
   bySkill: UsageSkillRow[]
   sessions: UsageSessionRow[]

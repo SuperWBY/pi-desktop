@@ -324,6 +324,8 @@ async function caseUsageTrend() {
   await page.waitForTimeout(200)
   check('图表可以切换柱状', (await page.locator('.usage-trend-bar').count()) > 0)
   check('技能调用统计显示', (await page.locator('.usage-skill-table').innerText()).includes('demo-skill'))
+  const planRows = await page.locator('.usage-table:not(.usage-skill-table) tbody tr').first().innerText()
+  check('用量明细按套餐 + 模型拆分', planRows.includes('mock') && planRows.includes('mock-fast'), planRows)
   check('会话按 Tokens 排序', (await page.locator('.usage-tab').filter({ hasText: '按会话' }).count()) === 1)
   await app.close()
 }

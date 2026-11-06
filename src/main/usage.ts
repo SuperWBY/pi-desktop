@@ -5,6 +5,7 @@ import type {
   UsageDay,
   UsageEntry,
   UsageModelRow,
+  UsagePlanRow,
   UsageProjectRow,
   UsageRange,
   UsageSessionRow,
@@ -28,6 +29,25 @@ interface FileCache {
 }
 
 const cache = new Map<string, FileCache>()
+
+const PLAN_LABELS: Record<string, string> = {
+  'opencode-go': 'OpenCode Go',
+  'deepseek': 'DeepSeek API',
+  'openai': 'OpenAI API',
+  'anthropic': 'Anthropic API'
+}
+
+/**
+ * One provider currently maps to one plan.  A future second account should be
+ * given its own provider id/alias instead of guessing from a model name.
+ */
+function planFor(provider: string): { id: string; label: string } {
+  const id = provider || 'unknown'
+  return {
+    id,
+    label: PLAN_LABELS[id] ?? (id === 'unknown' ? '未归属套餐' : id)
+  }
+}
 
 function emptyTotals(): UsageTotals {
   return {
@@ -196,6 +216,7 @@ export async function usageSummary(range: UsageRange): Promise<UsageSummary> {
       totals: emptyTotals(),
       byDay: [],
       byModel: [],
+      byPlan: [],
       byProject: [],
       bySkill: [],
       sessions: [],
@@ -238,6 +259,7 @@ export async function usageSummary(range: UsageRange): Promise<UsageSummary> {
   const totals = emptyTotals()
   const dayMap = new Map<string, UsageTotals>()
   const modelMap = new Map<string, UsageModelRow>()
+  const planMap = new Map<string, UsagePlanRow>()
   const projectMap = new Map<string, UsageProjectRow>()
   const skillMap = new Map<string, { name: string; calls: number; sessions: Set<string>; tokens: number; cost: number }>()
   const sessions: UsageSessionRow[] = []
@@ -277,10 +299,17 @@ export async function usageSummary(range: UsageRange): Promise<UsageSummary> {
         ({
           ...emptyTotals(),
           provider: entry.provider,
-          model: entry.model
+          model: entry.model,
+          planId: planFor(entry.provider).id,
+          planLabel: planFor(entry.provider).label
         } as UsageModelRow)
       addUsage(modelRow, entry.usage)
       modelMap.set(modelKey, modelRow)
+
+      const plan = planFor(entry.provider)
+      const planRow = planMap.get(plan.id) ?? ({ ...emptyTotals(), id: plan.id, label: plan.label } as UsagePlanRow)
+      addUsage(planRow, entry.usage)
+      planMap.set(plan.id, planRow)
 
       const projectKey = session.projectPath || session.cwd
       const projectRow =
@@ -318,6 +347,7 @@ export async function usageSummary(range: UsageRange): Promise<UsageSummary> {
         })
       : activeDays
   const byModel = Array.from(modelMap.values()).sort((a, b) => b.total - a.total || b.cost - a.cost)
+  const byPlan = Array.from(planMap.values()).sort((a, b) => b.total - a.total || b.cost - a.cost)
   const byProject = Array.from(projectMap.values()).sort((a, b) => b.total - a.total || b.cost - a.cost)
   const bySkill: UsageSkillRow[] = Array.from(skillMap.values())
     .map((row) => ({ name: row.name, calls: row.calls, sessions: row.sessions.size, tokens: 0, cost: 0 }))
@@ -331,6 +361,7 @@ export async function usageSummary(range: UsageRange): Promise<UsageSummary> {
     totals,
     byDay,
     byModel,
+    byPlan,
     byProject,
     bySkill,
     sessions: sessions.slice(0, 100),

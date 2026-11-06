@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop-computer-use",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "macOS computer-use tools for Pi: accessibility tree, screenshots and native input.",
   "type": "module",
   "pi": {

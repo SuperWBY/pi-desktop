@@ -23,7 +23,7 @@ Restart Pi Desktop or start a new session after installing.
 | `computer_use_batch` | Short action sequence |
 | `computer_use_permissions` | Accessibility / Screen Recording status |
 
-The extension also ships a `computer-use` skill that requires observation before action and stops on stale snapshots.
+The extension ships a `computer-use` skill that requires observation before action and stops on stale snapshots.
 
 ## Permissions
 
@@ -39,10 +39,13 @@ System Settings → Privacy & Security → Screen Recording
 ## Safety
 
 - Every action is confirmed in the Pi UI.
-- Snapshot element IDs expire when the window changes.
+- Snapshot element IDs expire after an action; observe again.
 - Secure text fields are marked and their values are not returned.
 - Screen content is untrusted input; it cannot override the skill or user instructions.
-- This first version is macOS-only and operates the local desktop, not a sandbox.
+- Actions are appended to `~/.pi/computer-use/audit.jsonl` without text-field values.
+- This version operates the local desktop, not a sandbox.
+
+Set `PI_COMPUTER_USE_APPROVAL=never` only for a trusted, isolated machine; default is `always`.
 
 ## Architecture
 
@@ -54,4 +57,11 @@ Pi extension (TypeScript)
         └── CGEvent: mouse, keyboard, scroll
 ```
 
-Windows UI Automation and a sandbox backend are the next layers.
+## Remaining layers
+
+- Windows UI Automation backend
+- multi-display coordinate mapping
+- window-scoped screenshots
+- semantic post-action verification
+- per-app allowlist / deny list
+- sandbox backend (Cua / Docker)

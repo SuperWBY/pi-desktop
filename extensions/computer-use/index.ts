@@ -1,9 +1,9 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { execFile } from 'node:child_process'
-import { readFile, unlink } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, unlink } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
@@ -40,9 +40,22 @@ interface Snapshot {
 interface SnapshotState {
   id: string
   snapshot: Snapshot
+  stale: boolean
 }
 
 const snapshots = new Map<string, SnapshotState>()
+const auditDir = join(homedir(), '.pi', 'computer-use')
+const auditFile = join(auditDir, 'audit.jsonl')
+const approvalMode = process.env.PI_COMPUTER_USE_APPROVAL ?? 'always'
+
+async function audit(entry: Record<string, unknown>): Promise<void> {
+  try {
+    await mkdir(auditDir, { recursive: true })
+    await appendFile(auditFile, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`, 'utf8')
+  } catch {
+    // audit failure must not break a UI action
+  }
+}
 
 async function runHelper(args: string[]): Promise<Record<string, unknown>> {
   try {
@@ -112,6 +125,15 @@ async function screenshotContent(path: string | null): Promise<Array<Record<stri
   }
 }
 
+async function verify(state: SnapshotState): Promise<Record<string, unknown>> {
+  try {
+    const result = await runHelper(['observe', '--app', state.snapshot.app])
+    return result.snapshot as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
 async function doAction(action: Record<string, unknown>, state: SnapshotState | undefined): Promise<string> {
   const type = String(action.type ?? '')
   const snapshot = state?.snapshot
@@ -137,6 +159,7 @@ async function doAction(action: Record<string, unknown>, state: SnapshotState | 
   }
 
   if (type === 'type') {
+    if (target?.secure) throw new Error('Refusing to type into a secure text field.')
     if (target) {
       const p = point(target)
       await runHelper(['click', '--x', String(p.x), '--y', String(p.y)])
@@ -208,7 +231,7 @@ export default function computerUse(pi: ExtensionAPI): void {
       const result = await runHelper(['observe', '--app', params.app ?? '', '--screenshot', screenshotPath])
       const snapshot = result.snapshot as Snapshot
       const id = `s${Date.now()}`
-      snapshots.set(id, { id, snapshot })
+      snapshots.set(id, { id, snapshot, stale: false })
       const text = describeSnapshot(snapshot, id)
       const content: Array<Record<string, unknown>> = [{ type: 'text', text }]
       if (params.includeScreenshot !== false) content.push(...(await screenshotContent(screenshotPath)))
@@ -249,16 +272,27 @@ export default function computerUse(pi: ExtensionAPI): void {
       ms: Type.Optional(Type.Number())
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      if (params.type !== 'wait') {
+      if (params.type !== 'wait' && approvalMode !== 'never') {
         const ok = await ctx.ui.confirm(
           'Computer Use',
           `Run ${params.type}${params.elementId ? ` on ${params.elementId}` : ''} in the current desktop?`
         )
-        if (!ok) return { content: [{ type: 'text', text: 'Action cancelled by user.' }], details: { cancelled: true } }
+        if (!ok) {
+          await audit({ type: params.type, target: params.elementId ?? '', ok: false, cancelled: true })
+          return { content: [{ type: 'text', text: 'Action cancelled by user.' }], details: { cancelled: true } }
+        }
       }
       const state = params.snapshotId ? snapshots.get(params.snapshotId) : undefined
+      if (!state && params.type !== 'wait') throw new Error('Call computer_use_observe before acting.')
+      if (state?.stale) throw new Error('This snapshot is stale. Call computer_use_observe again.')
       const text = await doAction(params as Record<string, unknown>, state)
-      return { content: [{ type: 'text', text }], details: { action: text, snapshotId: params.snapshotId } }
+      if (state && params.type !== 'wait') state.stale = true
+      const after = state && params.type !== 'wait' ? await verify(state) : null
+      await audit({ type: params.type, target: params.elementId ?? `${params.x},${params.y}`, app: state?.snapshot.app, ok: true })
+      return {
+        content: [{ type: 'text', text: after ? `${text}\nAfter: ${after.elements ? (after.elements as unknown[]).length : 0} elements, window ${String(after.windowTitle ?? '')}` : text }],
+        details: { action: text, snapshotId: params.snapshotId, after: after ? { elements: Array.isArray(after.elements) ? after.elements.length : 0, windowTitle: after.windowTitle } : null }
+      }
     }
   })
 
@@ -276,21 +310,33 @@ export default function computerUse(pi: ExtensionAPI): void {
       actions: Type.Array(Type.Record(Type.String(), Type.Any()))
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const ok = await ctx.ui.confirm('Computer Use', `Run ${params.actions.length} desktop actions?`)
-      if (!ok) return { content: [{ type: 'text', text: 'Batch cancelled by user.' }], details: { cancelled: true } }
+      if (approvalMode !== 'never') {
+        const ok = await ctx.ui.confirm('Computer Use', `Run ${params.actions.length} desktop actions?`)
+        if (!ok) return { content: [{ type: 'text', text: 'Batch cancelled by user.' }], details: { cancelled: true } }
+      }
       const state = params.snapshotId ? snapshots.get(params.snapshotId) : undefined
+      if (!state) throw new Error('Call computer_use_observe before running a batch.')
+      if (state.stale) throw new Error('This snapshot is stale. Call computer_use_observe again.')
       const completed: string[] = []
       for (const action of params.actions) {
         try {
           completed.push(await doAction(action, state))
         } catch (error) {
+          if (state) state.stale = true
+          await audit({ type: 'batch', target: completed.length, app: state?.snapshot.app, ok: false, error: String(error) })
           return {
             content: [{ type: 'text', text: `Stopped after ${completed.length}/${params.actions.length}: ${String(error)}` }],
             details: { completed, error: String(error) }
           }
         }
       }
-      return { content: [{ type: 'text', text: completed.join('\n') }], details: { completed } }
+      if (state) state.stale = true
+      await audit({ type: 'batch', target: completed.length, app: state?.snapshot.app, ok: true })
+      const after = state ? await verify(state) : null
+      return {
+        content: [{ type: 'text', text: `${completed.join('\n')}${after ? `\nAfter: ${Array.isArray(after.elements) ? after.elements.length : 0} elements` : ''}` }],
+        details: { completed, after }
+      }
     }
   })
 

@@ -102,6 +102,8 @@ async function ensureCdpPage(url?: string): Promise<any> {
 
 async function cdpEval<T>(code: string): Promise<T> {
   const page = await ensureCdpPage()
+  await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => undefined)
+  await page.waitForTimeout(150)
   return await page.evaluate(code) as T
 }
 

@@ -235,6 +235,21 @@ export interface ChromeDomain {
   count: number
 }
 
+export interface OpenCodeUsageWindow {
+  percent: number
+  status: string
+  resetsAt: string | null
+}
+
+export interface OpenCodeUsage {
+  available: boolean
+  error?: string
+  rolling: OpenCodeUsageWindow | null
+  weekly: OpenCodeUsageWindow | null
+  monthly: OpenCodeUsageWindow | null
+  fetchedAt: number
+}
+
 export interface ChromeImportResult {
   ok: boolean
   imported: number

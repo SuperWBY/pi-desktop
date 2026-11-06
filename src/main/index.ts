@@ -44,6 +44,7 @@ import {
   initBrowser
 } from './browser'
 import { importChromeCookies, listChromeProfiles, previewChromeProfile } from './chrome-import'
+import { openCodeUsage } from './opencode-usage'
 import { locatePi, piVersion } from './pi-locate'
 import { deleteSession, listSessions, restoreSession, sessionExists, sessionsRoot } from './sessions'
 import { loadSettings, saveSettings } from './settings'
@@ -446,6 +447,7 @@ function registerIpc(): void {
 
   ipcMain.handle('schedules:list', () => scheduler.list())
   ipcMain.handle('usage:summary', (_event, range) => usageSummary(range))
+  ipcMain.handle('usage:opencode', (_event, force?: boolean) => openCodeUsage(force))
   ipcMain.handle('session:notices', (_event, sessionPath: string) => listSessionNotices(sessionPath))
   ipcMain.handle('schedules:get', (_event, id: string) => scheduler.get(id))
   ipcMain.handle('schedules:create', (_event, input) => scheduler.create(input))

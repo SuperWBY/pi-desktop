@@ -7356,3 +7356,84 @@ html[data-platform='win32'] .app.sidebar-collapsed .topbar {
   font-size: 11px;
 }
 .usage-quota-input:focus { border-color: var(--accent); }
+
+/* OpenCode Go automatic quota */
+.opencode-quota {
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.opencode-quota-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.opencode-quota-head > div {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+}
+.opencode-quota-head strong { color: var(--text); font-size: 12.5px; font-weight: 600; }
+.opencode-quota-head span { color: var(--text-faint); font-size: 10.5px; }
+.opencode-windows {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.opencode-window { min-width: 0; }
+.opencode-window-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.opencode-window-head strong {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.opencode-window-head strong.is-warn { color: #d3a36f; }
+.opencode-window-head strong.is-full { color: #e09090; }
+.opencode-track {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--panel-2);
+}
+.opencode-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.opencode-track > span.is-warn { background: #d3a36f; }
+.opencode-track > span.is-full { background: #d06b6b; }
+.opencode-window small {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.opencode-quota-loading,
+.opencode-quota-error {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 54px;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+.opencode-quota-error { color: #d3a36f; }

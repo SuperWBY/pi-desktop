@@ -29,7 +29,8 @@ import type {
   PiSettings,
   ThinkingLevel,
   UsageRange,
-  UsageSummary
+  UsageSummary,
+  OpenCodeUsage
 } from '@shared/types'
 import { useApp } from '../store'
 import { formatCost, formatTokens, shortenPath } from '../lib/format'
@@ -483,6 +484,82 @@ function UsageQuotaRow({
   )
 }
 
+function OpenCodeQuotaCard({
+  usage,
+  loading,
+  onRefresh
+}: {
+  usage: OpenCodeUsage | null
+  loading: boolean
+  onRefresh: () => void
+}): ReactNode {
+  const t = useTranslation()
+  const windows = [
+    ['rolling', t('滚动 5 小时')],
+    ['weekly', t('本周')],
+    ['monthly', t('本月')]
+  ] as const
+  const reset = (value: string | null): string => {
+    if (!value) return t('重置时间未知')
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return t('重置时间未知')
+    return new Intl.DateTimeFormat('zh-CN', {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(date)
+  }
+  return (
+    <div className="opencode-quota">
+      <div className="opencode-quota-head">
+        <div>
+          <strong>OpenCode Go</strong>
+          <span>{t('自动读取 · 官方 usage API')}</span>
+        </div>
+        <button className="settings-button" onClick={onRefresh} disabled={loading}>
+          <RefreshCw size={12} className={loading ? 'spin' : undefined} />
+          {t('刷新')}
+        </button>
+      </div>
+      {loading && !usage ? (
+        <div className="opencode-quota-loading">
+          <RefreshCw size={14} className="spin" />
+          {t('正在读取 OpenCode Go 额度…')}
+        </div>
+      ) : usage?.available ? (
+        <div className="opencode-windows">
+          {windows.map(([key, label]) => {
+            const item = usage[key]
+            const value = item?.percent ?? 0
+            return (
+              <div className="opencode-window" key={key}>
+                <div className="opencode-window-head">
+                  <span>{label}</span>
+                  <strong className={clsx(value >= 100 && 'is-full', value >= 80 && 'is-warn')}>
+                    {item ? `${Math.round(value)}%` : '—'}
+                  </strong>
+                </div>
+                <div className="opencode-track" aria-hidden="true">
+                  <span
+                    className={clsx(value >= 100 && 'is-full', value >= 80 && 'is-warn')}
+                    style={{ width: `${Math.min(100, value)}%` }}
+                  />
+                </div>
+                <small>{item ? `${t('重置')} ${reset(item.resetsAt)}` : t('不可用')}</small>
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <div className="opencode-quota-error">
+          {usage?.error || t('未检测到 OpenCode Go 登录。')}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function SettingsPage(): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
@@ -506,6 +583,8 @@ export function SettingsPage(): ReactNode {
   const [usageTab, setUsageTab] = useState<'model' | 'project' | 'session'>('model')
   const [usageMetric, setUsageMetric] = useState<'cost' | 'tokens'>('cost')
   const [usageHover, setUsageHover] = useState<{ index: number; x: number; y: number } | null>(null)
+  const [opencodeUsage, setOpencodeUsage] = useState<OpenCodeUsage | null>(null)
+  const [opencodeLoading, setOpencodeLoading] = useState(false)
   const usageChartId = useId().replace(/:/g, '')
   const [usageNonce, setUsageNonce] = useState(0)
   const [chromeOpen, setChromeOpen] = useState(false)
@@ -531,6 +610,35 @@ export function SettingsPage(): ReactNode {
       alive = false
     }
   }, [active, open, usageRange, usageNonce])
+
+  useEffect(() => {
+    if (!open || active !== 'usage') return
+    let alive = true
+    setOpencodeLoading(true)
+    void window.pi
+      .opencodeUsage(usageNonce > 0)
+      .then((value) => {
+        if (alive) setOpencodeUsage(value)
+      })
+      .catch((error: unknown) => {
+        if (alive) {
+          setOpencodeUsage({
+            available: false,
+            error: error instanceof Error ? error.message : String(error),
+            rolling: null,
+            weekly: null,
+            monthly: null,
+            fetchedAt: Date.now()
+          })
+        }
+      })
+      .finally(() => {
+        if (alive) setOpencodeLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [active, open, usageNonce])
 
   const piSettings: PiSettings = state.piSettings
   const piPath = state.settings.piPath ?? state.boot?.piPath ?? ''
@@ -1618,9 +1726,16 @@ export function SettingsPage(): ReactNode {
                 <h3>{t('套餐额度')}</h3>
                 <span>{t('手动设置 · 按本地估算')}</span>
               </div>
+              <OpenCodeQuotaCard
+                usage={opencodeUsage}
+                loading={opencodeLoading}
+                onRefresh={() => setUsageNonce((value) => value + 1)}
+              />
               {providerRows.length ? (
                 <div className="usage-quota-list">
-                  {providerRows.map((row) => (
+                  {providerRows
+                    .filter((row) => !(opencodeUsage?.available && row.provider === 'opencode-go'))
+                    .map((row) => (
                     <UsageQuotaRow
                       key={row.provider}
                       provider={row.provider}
@@ -1633,7 +1748,7 @@ export function SettingsPage(): ReactNode {
                         void actions.updateSettings({ usageBudgets: next })
                       }}
                     />
-                  ))}
+                    ))}
                 </div>
               ) : (
                 <div className="usage-empty">{t('这个范围内还没有用量记录。')}</div>

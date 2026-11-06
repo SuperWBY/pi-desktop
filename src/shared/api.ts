@@ -5,6 +5,7 @@ import type {
   BrowserState,
   ChromeDomain,
   ChromeImportResult,
+  OpenCodeUsage,
   ChromeProfile,
   ConnectorEntry,
   CustomProviderEntry,
@@ -64,6 +65,7 @@ export interface PiDesktopApi {
   chromeProfiles(): Promise<{ profiles: ChromeProfile[]; running: boolean; error?: string }>
   chromePreview(profileId: string): Promise<{ domains: ChromeDomain[]; running: boolean }>
   chromeImport(profileId: string, domains: string[]): Promise<ChromeImportResult>
+  opencodeUsage(force?: boolean): Promise<OpenCodeUsage>
   showItem(path: string): Promise<void>
   openPath(path: string): Promise<boolean>
   notify(payload: { title?: string; body?: string }): Promise<boolean>

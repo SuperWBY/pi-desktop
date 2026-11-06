@@ -98,7 +98,7 @@ function describeSnapshot(snapshot: Snapshot, id: string): string {
       `${element.id} ${element.role}${label ? ` “${label.slice(0, 120)}”` : ''}${element.secure ? ' [secure]' : ''}${element.enabled ? '' : ' [disabled]'}${bounds}`
     )
   }
-  if (!snapshot.elements.length) lines.push('(no accessible elements)')
+  if (!snapshot.elements.length) lines.push('(no accessible elements; use the screenshot and x/y coordinates)')
   return lines.join('\n')
 }
 

@@ -794,10 +794,10 @@ export function SettingsPage(): ReactNode {
         </Row>
         <Row
           title={t("Chrome 扩展桥")}
-          desc={t("复用日常 Chrome 登录态，需要安装扩展并按站点授权。")}
+          desc={t("复用日常 Chrome 登录态；在 chrome://extensions 加载 extensions/chrome-bridge。")}
           query={query}
         >
-          <span className="settings-pill warn">{t("规划中")}</span>
+          <span className="settings-pill warn">{t("需安装扩展")}</span>
         </Row>
       </Block>
     </>

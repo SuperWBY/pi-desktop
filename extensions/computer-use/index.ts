@@ -2,6 +2,8 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { execFile, spawn } from 'node:child_process'
 import { appendFile, mkdir, readFile, unlink } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import { randomUUID } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -136,6 +138,79 @@ async function cdpConnect(profileDir: string, timeoutMs = 20_000): Promise<void>
   })
   await cdpSend('Page.enable')
   await cdpSend('Runtime.enable')
+}
+
+const chromeBridgePort = Number(process.env.PI_CHROME_BRIDGE_PORT ?? '9317')
+
+interface ChromeBridgeTask {
+  id: string
+  type: 'observe' | 'act'
+  action?: Record<string, unknown>
+}
+
+function chromeBridgeTask(task: Omit<ChromeBridgeTask, 'id'>, timeoutMs = 30_000): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const id = randomUUID()
+    let finished = false
+    const server = createServer(async (req, res) => {
+      const origin = String(req.headers.origin ?? '')
+      if (origin && !origin.startsWith('chrome-extension://')) {
+        res.writeHead(403, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: 'Only the Pi Chrome extension may use this bridge.' }))
+        return
+      }
+      const headers = {
+        'content-type': 'application/json; charset=utf-8',
+        'access-control-allow-origin': origin || '*'
+      }
+      if (req.method === 'GET' && req.url === '/next') {
+        res.writeHead(200, headers)
+        res.end(JSON.stringify({ id, ...task }))
+        return
+      }
+      if (req.method === 'POST' && req.url === '/result') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) chunks.push(Buffer.from(chunk))
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { id?: string; ok?: boolean; result?: unknown; error?: string }
+          if (body.id !== id) throw new Error('Result id mismatch')
+          finished = true
+          cleanup()
+          if (body.ok === false) reject(new Error(body.error || 'Chrome extension action failed'))
+          else resolve(body.result)
+        } catch (error) {
+          finished = true
+          cleanup()
+          reject(error instanceof Error ? error : new Error(String(error)))
+        }
+        res.writeHead(200, headers)
+        res.end('{"ok":true}')
+        return
+      }
+      res.writeHead(404, headers)
+      res.end('{"ok":false,"error":"not found"}')
+    })
+    const cleanup = (): void => {
+      clearTimeout(timer)
+      server.close()
+      server.closeAllConnections?.()
+    }
+    const timer = setTimeout(() => {
+      if (finished) return
+      finished = true
+      cleanup()
+      reject(new Error('Pi Chrome extension did not connect. Load extensions/chrome-bridge as an unpacked Chrome extension and keep Pi Desktop running.'))
+    }, timeoutMs)
+    server.once('error', (error) => {
+      if (finished) return
+      finished = true
+      cleanup()
+      reject(new Error(`Chrome bridge port ${chromeBridgePort} is unavailable: ${error.message}`))
+    })
+    server.listen(chromeBridgePort, '127.0.0.1', () => {
+      server.unref()
+    })
+  })
 }
 
 async function ensureCdpPage(url?: string): Promise<void> {
@@ -996,6 +1071,66 @@ export default function computerUse(pi: ExtensionAPI): void {
     async execute() {
       await closeCdp()
       return { content: [{ type: 'text', text: 'CDP browser closed.' }], details: {} }
+    }
+  })
+
+  pi.registerTool({
+    name: 'computer_use_chrome_observe',
+    label: 'Computer Use: Chrome Extension Observe',
+    description:
+      'Read interactive DOM elements from the user\'s active Chrome tab through the Pi Chrome bridge extension.',
+    promptSnippet: 'Observe the user\'s active Chrome tab through the extension bridge.',
+    promptGuidelines: [
+      'Use this only when the user has installed the Pi Chrome bridge extension and wants their everyday Chrome session.',
+      'Candidate IDs are h1, h2, ... and are tied to the current active tab.'
+    ],
+    parameters: Type.Object({}),
+    async execute() {
+      const result = await chromeBridgeTask({ type: 'observe' })
+      const candidates = Array.isArray(result) ? result as Array<Record<string, any>> : []
+      const lines = candidates.map((candidate) => {
+        const label = candidate.name ? ` “${String(candidate.name).slice(0, 120)}”` : ''
+        const secure = candidate.secure ? ' [secure]' : ''
+        const bounds = candidate.bounds
+        const at = bounds ? ` @ ${Math.round(bounds.x)},${Math.round(bounds.y)} ${Math.round(bounds.width)}×${Math.round(bounds.height)}` : ''
+        return `${candidate.id} ${candidate.role}${candidate.type ? `[${candidate.type}]` : ''}${label}${secure}${at}`
+      })
+      return {
+        content: [{ type: 'text', text: `Chrome extension candidates: ${candidates.length}\n${lines.join('\n') || '(none)'}` }],
+        details: { candidates: candidates.length }
+      }
+    }
+  })
+
+  pi.registerTool({
+    name: 'computer_use_chrome_act',
+    label: 'Computer Use: Chrome Extension Act',
+    description: 'Click, type, or press on an h1/h2 candidate in the user\'s active Chrome tab.',
+    promptSnippet: 'Act on a Chrome extension candidate.',
+    promptGuidelines: [
+      'Use only a candidateId from the latest computer_use_chrome_observe result.',
+      'Do not type into password fields or submit payment/security forms without explicit approval.'
+    ],
+    parameters: Type.Object({
+      candidateId: Type.String(),
+      type: Type.Union([Type.Literal('click'), Type.Literal('type'), Type.Literal('press')]),
+      text: Type.Optional(Type.String()),
+      key: Type.Optional(Type.String())
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (approvalMode !== 'never') {
+        const ok = await ctx.ui.confirm('Computer Use: Chrome extension', `Run ${params.type} on ${params.candidateId}?`)
+        if (!ok) {
+          await audit({ type: 'chrome-extension', action: params.type, target: params.candidateId, ok: false, cancelled: true })
+          return { content: [{ type: 'text', text: 'Chrome extension action cancelled by user.' }], details: { cancelled: true } }
+        }
+      }
+      const result = await chromeBridgeTask({ type: 'act', action: params as Record<string, unknown> })
+      await audit({ type: 'chrome-extension', action: params.type, target: params.candidateId, ok: true })
+      return {
+        content: [{ type: 'text', text: `${params.type} ${params.candidateId} → ${JSON.stringify(result)}` }],
+        details: { result }
+      }
     }
   })
 

@@ -188,6 +188,39 @@ function findElement(snapshot: Snapshot | undefined, id: string): UiElement {
   return element
 }
 
+interface SnapshotDiff {
+  status: 'confirmed' | 'unverified'
+  changed: boolean
+  windowTitleChanged: boolean
+  elementCountBefore: number
+  elementCountAfter: number
+  changedElements: number
+}
+
+function diffSnapshots(before: Snapshot, after: Snapshot): SnapshotDiff {
+  const beforeById = new Map(before.elements.map((element) => [element.id, element]))
+  let changedElements = 0
+  for (const element of after.elements) {
+    const previous = beforeById.get(element.id)
+    if (!previous) {
+      changedElements += 1
+      continue
+    }
+    const previousValue = `${previous.role}|${previous.title ?? ''}|${previous.value ?? ''}|${previous.bounds?.x ?? ''},${previous.bounds?.y ?? ''},${previous.bounds?.width ?? ''},${previous.bounds?.height ?? ''}|${previous.enabled}|${previous.focused}`
+    const nextValue = `${element.role}|${element.title ?? ''}|${element.value ?? ''}|${element.bounds?.x ?? ''},${element.bounds?.y ?? ''},${element.bounds?.width ?? ''},${element.bounds?.height ?? ''}|${element.enabled}|${element.focused}`
+    if (previousValue !== nextValue) changedElements += 1
+  }
+  const windowTitleChanged = before.windowTitle !== after.windowTitle
+  return {
+    status: windowTitleChanged || changedElements > 0 ? 'confirmed' : 'unverified',
+    changed: windowTitleChanged || changedElements > 0,
+    windowTitleChanged,
+    elementCountBefore: before.elements.length,
+    elementCountAfter: after.elements.length,
+    changedElements
+  }
+}
+
 function point(element: UiElement): { x: number; y: number } {
   if (!element.bounds) throw new Error('Element has no bounds')
   return {
@@ -209,10 +242,11 @@ async function screenshotContent(path: string | null): Promise<Array<Record<stri
   }
 }
 
-async function verify(state: SnapshotState): Promise<Record<string, unknown>> {
+async function verify(state: SnapshotState): Promise<{ snapshot?: Snapshot; diff?: SnapshotDiff }> {
   try {
     const result = await runHelper(['observe', '--app', state.snapshot.app])
-    return result.snapshot as Record<string, unknown>
+    const snapshot = result.snapshot as Snapshot
+    return { snapshot, diff: diffSnapshots(state.snapshot, snapshot) }
   } catch {
     return {}
   }
@@ -417,11 +451,22 @@ export default function computerUse(pi: ExtensionAPI): void {
       if (state?.stale) throw new Error('This snapshot is stale. Call computer_use_observe again.')
       const text = await doAction(params as Record<string, unknown>, state)
       if (state && params.type !== 'wait') state.stale = true
-      const after = state && params.type !== 'wait' ? await verify(state) : null
-      await audit({ type: params.type, target: params.elementId ?? `${params.x},${params.y}`, app: state?.snapshot.app, ok: true })
+      const verification = state && params.type !== 'wait' ? await verify(state) : null
+      const after = verification?.snapshot
+      await audit({ type: params.type, target: params.elementId ?? `${params.x},${params.y}`, app: state?.snapshot.app, ok: true, verification: verification?.diff?.status })
       return {
-        content: [{ type: 'text', text: after ? `${text}\nAfter: ${after.elements ? (after.elements as unknown[]).length : 0} elements, window ${String(after.windowTitle ?? '')}` : text }],
-        details: { action: text, snapshotId: params.snapshotId, after: after ? { elements: Array.isArray(after.elements) ? after.elements.length : 0, windowTitle: after.windowTitle } : null }
+        content: [{
+          type: 'text',
+          text: after
+            ? `${text}\nVerification: ${verification?.diff?.status ?? 'unverified'} (${verification?.diff?.changedElements ?? 0} changed elements, ${after.elements.length} visible)`
+            : text
+        }],
+        details: {
+          action: text,
+          snapshotId: params.snapshotId,
+          after: after ? { elements: after.elements.length, windowTitle: after.windowTitle } : null,
+          verification: verification?.diff ?? null
+        }
       }
     }
   })
@@ -462,10 +507,14 @@ export default function computerUse(pi: ExtensionAPI): void {
       }
       if (state) state.stale = true
       await audit({ type: 'batch', target: completed.length, app: state?.snapshot.app, ok: true })
-      const after = state ? await verify(state) : null
+      const verification = state ? await verify(state) : null
+      const after = verification?.snapshot
       return {
-        content: [{ type: 'text', text: `${completed.join('\n')}${after ? `\nAfter: ${Array.isArray(after.elements) ? after.elements.length : 0} elements` : ''}` }],
-        details: { completed, after }
+        content: [{
+          type: 'text',
+          text: `${completed.join('\n')}${after ? `\nVerification: ${verification?.diff?.status ?? 'unverified'} (${verification?.diff?.changedElements ?? 0} changed elements)` : ''}`
+        }],
+        details: { completed, after, verification: verification?.diff ?? null }
       }
     }
   })

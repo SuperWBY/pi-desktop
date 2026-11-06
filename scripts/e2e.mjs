@@ -262,6 +262,61 @@ async function caseWorkPanel() {
   await app.close()
 }
 
+async function caseUsageTrend() {
+  const dirs = freshDirs('usage')
+  const project = join(dirs.sessions, '--mock-project--')
+  mkdirSync(project, { recursive: true })
+  const now = Date.now()
+  const lines = [{ type: 'session', id: 'usage-session', cwd: root, timestamp: new Date(now).toISOString() }]
+  for (let i = 0; i < 5; i += 1) {
+    lines.push({
+      type: 'message',
+      timestamp: new Date(now - i * 86_400_000).toISOString(),
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: `answer ${i}` }],
+        provider: 'mock',
+        model: 'mock-fast',
+        usage: { input: 100 + i * 10, output: 50, totalTokens: 150 + i * 10, cost: { total: 0.01 * (i + 1) } }
+      }
+    })
+  }
+  writeFileSync(
+    join(project, 'usage.jsonl'),
+    `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`
+  )
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+  )
+  const { app, page } = await launch(dirs, 'default')
+  await page.keyboard.press('Meta+,')
+  await page.waitForSelector('.settings-page')
+  await page.getByRole('button', { name: '使用情况与费用' }).click()
+  await page.waitForSelector('.usage-trend')
+  const trend = await page.evaluate(() => ({
+    line: Boolean(document.querySelector('.usage-trend-line')),
+    points: document.querySelectorAll('.usage-trend-point').length,
+    labels: Array.from(document.querySelectorAll('.usage-trend-axis span')).map((item) => item.textContent),
+    metric: document.querySelector('.usage-chart-tab.active')?.textContent ?? ''
+  }))
+  check('使用情况页渲染趋势图', trend.line && trend.points >= 5, JSON.stringify(trend))
+  check('趋势图显示按天标签', trend.labels.some(Boolean), JSON.stringify(trend.labels))
+  await page.locator('.usage-trend-hit').nth(2).hover()
+  await page.waitForSelector('.usage-trend-tooltip')
+  const tooltip = await page.locator('.usage-trend-tooltip').innerText()
+  check('趋势图悬停显示 Tokens 和调用次数', /tokens/i.test(tooltip) && tooltip.includes('次调用'), tooltip)
+  await page.getByRole('button', { name: 'Tokens' }).click()
+  await page.waitForTimeout(200)
+  check('趋势图可切换 Tokens', (await page.locator('.usage-chart-tab.active').textContent()) === 'Tokens')
+  check('套餐额度区显示服务商', (await page.locator('.usage-quota-row').count()) >= 1)
+  await page.locator('.usage-quota-input').first().fill('100')
+  await page.keyboard.press('Tab')
+  await page.waitForTimeout(300)
+  check('可以设置套餐月额度', (await page.locator('.usage-quota-numbers').first().textContent()).includes('$100.00'))
+  await app.close()
+}
+
 async function caseChromeImport() {
   const dirs = freshDirs('chrome-import')
   const chromeRoot = join(dirs.base, 'chrome')
@@ -2018,6 +2073,7 @@ const CASES = [
   { tags: ['panel'], label: 'work panel', run: caseWorkPanel },
   { tags: ['browser'], label: 'in-app browser', run: caseBrowser },
   { tags: ['chrome-import', 'browser'], label: 'Chrome cookie import', run: caseChromeImport },
+  { tags: ['usage'], label: 'usage trend chart', run: caseUsageTrend },
   { tags: ['polish', 'files', 'export'], label: 'polish: files / export / lightbox', run: casePolish },
   { tags: ['virtual', 'scroll'], label: 'virtualization', run: caseVirtualization },
   { tags: ['fold', 'turns'], label: 'turns / folding', run: caseTurnsFold },

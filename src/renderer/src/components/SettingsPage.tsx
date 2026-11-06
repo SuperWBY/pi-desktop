@@ -1,5 +1,5 @@
 import { useTranslation } from '../i18n'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -422,6 +422,67 @@ function Block({
   )
 }
 
+function UsageQuotaRow({
+  provider,
+  cost,
+  budget,
+  onSave
+}: {
+  provider: string
+  cost: number
+  budget?: number
+  onSave: (value: number | null) => void
+}): ReactNode {
+  const t = useTranslation()
+  const [value, setValue] = useState(budget ? String(budget) : '')
+  useEffect(() => setValue(budget ? String(budget) : ''), [budget])
+  const percent = budget && budget > 0 ? Math.min(100, (cost / budget) * 100) : 0
+  const label =
+    provider === 'opencode-go'
+      ? 'OpenCode Go'
+      : provider === 'unknown'
+        ? t('未知服务商')
+        : provider
+  const save = (): void => {
+    const parsed = Number(value)
+    if (!value.trim()) {
+      onSave(null)
+      return
+    }
+    if (Number.isFinite(parsed) && parsed >= 0) onSave(parsed)
+    else setValue(budget ? String(budget) : '')
+  }
+  return (
+    <div className="usage-quota-row">
+      <div className="usage-quota-head">
+        <span className="usage-quota-name">{label}</span>
+        <span className="usage-quota-numbers">
+          {formatCost(cost)}
+          {budget ? ` / ${formatCost(budget)}` : ` · ${t('未设置额度')}`}
+        </span>
+      </div>
+      <div className="usage-quota-track" aria-hidden="true">
+        <span style={{ width: `${percent}%` }} />
+      </div>
+      <input
+        className="usage-quota-input"
+        type="number"
+        min="0"
+        step="1"
+        inputMode="decimal"
+        placeholder={t('设置月额度')}
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onBlur={save}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') event.currentTarget.blur()
+        }}
+        aria-label={`${label} ${t('月额度')}`}
+      />
+    </div>
+  )
+}
+
 export function SettingsPage(): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
@@ -443,6 +504,9 @@ export function SettingsPage(): ReactNode {
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [usageTab, setUsageTab] = useState<'model' | 'project' | 'session'>('model')
+  const [usageMetric, setUsageMetric] = useState<'cost' | 'tokens'>('cost')
+  const [usageHover, setUsageHover] = useState<{ index: number; x: number; y: number } | null>(null)
+  const usageChartId = useId().replace(/:/g, '')
   const [usageNonce, setUsageNonce] = useState(0)
   const [chromeOpen, setChromeOpen] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -1364,7 +1428,41 @@ export function SettingsPage(): ReactNode {
       totals && totals.cacheRead + totals.input > 0
         ? totals.cacheRead / (totals.cacheRead + totals.input)
         : 0
-    const maxDayCost = Math.max(0.000001, ...(data?.byDay.map((day) => day.cost) ?? []))
+    const trendDays = data?.byDay ?? []
+    const trendValues = trendDays.map((day) => (usageMetric === 'cost' ? day.cost : day.total))
+    const maxTrend = Math.max(0.000001, ...trendValues)
+    const chartId = usageChartId
+    const chartWidth = 1000
+    const chartHeight = 180
+    const chartBottom = 156
+    const chartTop = 12
+    const trendPoints = trendValues.map((value, index) => ({
+      x: trendDays.length <= 1 ? chartWidth / 2 : (index / Math.max(1, trendDays.length - 1)) * chartWidth,
+      y: chartTop + (1 - value / maxTrend) * (chartBottom - chartTop)
+    }))
+    const linePath = trendPoints.length
+      ? trendPoints.reduce((path, point, index) => {
+          if (index === 0) return `M ${point.x.toFixed(1)} ${point.y.toFixed(1)}`
+          const previous = trendPoints[index - 1]
+          const middle = (previous.x + point.x) / 2
+          return `${path} C ${middle.toFixed(1)} ${previous.y.toFixed(1)}, ${middle.toFixed(1)} ${point.y.toFixed(1)}, ${point.x.toFixed(1)} ${point.y.toFixed(1)}`
+        }, '')
+      : ''
+    const areaPath = trendPoints.length
+      ? `${linePath} L ${trendPoints[trendPoints.length - 1].x.toFixed(1)} ${chartBottom} L ${trendPoints[0].x.toFixed(1)} ${chartBottom} Z`
+      : ''
+    const trendStep = Math.max(1, Math.ceil(trendDays.length / 7))
+    const providerRows = (() => {
+      const rows = new Map<string, { provider: string; cost: number; total: number; requests: number }>()
+      for (const row of data?.byModel ?? []) {
+        const current = rows.get(row.provider) ?? { provider: row.provider, cost: 0, total: 0, requests: 0 }
+        current.cost += row.cost
+        current.total += row.total
+        current.requests += row.requests
+        rows.set(row.provider, current)
+      }
+      return [...rows.values()].sort((a, b) => b.cost - a.cost)
+    })()
     const tabRows =
       usageTab === 'model'
         ? data?.byModel ?? []
@@ -1442,24 +1540,107 @@ export function SettingsPage(): ReactNode {
 
             <section className="usage-section">
               <div className="usage-section-head">
-                <h3>{t('每日费用')}</h3>
-                <span>{t('按本机时区统计')}</span>
+                <h3>{t('每日趋势')}</h3>
+                <div className="usage-chart-tools">
+                  <div className="usage-chart-tabs" role="tablist" aria-label={t('趋势指标')}>
+                    <button className={clsx('usage-chart-tab', usageMetric === 'cost' && 'active')} onClick={() => setUsageMetric('cost')}>
+                      {t('费用')}
+                    </button>
+                    <button className={clsx('usage-chart-tab', usageMetric === 'tokens' && 'active')} onClick={() => setUsageMetric('tokens')}>
+                      Tokens
+                    </button>
+                  </div>
+                  <span>{t('按本机时区统计')}</span>
+                </div>
               </div>
               {data.totals.requests > 0 && data.byDay.length ? (
-                <div className="usage-chart" role="img" aria-label={t('每日费用图表')}>
-                  {data.byDay.map((day) => {
-                    const height = Math.max(2, Math.round((day.cost / maxDayCost) * 100))
-                    return (
-                      <div className="usage-bar-wrap" key={day.date} title={`${day.date} · ${formatCost(day.cost)} · ${formatTokens(day.total)} tokens`}>
-                        <div className="usage-bar" style={{ height: `${height}%` }} />
-                        <span className="usage-bar-label">{day.date.slice(5)}</span>
-                      </div>
-                    )
-                  })}
+                <div className="usage-trend" role="img" aria-label={t('每日趋势图表')}>
+                  <div className="usage-trend-peak">
+                    {t('峰值')} {usageMetric === 'cost' ? formatCost(maxTrend) : formatTokens(maxTrend)}
+                  </div>
+                  <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none" className="usage-trend-svg" aria-hidden="true">
+                    <defs>
+                      <linearGradient id={`trend-${chartId}`} x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.28" />
+                        <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+                      </linearGradient>
+                    </defs>
+                    {[40, 90, 140].map((y) => (
+                      <line key={y} x1="0" y1={y} x2={chartWidth} y2={y} className="usage-trend-grid" />
+                    ))}
+                    <path d={areaPath} fill={`url(#trend-${chartId})`} />
+                    <path d={linePath} className="usage-trend-line" vectorEffect="non-scaling-stroke" />
+                    {trendPoints.map((point, index) => (
+                      <g key={trendDays[index].date}>
+                        <circle
+                          cx={point.x}
+                          cy={point.y}
+                          r="9"
+                          className="usage-trend-hit"
+                          onMouseEnter={() => setUsageHover({ index, ...point })}
+                          onMouseLeave={() => setUsageHover(null)}
+                        >
+                          <title>
+                            {`${trendDays[index].date} · ${formatCost(trendDays[index].cost)} · ${formatTokens(trendDays[index].total)} tokens · ${trendDays[index].requests} 次调用`}
+                          </title>
+                        </circle>
+                        <circle cx={point.x} cy={point.y} r="2.6" className="usage-trend-point" />
+                      </g>
+                    ))}
+                  </svg>
+                  {usageHover && (
+                    <div
+                      className="usage-trend-tooltip"
+                      style={{
+                        left: `calc(18px + (100% - 36px) * ${usageHover.x / chartWidth})`,
+                        top: `calc(18px + 178px * ${usageHover.y / chartHeight})`
+                      }}
+                    >
+                      <strong>{trendDays[usageHover.index]?.date}</strong>
+                      <span>{formatTokens(trendDays[usageHover.index]?.total)} tokens</span>
+                      <span>{trendDays[usageHover.index]?.requests ?? 0} {t('次调用')}</span>
+                      <span>{formatCost(trendDays[usageHover.index]?.cost)}</span>
+                    </div>
+                  )}
+                  <div className="usage-trend-axis" style={{ gridTemplateColumns: `repeat(${trendDays.length}, minmax(0, 1fr))` }}>
+                    {trendDays.map((day, index) => (
+                      <span key={day.date}>{index % trendStep === 0 || index === trendDays.length - 1 ? day.date.slice(5) : ''}</span>
+                    ))}
+                  </div>
                 </div>
               ) : (
                 <div className="usage-empty">{t('这个范围内还没有用量记录。')}</div>
               )}
+            </section>
+
+            <section className="usage-section">
+              <div className="usage-section-head">
+                <h3>{t('套餐额度')}</h3>
+                <span>{t('手动设置 · 按本地估算')}</span>
+              </div>
+              {providerRows.length ? (
+                <div className="usage-quota-list">
+                  {providerRows.map((row) => (
+                    <UsageQuotaRow
+                      key={row.provider}
+                      provider={row.provider}
+                      cost={row.cost}
+                      budget={state.settings.usageBudgets?.[row.provider]}
+                      onSave={(value) => {
+                        const next = { ...(state.settings.usageBudgets ?? {}) }
+                        if (value === null) delete next[row.provider]
+                        else next[row.provider] = value
+                        void actions.updateSettings({ usageBudgets: next })
+                      }}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="usage-empty">{t('这个范围内还没有用量记录。')}</div>
+              )}
+              <p className="usage-note">
+                {t('套餐额度需要手动填写；服务商实际余额和套餐额度以控制台为准。')}
+              </p>
             </section>
 
             <section className="usage-section">

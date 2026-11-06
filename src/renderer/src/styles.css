@@ -7174,3 +7174,185 @@ html[data-platform='win32'] .app.sidebar-collapsed .topbar {
   font-size: 11px;
   line-height: 1.55;
 }
+
+/* Usage trend */
+.usage-chart-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.usage-chart-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.usage-chart-tab {
+  border: 0;
+  border-radius: 4px;
+  padding: 3px 7px;
+  color: var(--text-faint);
+  background: transparent;
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.usage-chart-tab:hover { color: var(--text); }
+.usage-chart-tab.active { color: var(--text); background: var(--hover); }
+.usage-trend {
+  position: relative;
+  height: 218px;
+  padding: 18px 18px 7px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.usage-trend-peak {
+  position: absolute;
+  top: 12px;
+  right: 17px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.usage-trend-svg {
+  display: block;
+  width: 100%;
+  height: 178px;
+  overflow: visible;
+}
+.usage-trend-grid {
+  stroke: color-mix(in srgb, var(--border) 55%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 3 5;
+  vector-effect: non-scaling-stroke;
+}
+.usage-trend-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.usage-trend-hit {
+  fill: transparent;
+  cursor: crosshair;
+}
+.usage-trend-point {
+  pointer-events: none;
+  fill: var(--panel);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  transition: r 0.12s ease, fill 0.12s ease;
+}
+.usage-trend-hit:hover + .usage-trend-point,
+.usage-trend-point:hover {
+  r: 4.5;
+  fill: var(--accent);
+}
+.usage-trend-axis {
+  display: grid;
+  gap: 0;
+  margin-top: -2px;
+  color: var(--text-faint);
+  font-size: 9.5px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.usage-trend-axis span {
+  overflow: hidden;
+  white-space: nowrap;
+}
+.usage-trend-tooltip {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 128px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel-2);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-dim);
+  font-size: 10.5px;
+  line-height: 1.45;
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 8px));
+  white-space: nowrap;
+}
+.usage-trend-tooltip strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Usage plan quotas */
+.usage-quota-list {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.usage-quota-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  grid-template-areas:
+    'head input'
+    'track input';
+  align-items: center;
+  gap: 6px 12px;
+  padding: 7px 0;
+}
+.usage-quota-row + .usage-quota-row { border-top: 1px solid var(--border); }
+.usage-quota-head {
+  grid-area: head;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.usage-quota-name {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+}
+.usage-quota-numbers {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.usage-quota-track {
+  grid-area: track;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--panel-2);
+}
+.usage-quota-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, transparent));
+  transition: width 0.18s ease;
+}
+.usage-quota-input {
+  grid-area: input;
+  width: 120px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: 0;
+  color: var(--text);
+  background: var(--bg);
+  font: inherit;
+  font-size: 11px;
+}
+.usage-quota-input:focus { border-color: var(--accent); }

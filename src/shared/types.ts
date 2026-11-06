@@ -265,6 +265,8 @@ export interface Settings {
   workPanelTabs?: ('changes' | 'files' | 'terminal' | 'artifacts' | 'browser')[]
   /** Where links in chat open: the in-app browser panel or the OS browser. */
   linkOpenMode?: 'browser' | 'external'
+  /** Optional monthly spend caps by provider, used by the usage page. */
+  usageBudgets?: Record<string, number>
   toolCardsExpanded?: boolean
   followStream?: boolean
   launchAtLogin?: boolean

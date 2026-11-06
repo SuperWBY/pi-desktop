@@ -39,6 +39,7 @@ export function ChromeBridgeDialog({
   const openExtensions = async (): Promise<void> => {
     try {
       await window.pi.openChromeExtensions()
+      setNotice(t('已打开 Chrome 扩展页，请在那里完成安装。'))
     } catch {
       setNotice(t('无法打开 Chrome，请手动打开 chrome://extensions。'))
     }
@@ -48,6 +49,7 @@ export function ChromeBridgeDialog({
     if (!path) return
     try {
       await window.pi.showItem(path)
+      setNotice(t('已打开扩展目录。'))
     } catch {
       setNotice(t('无法打开扩展目录，请手动复制上面的路径。'))
     }
@@ -105,26 +107,63 @@ export function ChromeBridgeDialog({
       </div>
 
       <ol className="chrome-bridge-steps">
-        <li>
+        <li
+          className="chrome-bridge-step clickable"
+          role="button"
+          tabIndex={0}
+          onClick={() => void openExtensions()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') void openExtensions()
+          }}
+        >
           <div className="chrome-bridge-step-head">
             <strong>{t('打开扩展页')}</strong>
-            <button className="button ghost" onClick={() => void openExtensions()}>
+            <button
+              className="button ghost"
+              onClick={(event) => {
+                event.stopPropagation()
+                void openExtensions()
+              }}
+            >
               <ExternalLink size={12} />
               {t('打开')}
             </button>
           </div>
-          <span>{t('点击「打开」，或手动打开 chrome://extensions。')}</span>
+          <span>{t('点击这一行，或手动打开 chrome://extensions。')}</span>
         </li>
-        <li>
+        <li
+          className="chrome-bridge-step clickable"
+          role="button"
+          tabIndex={0}
+          onClick={() => void openExtensions()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') void openExtensions()
+          }}
+        >
           <div className="chrome-bridge-step-head">
             <strong>{t('打开开发者模式')}</strong>
           </div>
           <span>{t('打开页面右上角的「开发者模式」开关。')}</span>
         </li>
-        <li>
+        <li
+          className="chrome-bridge-step clickable"
+          role="button"
+          tabIndex={0}
+          onClick={() => void openFolder()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') void openFolder()
+          }}
+        >
           <div className="chrome-bridge-step-head">
             <strong>{t('加载已解压的扩展')}</strong>
-            <button className="button ghost" onClick={() => void openFolder()} disabled={!path}>
+            <button
+              className="button ghost"
+              onClick={(event) => {
+                event.stopPropagation()
+                void openFolder()
+              }}
+              disabled={!path}
+            >
               <FolderOpen size={12} />
               {t('打开文件夹')}
             </button>
@@ -133,9 +172,9 @@ export function ChromeBridgeDialog({
         </li>
       </ol>
 
-      <div className="chrome-bridge-path">
+      <div className="chrome-bridge-path clickable" role="button" tabIndex={0} onClick={() => void copyPath()} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') void copyPath() }}>
         <code>{path || t('正在读取扩展目录…')}</code>
-        <button className="button ghost" onClick={() => void copyPath()} disabled={!path}>
+        <button className="button ghost" onClick={(event) => { event.stopPropagation(); void copyPath() }} disabled={!path}>
           {copied ? <Check size={13} /> : <Copy size={13} />}
           {copied ? t('已复制') : t('复制路径')}
         </button>

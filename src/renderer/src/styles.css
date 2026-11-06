@@ -7423,3 +7423,19 @@ html[data-platform='win32'] .app.sidebar-collapsed .topbar {
 .chrome-bridge-check .button { flex: 0 0 auto; }
 .chrome-bridge-status { color: var(--text-dim); font-size: 11px; }
 .chrome-bridge-status.ok { color: var(--success, #4caf78); }
+.chrome-bridge-step.clickable,
+.chrome-bridge-path.clickable {
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.chrome-bridge-step.clickable {
+  margin: 0 -8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+.chrome-bridge-step.clickable:hover {
+  background: var(--hover);
+}
+.chrome-bridge-path.clickable:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}

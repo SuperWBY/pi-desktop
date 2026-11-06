@@ -19,7 +19,7 @@ Restart Pi Desktop or start a new session after installing.
 |---|---|
 | `computer_use_apps` | List running applications |
 | `computer_use_observe` | Screenshot + Accessibility tree for the frontmost/target app |
-| `computer_use_act` | Click, double/right click, type, key, scroll, wait |
+| `computer_use_act` | Click, double/right click, native press, set value, type, key, scroll, wait |
 | `computer_use_batch` | Short action sequence |
 | `computer_use_permissions` | Accessibility / Screen Recording status |
 
@@ -61,7 +61,6 @@ Pi extension (TypeScript)
 
 - Windows UI Automation backend
 - multi-display coordinate mapping
-- window-scoped screenshots
 - semantic post-action verification
 - per-app allowlist / deny list
 - sandbox backend (Cua / Docker)
@@ -70,3 +69,8 @@ Pi extension (TypeScript)
 ## Hybrid observation
 
 `computer_use_observe` now compiles Accessibility elements and Vision OCR lines into one candidate list. Each candidate carries `source` (`ax` or `ocr`), `confidence`, bounds, and suggested actions. AX candidates keep their element IDs; OCR-only candidates use `oN` IDs.
+
+
+## Marked screenshots
+
+Observation draws red boxes for Accessibility elements and blue boxes for OCR-only text, labeled with the candidate ID (`eN` or `oN`). AX actions (`press`, `set_value`) run through Accessibility before falling back to coordinate input.

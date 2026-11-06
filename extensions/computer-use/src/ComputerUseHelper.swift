@@ -4,6 +4,7 @@ import ApplicationServices
 import CoreGraphics
 import Vision
 import ImageIO
+import UniformTypeIdentifiers
 
 struct Rect: Encodable {
     let x: Double
@@ -32,6 +33,8 @@ struct OcrLine: Encodable {
     let confidence: Double
 }
 
+var axRefs: [String: AXUIElement] = [:]
+
 struct Snapshot: Encodable {
     let app: String
     let bundleId: String?
@@ -41,6 +44,7 @@ struct Snapshot: Encodable {
     let windowId: Int?
     let captureMode: String
     let screenshot: String?
+    let marked: Bool
     let screenWidth: Double
     let screenHeight: Double
     let accessibility: Bool
@@ -133,8 +137,10 @@ func collect(_ element: AXUIElement, depth: Int, maxDepth: Int, maxElements: Int
         let key = "\(role)|\(title ?? "")|\(description ?? "")|\(bounds?.x ?? -1),\(bounds?.y ?? -1),\(bounds?.width ?? -1),\(bounds?.height ?? -1)"
         if !seen.contains(key) {
             seen.insert(key)
+            let elementId = "e\(elements.count + 1)"
+            axRefs[elementId] = element
             elements.append(Element(
-                id: "e\(elements.count + 1)",
+                id: elementId,
                 role: role,
                 title: title,
                 description: description,
@@ -241,40 +247,160 @@ func recognizeText(path: String, origin: Rect?) -> [OcrLine] {
     return lines
 }
 
+func drawMarks(path: String, elements: [Element], ocr: [OcrLine], origin: Rect?) {
+    guard let origin,
+          let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+          let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return }
+    let width = image.width
+    let height = image.height
+    guard width > 0, height > 0,
+          let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+          ) else { return }
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    context.translateBy(x: 0, y: CGFloat(height))
+    context.scaleBy(x: 1, y: -1)
+    let scaleX = Double(width) / max(origin.width, 1)
+    let scaleY = Double(height) / max(origin.height, 1)
+    context.setLineWidth(2)
+    for element in elements {
+        guard let bounds = element.bounds else { continue }
+        let rect = CGRect(
+            x: (bounds.x - origin.x) * scaleX,
+            y: (bounds.y - origin.y) * scaleY,
+            width: bounds.width * scaleX,
+            height: bounds.height * scaleY
+        )
+        if rect.maxX < 0 || rect.maxY < 0 || rect.minX > CGFloat(width) || rect.minY > CGFloat(height) { continue }
+        context.setStrokeColor(NSColor.systemRed.withAlphaComponent(0.9).cgColor)
+        context.stroke(rect)
+        context.setFillColor(NSColor.systemRed.withAlphaComponent(0.9).cgColor)
+        context.fill(CGRect(x: rect.minX, y: rect.minY, width: 28, height: 14))
+        let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = nsContext
+        let label = element.id as NSString
+        label.draw(
+            at: CGPoint(x: rect.minX + 2, y: rect.minY + 1),
+            withAttributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .semibold),
+                .foregroundColor: NSColor.white
+            ]
+        )
+        NSGraphicsContext.restoreGraphicsState()
+    }
+    for (index, line) in ocr.enumerated() {
+        let overlapsAX = elements.contains { element in
+            guard let bounds = element.bounds else { return false }
+            let overlapX = max(0, min(bounds.x + bounds.width, line.bounds.x + line.bounds.width) - max(bounds.x, line.bounds.x))
+            let overlapY = max(0, min(bounds.y + bounds.height, line.bounds.y + line.bounds.height) - max(bounds.y, line.bounds.y))
+            return overlapX * overlapY > 0.5 * line.bounds.width * line.bounds.height
+        }
+        if overlapsAX { continue }
+        let rect = CGRect(
+            x: (line.bounds.x - origin.x) * scaleX,
+            y: (line.bounds.y - origin.y) * scaleY,
+            width: line.bounds.width * scaleX,
+            height: line.bounds.height * scaleY
+        )
+        if rect.maxX < 0 || rect.maxY < 0 || rect.minX > CGFloat(width) || rect.minY > CGFloat(height) { continue }
+        context.setStrokeColor(NSColor.systemBlue.withAlphaComponent(0.85).cgColor)
+        context.stroke(rect)
+        context.setFillColor(NSColor.systemBlue.withAlphaComponent(0.85).cgColor)
+        context.fill(CGRect(x: rect.minX, y: rect.minY, width: 28, height: 14))
+        let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = nsContext
+        ("o\(index + 1)" as NSString).draw(
+            at: CGPoint(x: rect.minX + 2, y: rect.minY + 1),
+            withAttributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .semibold),
+                .foregroundColor: NSColor.white
+            ]
+        )
+        NSGraphicsContext.restoreGraphicsState()
+    }
+    guard let output = context.makeImage(),
+          let destination = CGImageDestinationCreateWithURL(
+            URL(fileURLWithPath: path) as CFURL,
+            UTType.png.identifier as CFString,
+            1,
+            nil
+          ) else { return }
+    CGImageDestinationAddImage(destination, output, nil)
+    CGImageDestinationFinalize(destination)
+}
+
+func unionRect(_ rects: [Rect]) -> Rect? {
+    guard let first = rects.first else { return nil }
+    var minX = first.x, minY = first.y
+    var maxX = first.x + first.width, maxY = first.y + first.height
+    for rect in rects.dropFirst() {
+        minX = min(minX, rect.x)
+        minY = min(minY, rect.y)
+        maxX = max(maxX, rect.x + rect.width)
+        maxY = max(maxY, rect.y + rect.height)
+    }
+    return Rect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+}
+
 func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
     let app = runningApplication(appName)
     let pid = app?.processIdentifier ?? 0
+    axRefs.removeAll()
     let appElement = AXUIElementCreateApplication(pid)
     AXUIElementSetAttributeValue(appElement, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
     var windowTitle: String?
     var windowBounds: Rect?
+    var roots: [AXUIElement] = []
     if pid != 0 {
         var selectedWindow: AXUIElement?
         if let raw = axValue(appElement, kAXFocusedWindowAttribute as CFString),
            CFGetTypeID(raw) == AXUIElementGetTypeID() {
             selectedWindow = (raw as! AXUIElement)
         }
-        if let windows = axValue(appElement, kAXWindowsAttribute as CFString) as? [AXUIElement] {
-            if selectedWindow == nil || axBounds(selectedWindow!) == nil {
-                selectedWindow = windows.first(where: { (axBounds($0)?.width ?? 0) > 100 }) ?? windows.first
-            }
+        var windows = axValue(appElement, kAXWindowsAttribute as CFString) as? [AXUIElement] ?? []
+        if selectedWindow == nil || axBounds(selectedWindow!) == nil {
+            selectedWindow = windows.first(where: { (axBounds($0)?.width ?? 0) > 100 }) ?? windows.first
         }
-        if let selectedWindow {
+        if let selectedWindow, let focusedBounds = axBounds(selectedWindow) {
             windowTitle = axString(selectedWindow, kAXTitleAttribute as CFString)
+            // Chrome exposes the menu bar, toolbar and content as sibling AX
+            // windows. Group vertically adjacent windows with the same
+            // horizontal frame so the screenshot and marks cover the whole
+            // visible app window instead of only the web-content area.
+            var group = [selectedWindow]
+            for candidate in windows {
+                guard candidate !== selectedWindow, let bounds = axBounds(candidate) else { continue }
+                let sameX = abs(bounds.x - focusedBounds.x) < 3
+                let sameWidth = abs(bounds.width - focusedBounds.width) < 3
+                let gap = max(0, max(focusedBounds.y, bounds.y) - min(focusedBounds.y + focusedBounds.height, bounds.y + bounds.height))
+                if sameX && sameWidth && gap < 8 {
+                    group.append(candidate)
+                }
+            }
+            roots = group
+            windowBounds = unionRect(group.compactMap { axBounds($0) })
+        } else if let selectedWindow {
+            roots = [selectedWindow]
             windowBounds = axBounds(selectedWindow)
+            windowTitle = axString(selectedWindow, kAXTitleAttribute as CFString)
         }
     }
     let windowId = pid != 0 ? findWindowId(pid: pid, title: windowTitle, bounds: windowBounds) : nil
     let captureMode = windowBounds != nil ? "region" : (windowId != nil ? "window" : "display")
     var elements: [Element] = []
     if pid != 0 && AXIsProcessTrusted() {
-        var root = appElement
-        if let raw = axValue(appElement, kAXFocusedWindowAttribute as CFString),
-           CFGetTypeID(raw) == AXUIElementGetTypeID() {
-            root = raw as! AXUIElement
-        }
         var seen = Set<String>()
-        collect(root, depth: 0, maxDepth: 8, maxElements: 250, into: &elements, seen: &seen)
+        for root in roots.isEmpty ? [appElement] : roots {
+            collect(root, depth: 0, maxDepth: 8, maxElements: 250, into: &elements, seen: &seen)
+        }
     }
     if let screenshotPath {
         let process = Process()
@@ -298,6 +424,7 @@ func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
         resize.waitUntilExit()
     }
     let ocrLines = screenshotPath.map { recognizeText(path: $0, origin: windowBounds) } ?? []
+    if let screenshotPath { drawMarks(path: screenshotPath, elements: elements, ocr: ocrLines, origin: windowBounds) }
     let size = screenSize()
     return Snapshot(
         app: app?.localizedName ?? appName ?? "frontmost",
@@ -308,6 +435,7 @@ func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
         windowId: windowId,
         captureMode: captureMode,
         screenshot: screenshotPath,
+        marked: screenshotPath != nil && windowBounds != nil,
         screenWidth: size.width,
         screenHeight: size.height,
         accessibility: AXIsProcessTrusted(),
@@ -467,6 +595,27 @@ case "ocr":
     let lines = recognizeText(path: image, origin: nil)
     let encoded = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(lines))
     emit(["ok": true, "lines": encoded])
+case "ax-action":
+    guard let app = argument("--app"), let elementId = argument("--id"), let action = argument("--action") else {
+        fail("Missing --app, --id or --action")
+    }
+    _ = captureContext(app, screenshotPath: nil)
+    guard let element = axRefs[elementId] else { fail("Accessibility element not found: \(elementId)") }
+    switch action {
+    case "press":
+        let error = AXUIElementPerformAction(element, kAXPressAction as CFString)
+        if error != .success { fail("AXPress failed: \(error.rawValue)") }
+    case "focus":
+        let error = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        if error != .success { fail("AX focus failed: \(error.rawValue)") }
+    case "set_value":
+        guard let text = argument("--text") else { fail("Missing --text") }
+        let error = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, text as CFString)
+        if error != .success { fail("AXSetValue failed: \(error.rawValue)") }
+    default:
+        fail("Unknown AX action: \(action)")
+    }
+    emit(["ok": true, "id": elementId, "action": action])
 case "observe":
     let app = argument("--app")
     let screenshot = argument("--screenshot")

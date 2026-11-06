@@ -224,7 +224,32 @@ async function doAction(action: Record<string, unknown>, state: SnapshotState | 
   const target = typeof action.elementId === 'string' ? findElement(snapshot, action.elementId) : null
   const xy = target ? point(target) : null
 
+  if (type === 'press') {
+    if (!target) throw new Error('press requires elementId')
+    await runHelper(['ax-action', '--app', snapshot?.app ?? '', '--id', target.id, '--action', 'press'])
+    return `AXPress ${target.id}`
+  }
+
+  if (type === 'set_value') {
+    if (!target) throw new Error('set_value requires elementId')
+    if (target.secure) throw new Error('Refusing to type into a secure text field.')
+    const text = String(action.text ?? '')
+    if (!text) throw new Error('set_value requires text')
+    await runHelper(['ax-action', '--app', snapshot?.app ?? '', '--id', target.id, '--action', 'set_value', '--text', text])
+    return `AXSetValue ${target.id}`
+  }
+
   if (type === 'click' || type === 'double_click' || type === 'right_click') {
+    // Prefer the native accessibility action for buttons, links, tabs and
+    // menu items. It works without moving the cursor or stealing focus.
+    if (type === 'click' && target && /Button|Link|MenuItem|CheckBox|RadioButton|Tab/.test(target.role)) {
+      try {
+        await runHelper(['ax-action', '--app', snapshot?.app ?? '', '--id', target.id, '--action', 'press'])
+        return `AXPress ${target.id}`
+      } catch {
+        // Fall back to a coordinate click when the app does not implement AXPress.
+      }
+    }
     const x = xy?.x ?? Number(action.x)
     const y = xy?.y ?? Number(action.y)
     if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('click requires elementId or x/y')
@@ -244,12 +269,20 @@ async function doAction(action: Record<string, unknown>, state: SnapshotState | 
 
   if (type === 'type') {
     if (target?.secure) throw new Error('Refusing to type into a secure text field.')
+    const text = String(action.text ?? '')
+    if (!text) throw new Error('type requires text')
+    if (target && /TextField|TextArea/.test(target.role)) {
+      try {
+        await runHelper(['ax-action', '--app', snapshot?.app ?? '', '--id', target.id, '--action', 'set_value', '--text', text])
+        return `AXSetValue ${target.id} (${text.length} characters)`
+      } catch {
+        // Fall through to focus + paste when the app rejects direct value writes.
+      }
+    }
     if (target) {
       const p = point(target)
       await runHelper(['click', '--x', String(p.x), '--y', String(p.y)])
     }
-    const text = String(action.text ?? '')
-    if (!text) throw new Error('type requires text')
     await runHelper(['type', '--text', text])
     return `typed ${text.length} characters`
   }
@@ -352,6 +385,8 @@ export default function computerUse(pi: ExtensionAPI): void {
         Type.Literal('double_click'),
         Type.Literal('right_click'),
         Type.Literal('hover'),
+        Type.Literal('press'),
+        Type.Literal('set_value'),
         Type.Literal('type'),
         Type.Literal('key'),
         Type.Literal('scroll'),

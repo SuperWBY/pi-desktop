@@ -403,7 +403,6 @@ export function Composer(): ReactNode {
       setText((current) => (current === text ? '' : current))
       const sentIds = new Set(attachments.map((attachment) => attachment.id))
       setAttachments((current) => current.filter((attachment) => !sentIds.has(attachment.id)))
-      if (streaming && state.sendMode === 'steer') actions.setSendMode('followUp')
     }
   }, [actions, attachments, sending, state.status, state.sendMode, streaming, text, t])
 
@@ -505,13 +504,36 @@ export function Composer(): ReactNode {
       )}
 
       {(state.queue.steering.length > 0 || state.queue.followUp.length > 0) && (
-        <details className="queue-strip">
-          <summary className="queue-label">{t("Queued")} · {state.queue.steering.length + state.queue.followUp.length}</summary>
-          <div className="queue-list">
-            {state.queue.steering.map((item, index) => <div className="queue-item" key={`steer-${index}`}><span>{state.settings.language === 'en' ? 'Steer' : '待插话'} {index + 1}</span><p>{item}</p></div>)}
-            {state.queue.followUp.map((item, index) => <div className="queue-item" key={`follow-${index}`}><span>{state.settings.language === 'en' ? 'Next' : '任务后发送'} {index + 1}</span><p>{item}</p></div>)}
+        <div className="queue-strip">
+          <div className="queue-head">
+            <span className="queue-label">
+              {t('排队中')} · {state.queue.steering.length + state.queue.followUp.length}
+            </span>
+            <span className="queue-hint">{t('到当前任务结束后发送')}</span>
           </div>
-        </details>
+          <div className="queue-list">
+            {state.queue.steering.map((item, index) => (
+              <div className="queue-item is-guiding" key={`steer-${index}`}>
+                <span className="queue-kind">{t('引导中')}</span>
+                <p>{item}</p>
+              </div>
+            ))}
+            {state.queue.followUp.map((item, index) => (
+              <div className="queue-item" key={`follow-${index}`}>
+                <span className="queue-index">{index + 1}</span>
+                <p>{item}</p>
+                <button
+                  className="queue-guide"
+                  disabled={!state.streaming || item === '[图片]'}
+                  onClick={() => void actions.guideQueued(index)}
+                  title={t('把这条消息作为引导，当前工具结束后立即发送')}
+                >
+                  {t('引导')}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       <div className="composer">
@@ -680,25 +702,13 @@ export function Composer(): ReactNode {
                 {stopping ? <Spinner size={14} /> : <Square size={12} fill="currentColor" />}
               </button>
             )}
-            {streaming && canSend && (
-              <Popover width={235} align="right" trigger={(_open, toggle, expanded) => (
-                <button className="send-mode-button" onClick={toggle} aria-label={state.settings.language === 'en' ? 'Message delivery' : '选择发送方式'} title={state.sendMode === 'steer' ? t('Deliver after the current tool calls') : t('Deliver after pi finishes')} {...expanded}>
-                  <span>{state.sendMode === 'steer' ? t('Steer') : (state.settings.language === 'en' ? 'Queue' : '排队')}</span><ChevronDown size={12} />
-                </button>
-              )}>
-                {(close) => <div className="menu">
-                  <button className="menu-item" role="menuitemradio" aria-checked={state.sendMode === 'followUp'} onClick={() => { actions.setSendMode('followUp'); close() }}><span className="menu-item-main"><span className="menu-item-title">{state.settings.language === 'en' ? 'Queue' : '排队发送'}</span><span className="menu-item-sub">{t('Deliver after pi finishes')}</span></span>{state.sendMode === 'followUp' && <Check size={14} />}</button>
-                  <button className="menu-item" role="menuitemradio" aria-checked={state.sendMode === 'steer'} onClick={() => { actions.setSendMode('steer'); close() }}><span className="menu-item-main"><span className="menu-item-title">{t('Steer')}</span><span className="menu-item-sub">{t('Deliver after the current tool calls')}</span></span>{state.sendMode === 'steer' && <Check size={14} />}</button>
-                </div>}
-              </Popover>
-            )}
             {(!streaming || canSend || sending) && (
               <button
                 className="send-button"
                 onClick={() => void submit()}
                 disabled={!canSend}
-                title={streaming ? (state.sendMode === 'steer' ? t('Steer') : (state.settings.language === 'en' ? 'Queue message' : '排队发送')) : t("Send (Enter)")}
-                aria-label={streaming ? (state.sendMode === 'steer' ? t('Steer') : (state.settings.language === 'en' ? 'Queue message' : '排队发送')) : t("Send (Enter)")}
+                title={streaming ? (state.settings.language === 'en' ? 'Queue message' : '排队发送') : t("Send (Enter)")}
+                aria-label={streaming ? (state.settings.language === 'en' ? 'Queue message' : '排队发送') : t("Send (Enter)")}
               >
                 {sending ? <Spinner size={14} /> : <ArrowUp size={16} />}
               </button>
@@ -709,7 +719,7 @@ export function Composer(): ReactNode {
 
       <div className="composer-hint">
         {streaming
-          ? (state.settings.language === 'en' ? `Enter to ${state.sendMode === 'steer' ? 'steer' : 'queue'} · Esc to stop` : `Enter ${state.sendMode === 'steer' ? '插话' : '排队发送'} · Esc 停止`)
+          ? (state.settings.language === 'en' ? 'Enter to queue · Esc to stop' : 'Enter 排队发送 · Esc 停止')
           : t("Enter 发送 · Shift+Enter 换行")}
       </div>
     </div>

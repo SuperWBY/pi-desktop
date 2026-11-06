@@ -6535,3 +6535,110 @@ html[data-platform='win32'] .app.sidebar-collapsed .topbar {
   background: var(--hover);
   color: var(--text);
 }
+
+/* Queued messages: always expanded above the composer, with per-item guide */
+.queue-strip {
+  padding: 0 4px 7px;
+}
+
+.queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 3px 6px;
+}
+
+.queue-head .queue-label {
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: none;
+  cursor: default;
+}
+
+.queue-hint {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.queue-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 7px 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.queue-item p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.queue-item.is-guiding {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+}
+
+.queue-item > span {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.queue-index {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 17px;
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-kind {
+  color: var(--accent-strong) !important;
+  font-weight: 600;
+}
+
+.queue-guide {
+  flex: none;
+  align-self: center;
+  margin-left: 2px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 10.5px;
+}
+
+.queue-guide:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--hover);
+  color: var(--text);
+}
+
+.queue-guide:disabled {
+  opacity: 0.4;
+}

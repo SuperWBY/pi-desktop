@@ -515,6 +515,7 @@ export type Action =
   | { type: 'SET_THINKING'; level: ThinkingLevel }
   | { type: 'SET_SEND_MODE'; mode: SendMode }
   | { type: 'QUEUE_ADD' | 'QUEUE_REMOVE'; kind: 'steering' | 'followUp'; value: string }
+  | { type: 'QUEUE_SET'; steering: string[]; followUp: string[] }
   | { type: 'SET_STREAMING'; streaming: boolean }
   | { type: 'TOGGLE_SIDEBAR' }
   | { type: 'SET_SETTINGS_OPEN'; open: boolean }
@@ -776,6 +777,9 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'QUEUE_ADD':
       return { ...state, queue: { ...state.queue, [action.kind]: [...state.queue[action.kind], action.value] } }
 
+    case 'QUEUE_SET':
+      return { ...state, queue: { steering: action.steering, followUp: action.followUp } }
+
     case 'QUEUE_REMOVE': {
       const index = state.queue[action.kind].indexOf(action.value)
       if (index < 0) return state
@@ -833,6 +837,7 @@ interface AppActions {
     images: { type: 'image'; data: string; mimeType: string }[]
   ) => Promise<boolean>
   stop: () => Promise<{ steering: string[]; followUp: string[] } | null>
+  guideQueued: (index: number) => Promise<boolean>
   renameSession: (name: string) => Promise<void>
   deleteSession: (path: string) => Promise<void>
   setModel: (model: ModelInfo) => Promise<void>
@@ -1152,15 +1157,15 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         })
       }
 
+      // While the agent is running, new messages are queued above the
+      // composer. They become a real prompt only after the current turn ends,
+      // or earlier if the user presses the per-item “引导” action.
       const command: Record<string, unknown> = current.streaming
-        ? {
-            type: current.sendMode === 'steer' ? 'steer' : 'follow_up',
-            message: text
-          }
+        ? { type: 'follow_up', message: text }
         : { type: 'prompt', message: text }
       if (images.length) command.images = images
 
-      const kind = current.sendMode === 'steer' ? 'steering' : 'followUp'
+      const kind = 'followUp'
       const queuedValue = text || (images.length ? '[图片]' : '')
       if (current.streaming) dispatch({ type: 'QUEUE_ADD', kind, value: queuedValue })
 
@@ -1183,6 +1188,45 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       if (current.streaming && response.data?.disposition === 'handled') dispatch({ type: 'QUEUE_REMOVE', kind, value: queuedValue })
       if (!current.streaming && response.data?.disposition === 'started') {
         dispatch({ type: 'SET_STREAMING', streaming: true })
+      }
+      return true
+    },
+    [notify]
+  )
+
+  const guideQueued = useCallback(
+    async (index: number): Promise<boolean> => {
+      const current = stateRef.current
+      if (!current.streaming) return false
+      const selected = current.queue.followUp[index]
+      if (!selected || selected === '[图片]') return false
+
+      // pi only exposes a whole-queue clear. Take the queue back, put the
+      // selected item in the steering lane, and restore the rest as follow-ups.
+      const cleared = await safeCommand<{ steering?: string[]; followUp?: string[] }>(
+        { type: 'clear_queue' },
+        15_000
+      )
+      if (!cleared?.success) {
+        notify('error', '无法引导', cleared?.error ?? 'pi 没有响应。')
+        return false
+      }
+      const steering = normalizeQueue(cleared.data?.steering)
+      const followUp = normalizeQueue(cleared.data?.followUp)
+      const at = followUp.indexOf(selected)
+      if (at < 0) return false
+      followUp.splice(at, 1)
+
+      dispatch({ type: 'QUEUE_SET', steering: [...steering, selected], followUp })
+      const guided = await safeCommand({ type: 'steer', message: selected }, 120_000)
+      if (!guided?.success) {
+        await safeCommand({ type: 'follow_up', message: selected }, 120_000)
+        dispatch({ type: 'QUEUE_SET', steering, followUp: [selected, ...followUp] })
+        notify('error', '无法引导', guided?.error ?? 'pi 没有响应。')
+        return false
+      }
+      for (const message of followUp) {
+        await safeCommand({ type: 'follow_up', message }, 120_000)
       }
       return true
     },
@@ -1647,6 +1691,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       pickFolder,
       sendMessage,
       stop,
+      guideQueued,
       renameSession,
       deleteSession,
       setModel,
@@ -1693,6 +1738,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       pickFolder,
       sendMessage,
       stop,
+      guideQueued,
       renameSession,
       deleteSession,
       setModel,

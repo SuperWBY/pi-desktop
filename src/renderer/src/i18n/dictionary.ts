@@ -209,6 +209,12 @@ const pairs: Array<[string, string]> = [
   ['出现在最近对话', 'Appears in recent conversations'],
   ['任务和运行记录会被删除，已生成的会话保留。', 'The task and its run history will be deleted. Generated sessions remain.'],
   ['保存中…', 'Saving…'], ['保存', 'Save'],
+  ['排队中', 'Queued'],
+  ['到当前任务结束后发送', 'Sent after the current run'],
+  ['引导', 'Guide'],
+  ['引导中', 'Guiding'],
+  ['把这条消息作为引导，当前工具结束后立即发送', 'Guide the run after the current tool call'],
+  ['无法引导', 'Could not guide'],
   ['移除插件？', 'Remove plugin?'],
   ['插件会从 pi 设置中移除，技能目录与项目文件不受影响。', 'The plugin is removed from pi settings. Skill folders and project files are untouched.'],
 ]

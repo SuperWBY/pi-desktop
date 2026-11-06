@@ -43,6 +43,7 @@ import {
   browserStop,
   initBrowser
 } from './browser'
+import { importChromeCookies, listChromeProfiles, previewChromeProfile } from './chrome-import'
 import { locatePi, piVersion } from './pi-locate'
 import { deleteSession, listSessions, restoreSession, sessionExists, sessionsRoot } from './sessions'
 import { loadSettings, saveSettings } from './settings'
@@ -500,6 +501,11 @@ function registerIpc(): void {
   ipcMain.handle('browser:close', () => browserClose())
   ipcMain.handle('browser:bounds', (_event, bounds) => browserBounds(bounds))
   ipcMain.handle('browser:visible', (_event, visible: boolean) => browserSetVisible(visible))
+  ipcMain.handle('chrome:profiles', () => listChromeProfiles())
+  ipcMain.handle('chrome:preview', (_event, profileId: string) => previewChromeProfile(profileId))
+  ipcMain.handle('chrome:import', (_event, profileId: string, domains: string[]) =>
+    importChromeCookies(profileId, domains)
+  )
 
   ipcMain.handle('shell:show-item', (_event, path: string) => {
     if (path) shell.showItemInFolder(path)

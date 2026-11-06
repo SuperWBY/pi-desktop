@@ -35,6 +35,7 @@ import { useApp } from '../store'
 import { formatCost, formatTokens, shortenPath } from '../lib/format'
 import { shortcutKeys } from '../lib/platform'
 import { Popover } from './ui'
+import { ChromeImportDialog } from './ChromeImportDialog'
 
 const SHORTCUTS: { keys: string; label: string }[] = [
   { keys: '⌘N', label: '新建会话' },
@@ -208,7 +209,7 @@ const NAV: {
         id: 'general',
         label: '常规',
         icon: SlidersHorizontal,
-        keywords: ['pi', '路径', '版本', '重启', 'steering', 'follow', '压缩', '重试', '自动', '运行时', '语言', 'language']
+        keywords: ['pi', '路径', '版本', '重启', 'steering', 'follow', '压缩', '重试', '自动', '运行时', '语言', 'language', 'chrome', 'cookie', '登录', '浏览器', '导入']
       },
       {
         id: 'models',
@@ -443,6 +444,7 @@ export function SettingsPage(): ReactNode {
   const [usageError, setUsageError] = useState<string | null>(null)
   const [usageTab, setUsageTab] = useState<'model' | 'project' | 'session'>('model')
   const [usageNonce, setUsageNonce] = useState(0)
+  const [chromeOpen, setChromeOpen] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -759,6 +761,15 @@ export function SettingsPage(): ReactNode {
               { value: 'external', label: t('系统浏览器') }
             ]}
           />
+        </Row>
+        <Row
+          title={t("Chrome 登录状态")}
+          desc={t("只把选中的站点 Cookie 导入内置浏览器；不会导入密码或 Passkey。")}
+          query={query}
+        >
+          <button className="settings-button" onClick={() => setChromeOpen(true)}>
+            {t("从 Chrome 导入…")}
+          </button>
         </Row>
       </Block>
     </>
@@ -1630,6 +1641,7 @@ export function SettingsPage(): ReactNode {
           )}
         </div>
       </main>
+      <ChromeImportDialog open={chromeOpen} onClose={() => setChromeOpen(false)} />
     </div>
   )
 }

@@ -262,6 +262,55 @@ async function caseWorkPanel() {
   await app.close()
 }
 
+async function caseChromeImport() {
+  const dirs = freshDirs('chrome-import')
+  const chromeRoot = join(dirs.base, 'chrome')
+  const profile = join(chromeRoot, 'Default')
+  mkdirSync(profile, { recursive: true })
+  writeFileSync(
+    join(chromeRoot, 'Local State'),
+    JSON.stringify({ profile: { info_cache: { Default: { name: 'Mock Chrome', user_name: 'tester@example.test' } } } })
+  )
+  const db = join(profile, 'Cookies')
+  execFileSync('sqlite3', [
+    db,
+    `CREATE TABLE cookies (
+      host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB,
+      path TEXT, expires_utc INTEGER, is_secure INTEGER, is_httponly INTEGER, samesite INTEGER
+    );
+    INSERT INTO cookies VALUES
+      ('example.test', 'session', 'plain-value', X'', '/', 0, 0, 0, -1),
+      ('.example.test', 'shared', 'shared-value', X'', '/', 0, 0, 0, -1);`
+  ])
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+  )
+  const { app, page } = await launch(dirs, 'default', {
+    PI_CHROME_ROOT: chromeRoot,
+    PI_CHROME_RUNNING: '0'
+  })
+  const profiles = await page.evaluate(() => window.pi.chromeProfiles())
+  check('Chrome profile 被检测到', profiles.profiles.some((item) => item.id === 'Default'), JSON.stringify(profiles))
+  const preview = await page.evaluate(() => window.pi.chromePreview('Default'))
+  check('Chrome 站点预览只返回域名和数量', preview.domains.some((item) => item.domain === 'example.test' && item.count === 2), JSON.stringify(preview))
+  const result = await page.evaluate(() => window.pi.chromeImport('Default', ['example.test']))
+  check('Chrome Cookie 导入成功', result.ok && result.imported === 2, JSON.stringify(result))
+  const blocked = await page.evaluate(() => window.pi.chromeImport('Default', ['javascript:alert(1)']))
+  check('Chrome 导入拒绝非域名输入', !blocked.ok && blocked.error.length > 0, JSON.stringify(blocked))
+
+  await page.keyboard.press('Meta+,')
+  await page.waitForSelector('.settings-page')
+  await page.getByRole('button', { name: '从 Chrome 导入…' }).click()
+  await page.waitForSelector('.chrome-domain-row')
+  check('设置里能打开 Chrome 导入弹窗', (await page.locator('.chrome-domain-row').count()) === 1)
+  await page.locator('.chrome-domain-row input').first().check()
+  await page.getByRole('button', { name: '导入所选站点' }).click()
+  await page.waitForSelector('.chrome-import-result')
+  check('导入弹窗显示导入结果', (await page.locator('.chrome-import-result').textContent()).includes('2'))
+  await app.close()
+}
+
 async function caseBrowser() {
   const server = createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
@@ -1968,6 +2017,7 @@ const CASES = [
   { tags: ['menu', 'keyboard'], label: 'model menu: scroll + keyboard', run: caseMenuScrollAndKeyboard },
   { tags: ['panel'], label: 'work panel', run: caseWorkPanel },
   { tags: ['browser'], label: 'in-app browser', run: caseBrowser },
+  { tags: ['chrome-import', 'browser'], label: 'Chrome cookie import', run: caseChromeImport },
   { tags: ['polish', 'files', 'export'], label: 'polish: files / export / lightbox', run: casePolish },
   { tags: ['virtual', 'scroll'], label: 'virtualization', run: caseVirtualization },
   { tags: ['fold', 'turns'], label: 'turns / folding', run: caseTurnsFold },

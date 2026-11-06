@@ -224,6 +224,26 @@ export interface BrowserState {
   download?: BrowserDownload
 }
 
+export interface ChromeProfile {
+  id: string
+  name: string
+  account?: string
+}
+
+export interface ChromeDomain {
+  domain: string
+  count: number
+}
+
+export interface ChromeImportResult {
+  ok: boolean
+  imported: number
+  skipped: number
+  failed: number
+  errors: { domain: string; reason: string }[]
+  error?: string
+}
+
 export interface Settings {
   piPath?: string
   language?: 'zh-CN' | 'en'

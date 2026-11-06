@@ -445,7 +445,7 @@ export function SettingsPage(): ReactNode {
   const [usageTab, setUsageTab] = useState<'plan' | 'model' | 'project' | 'session'>('plan')
   const [usageMetric, setUsageMetric] = useState<'cost' | 'tokens'>('tokens')
   const [usageChart, setUsageChart] = useState<'trend' | 'bars'>('trend')
-  const [usageHover, setUsageHover] = useState<{ index: number; x: number; y: number } | null>(null)
+  const [usageHover, setUsageHover] = useState<{ index: number; x: number; cursorX: number; cursorY: number } | null>(null)
   const usageChartId = useId().replace(/:/g, '')
   const [usageNonce, setUsageNonce] = useState(0)
   const [chromeOpen, setChromeOpen] = useState(false)
@@ -1523,11 +1523,11 @@ export function SettingsPage(): ReactNode {
                         />
                       ))
                     )}
-                    {usageHover && trendPoints[usageHover.index] && (
+                    {usageHover && (
                       <line
-                        x1={trendPoints[usageHover.index].x}
+                        x1={usageHover.x}
                         y1={chartTop}
-                        x2={trendPoints[usageHover.index].x}
+                        x2={usageHover.x}
                         y2={chartBottom}
                         className="usage-trend-guide"
                       />
@@ -1556,7 +1556,14 @@ export function SettingsPage(): ReactNode {
                       const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)))
                       const index = trendDays.length <= 1 ? 0 : Math.round(ratio * (trendDays.length - 1))
                       const point = trendPoints[index]
-                      if (point) setUsageHover({ index, ...point })
+                      if (point) {
+                        setUsageHover({
+                          index,
+                          x: ratio * chartWidth,
+                          cursorX: event.clientX - rect.left,
+                          cursorY: event.clientY - rect.top
+                        })
+                      }
                     }}
                     onMouseLeave={() => setUsageHover(null)}
                   />
@@ -1564,18 +1571,13 @@ export function SettingsPage(): ReactNode {
                     <div
                       className="usage-trend-tooltip"
                       style={{
-                        left: `calc(18px + (100% - 36px) * ${usageHover.x / chartWidth})`,
-                        top: `calc(18px + 178px * ${usageHover.y / chartHeight})`
+                        left: `calc(18px + ${usageHover.cursorX}px)`,
+                        top: `calc(18px + ${usageHover.cursorY}px)`
                       }}
                     >
                       <strong>{trendDays[usageHover.index]?.date}</strong>
                       <span>{formatTokens(trendDays[usageHover.index]?.total)} tokens</span>
-                      <span>
-                        {t('输入')} {formatTokens(trendDays[usageHover.index]?.input)} · {t('输出')} {formatTokens(trendDays[usageHover.index]?.output)}
-                      </span>
-                      <span>{t('缓存读取')} {formatTokens(trendDays[usageHover.index]?.cacheRead)}</span>
                       <span>{trendDays[usageHover.index]?.requests ?? 0} {t('次调用')}</span>
-                      <span>{formatCost(trendDays[usageHover.index]?.cost)}</span>
                     </div>
                   )}
                   <div className="usage-trend-axis" style={{ gridTemplateColumns: `repeat(${trendDays.length}, minmax(0, 1fr))` }}>

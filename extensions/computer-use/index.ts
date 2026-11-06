@@ -38,6 +38,17 @@ interface Candidate extends UiElement {
   actions: string[]
 }
 
+interface BrowserCandidate {
+  id: string
+  role: string
+  tag: string
+  name: string
+  type: string
+  value: string
+  secure: boolean
+  bounds: { x: number; y: number; width: number; height: number }
+}
+
 interface Snapshot {
   app: string
   bundleId: string | null
@@ -150,6 +161,124 @@ function compileCandidates(snapshot: Snapshot): Candidate[] {
     })
   }
   return candidates
+}
+
+async function chromeJS<T>(code: string): Promise<T> {
+  const escaped = code.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
+  const script = `tell application "Google Chrome"
+tell active tab of front window
+execute javascript "${escaped}"
+end tell
+end tell`
+  try {
+    const { stdout } = await execFileAsync('osascript', ['-e', script], { timeout: 20_000 })
+    const text = stdout.trim()
+    if (!text) throw new Error('Chrome returned an empty result.')
+    return JSON.parse(text) as T
+  } catch (error) {
+    const value = error as { stderr?: string; message?: string }
+    const message = value.stderr?.trim() || value.message || String(error)
+    if (message.includes('通过 AppleScript 执行 JavaScript 的功能已关闭')) {
+      throw new Error('Chrome JavaScript from Apple Events is disabled. Enable View → Developer → Allow JavaScript from Apple Events in Chrome, then retry.')
+    }
+    throw new Error(message)
+  }
+}
+
+const browserObserveCode = `(() => {
+  const selector = 'a,button,input,textarea,select,[role="button"],[role="link"],[contenteditable="true"]'
+  const nodes = [...document.querySelectorAll(selector)]
+  const candidates = []
+  for (const el of nodes) {
+    if (!(el instanceof HTMLElement)) continue
+    const rect = el.getBoundingClientRect()
+    if (rect.width < 2 || rect.height < 2) continue
+    const style = getComputedStyle(el)
+    if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue
+    const type = (el.getAttribute('type') || '').toLowerCase()
+    const secure = type === 'password' || el.getAttribute('autocomplete') === 'current-password'
+    const name = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.innerText || el.value || el.getAttribute('name') || el.getAttribute('title') || '').replace(/\\s+/g, ' ').trim().slice(0, 160)
+    const id = 'b' + (candidates.length + 1)
+    el.setAttribute('data-pi-cua-id', id)
+    candidates.push({
+      id,
+      role: el.getAttribute('role') || el.tagName.toLowerCase(),
+      tag: el.tagName.toLowerCase(),
+      name,
+      type,
+      value: secure ? '' : String(el.value ?? '').slice(0, 160),
+      secure,
+      bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+    })
+    if (candidates.length >= 120) break
+  }
+  return JSON.stringify(candidates)
+})()`
+
+async function browserObserve(): Promise<BrowserCandidate[]> {
+  const candidates = await chromeJS<BrowserCandidate[]>(browserObserveCode)
+  return Array.isArray(candidates) ? candidates : []
+}
+
+async function browserAction(action: Record<string, unknown>): Promise<string> {
+  const candidateId = String(action.candidateId ?? '')
+  if (!/^b\d+$/.test(candidateId)) throw new Error('candidateId must be a browser candidate such as b1')
+  const type = String(action.type ?? '')
+  const selector = `[data-pi-cua-id="${candidateId}"]`
+  if (type === 'click') {
+    const code = `(() => {
+      const el = document.querySelector('${selector}')
+      if (!el) return JSON.stringify({ ok: false, error: 'candidate not found' })
+      el.scrollIntoView({ block: 'center', inline: 'center' })
+      if (typeof el.click === 'function') el.click()
+      else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
+      return JSON.stringify({ ok: true, title: document.title, url: location.href })
+    })()`
+    const result = await chromeJS<{ ok: boolean; error?: string; title?: string; url?: string }>(code)
+    if (!result.ok) throw new Error(result.error || 'Browser click failed')
+    return `browser click ${candidateId} (${result.title ?? ''})`
+  }
+  if (type === 'type') {
+    const text = String(action.text ?? '')
+    if (!text) throw new Error('type requires text')
+    const code = `(() => {
+      const el = document.querySelector('${selector}')
+      if (!el) return JSON.stringify({ ok: false, error: 'candidate not found' })
+      if (el instanceof HTMLInputElement && el.type === 'password') return JSON.stringify({ ok: false, error: 'secure field' })
+      el.focus()
+      if (el.isContentEditable) {
+        el.textContent = ${JSON.stringify(text)}
+      } else {
+        const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+        if (setter) setter.call(el, ${JSON.stringify(text)})
+        else el.value = ${JSON.stringify(text)}
+      }
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+      return JSON.stringify({ ok: true, value: el.isContentEditable ? el.textContent : el.value })
+    })()`
+    const result = await chromeJS<{ ok: boolean; error?: string; value?: string }>(code)
+    if (!result.ok) throw new Error(result.error || 'Browser type failed')
+    return `browser type ${candidateId} (${String(result.value ?? '').length} characters)`
+  }
+  if (type === 'press') {
+    const key = String(action.key ?? 'Enter')
+    const code = `(() => {
+      const el = document.querySelector('${selector}')
+      if (!el) return JSON.stringify({ ok: false, error: 'candidate not found' })
+      el.focus()
+      const key = ${JSON.stringify(key)}
+      el.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true }))
+      el.dispatchEvent(new KeyboardEvent('keyup', { key, code: key, bubbles: true }))
+      if (key === 'Enter' && el.form) el.form.requestSubmit()
+      return JSON.stringify({ ok: true })
+    })()`
+    const result = await chromeJS<{ ok: boolean; error?: string }>(code)
+    if (!result.ok) throw new Error(result.error || 'Browser press failed')
+    return `browser press ${key} on ${candidateId}`
+  }
+  throw new Error(`Unknown browser action: ${type}`)
 }
 
 function describeSnapshot(snapshot: Snapshot, id: string): string {
@@ -515,6 +644,65 @@ export default function computerUse(pi: ExtensionAPI): void {
           text: `${completed.join('\n')}${after ? `\nVerification: ${verification?.diff?.status ?? 'unverified'} (${verification?.diff?.changedElements ?? 0} changed elements)` : ''}`
         }],
         details: { completed, after, verification: verification?.diff ?? null }
+      }
+    }
+  })
+
+  pi.registerTool({
+    name: 'computer_use_browser_observe',
+    label: 'Computer Use: Browser Observe',
+    description:
+      'Read interactive DOM elements from the active Google Chrome tab. Use this for web pages instead of desktop Accessibility.',
+    promptSnippet: 'Observe the active Chrome page as DOM candidates.',
+    promptGuidelines: [
+      'Use browser observe for web pages; use desktop observe for native apps.',
+      'Browser candidate IDs are b1, b2, ... and apply only to the current page state.'
+    ],
+    parameters: Type.Object({}),
+    async execute() {
+      const candidates = await browserObserve()
+      const lines = candidates.map((candidate) => {
+        const label = candidate.name ? ` “${candidate.name.slice(0, 120)}”` : ''
+        const secure = candidate.secure ? ' [secure]' : ''
+        const value = candidate.value ? ` value=${JSON.stringify(candidate.value)}` : ''
+        return `${candidate.id} ${candidate.role}${candidate.type ? `[${candidate.type}]` : ''}${label}${secure}${value} @ ${Math.round(candidate.bounds.x)},${Math.round(candidate.bounds.y)} ${Math.round(candidate.bounds.width)}×${Math.round(candidate.bounds.height)}`
+      })
+      return {
+        content: [{ type: 'text', text: `Browser candidates: ${candidates.length}\n${lines.join('\n') || '(no interactive DOM elements)'}` }],
+        details: { candidates: candidates.length }
+      }
+    }
+  })
+
+  pi.registerTool({
+    name: 'computer_use_browser_act',
+    label: 'Computer Use: Browser Act',
+    description: 'Click, type into, or press a key on a computer_use_browser_observe candidate in the active Chrome tab.',
+    promptSnippet: 'Act on a DOM candidate in the active Chrome page.',
+    promptGuidelines: [
+      'Use only a candidateId from the latest computer_use_browser_observe result.',
+      'Do not type into password fields or submit payment/security forms without explicit user approval.'
+    ],
+    parameters: Type.Object({
+      candidateId: Type.String(),
+      type: Type.Union([Type.Literal('click'), Type.Literal('type'), Type.Literal('press')]),
+      text: Type.Optional(Type.String()),
+      key: Type.Optional(Type.String())
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (approvalMode !== 'never') {
+        const ok = await ctx.ui.confirm('Computer Use: Browser', `Run ${params.type} on ${params.candidateId}?`)
+        if (!ok) {
+          await audit({ type: 'browser', action: params.type, target: params.candidateId, ok: false, cancelled: true })
+          return { content: [{ type: 'text', text: 'Browser action cancelled by user.' }], details: { cancelled: true } }
+        }
+      }
+      const text = await browserAction(params as Record<string, unknown>)
+      await audit({ type: 'browser', action: params.type, target: params.candidateId, ok: true })
+      const state = await chromeJS<{ title?: string; url?: string }>('JSON.stringify({ title: document.title, url: location.href })').catch(() => ({}))
+      return {
+        content: [{ type: 'text', text: `${text}\nPage: ${state.title ?? ''} ${state.url ?? ''}` }],
+        details: { action: text, page: state }
       }
     }
   })

@@ -77,6 +77,103 @@ const snapshots = new Map<string, SnapshotState>()
 const auditDir = join(homedir(), '.pi', 'computer-use')
 const auditFile = join(auditDir, 'audit.jsonl')
 const approvalMode = process.env.PI_COMPUTER_USE_APPROVAL ?? 'always'
+const cdpProfileDir = join(homedir(), '.pi', 'computer-use', 'chrome-cdp-profile')
+let cdpContext: any = null
+let cdpPage: any = null
+
+async function ensureCdpPage(url?: string): Promise<any> {
+  if (cdpPage && !cdpPage.isClosed()) {
+    if (url) await cdpPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    return cdpPage
+  }
+  await mkdir(cdpProfileDir, { recursive: true })
+  const { chromium } = await import('playwright')
+  cdpContext = await chromium.launchPersistentContext(cdpProfileDir, {
+    executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    headless: process.env.PI_BROWSER_HEADLESS === '1',
+    args: ['--no-first-run', '--no-default-browser-check']
+  })
+  cdpPage = cdpContext.pages().find((page: any) => page.url() !== 'about:blank') ?? await cdpContext.newPage()
+  if (url) await cdpPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+  return cdpPage
+}
+
+async function cdpEval<T>(code: string): Promise<T> {
+  const page = await ensureCdpPage()
+  return await page.evaluate(code) as T
+}
+
+async function closeCdp(): Promise<void> {
+  if (cdpContext) {
+    await cdpContext.close().catch(() => undefined)
+    cdpContext = null
+    cdpPage = null
+  }
+}
+
+const cdpObserveCode = `(() => {
+  const selector = 'a,button,input,textarea,select,[role="button"],[role="link"],[contenteditable="true"]'
+  const out = []
+  for (const el of document.querySelectorAll(selector)) {
+    if (!(el instanceof HTMLElement)) continue
+    const r = el.getBoundingClientRect()
+    if (r.width < 2 || r.height < 2) continue
+    const s = getComputedStyle(el)
+    if (s.visibility === 'hidden' || s.display === 'none' || s.opacity === '0') continue
+    const type = (el.getAttribute('type') || '').toLowerCase()
+    const secure = type === 'password' || el.getAttribute('autocomplete') === 'current-password'
+    const name = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.innerText || el.value || el.getAttribute('name') || '').replace(/\s+/g, ' ').trim().slice(0, 160)
+    const id = 'c' + (out.length + 1)
+    el.setAttribute('data-pi-cdp-id', id)
+    out.push({ id, role: el.getAttribute('role') || el.tagName.toLowerCase(), name, type, value: secure ? '' : String(el.value ?? '').slice(0, 160), secure, bounds: { x: r.x, y: r.y, width: r.width, height: r.height } })
+    if (out.length >= 120) break
+  }
+  return out
+})()`
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+async function cdpObserve(url?: string): Promise<Array<Record<string, unknown>>> {
+  const result = await withTimeout((async () => {
+    if (url) await ensureCdpPage(url)
+    return await cdpEval<Array<Record<string, unknown>>>(cdpObserveCode)
+  })(), 45_000, 'CDP Chrome did not respond within 45 seconds.')
+  return Array.isArray(result) ? result : []
+}
+
+async function cdpAction(action: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const page = await ensureCdpPage()
+  const candidateId = String(action.candidateId ?? '')
+  if (!/^c\d+$/.test(candidateId)) throw new Error('candidateId must look like c1')
+  const type = String(action.type ?? '')
+  const selector = `[data-pi-cdp-id="${candidateId}"]`
+  const text = String(action.text ?? '')
+  const key = String(action.key ?? 'Enter')
+  let code = ''
+  if (type === 'click') {
+    code = `(() => { const el = document.querySelector('${selector}'); if (!el) throw new Error('candidate not found'); el.scrollIntoView({block:'center'}); el.click(); return { ok: true, title: document.title, url: location.href }; })()`
+  } else if (type === 'type') {
+    if (!text) throw new Error('type requires text')
+    code = `(() => { const el = document.querySelector('${selector}'); if (!el) throw new Error('candidate not found'); if (el instanceof HTMLInputElement && el.type === 'password') throw new Error('secure field'); el.focus(); if (el.isContentEditable) el.textContent = ${JSON.stringify(text)}; else { const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set; if (setter) setter.call(el, ${JSON.stringify(text)}); else el.value = ${JSON.stringify(text)}; } el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return { ok: true, value: el.value }; })()`
+  } else if (type === 'press') {
+    code = `(() => { const el = document.querySelector('${selector}'); if (!el) throw new Error('candidate not found'); el.focus(); const key = ${JSON.stringify(key)}; el.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles:true})); el.dispatchEvent(new KeyboardEvent('keyup', {key, bubbles:true})); if (key === 'Enter' && el.form) el.form.requestSubmit(); return { ok: true }; })()`
+  } else {
+    throw new Error(`Unknown CDP action: ${type}`)
+  }
+  const result = await cdpEval<Record<string, unknown>>(code)
+  const state = await cdpEval<Record<string, unknown>>('({ title: document.title, url: location.href })')
+  return { ...result, page: state }
+}
 
 async function audit(entry: Record<string, unknown>): Promise<void> {
   try {
@@ -749,6 +846,61 @@ export default function computerUse(pi: ExtensionAPI): void {
         content: [{ type: 'text', text: `${text}\nPage: ${state.title ?? ''} ${state.url ?? ''}` }],
         details: { action: text, page: state }
       }
+    }
+  })
+
+  pi.registerTool({
+    name: 'computer_use_cdp_observe',
+    label: 'Computer Use: CDP Observe',
+    description: 'Read DOM candidates from a dedicated Chrome profile over Playwright/CDP.',
+    promptSnippet: 'Observe a page in the dedicated CDP Chrome profile.',
+    promptGuidelines: [
+      'Use CDP observe for isolated browser automation. The profile is separate from everyday Chrome.',
+      'CDP candidate IDs start at c1 and are only valid for the current page state.'
+    ],
+    parameters: Type.Object({
+      url: Type.Optional(Type.String({ description: 'Optional URL to open in the dedicated profile.' }))
+    }),
+    async execute(_toolCallId, params) {
+      const candidates = await cdpObserve(params.url)
+      const lines = candidates.map((candidate) => {
+        const c = candidate as Record<string, any>
+        return `${c.id} ${c.role}${c.type ? `[${c.type}]` : ''}${c.name ? ` “${String(c.name).slice(0, 120)}”` : ''}${c.secure ? ' [secure]' : ''} @ ${Math.round(c.bounds?.x ?? 0)},${Math.round(c.bounds?.y ?? 0)} ${Math.round(c.bounds?.width ?? 0)}×${Math.round(c.bounds?.height ?? 0)}`
+      })
+      return { content: [{ type: 'text', text: `CDP candidates: ${candidates.length}\n${lines.join('\n') || '(none)'}` }], details: { candidates: candidates.length } }
+    }
+  })
+
+  pi.registerTool({
+    name: 'computer_use_cdp_act',
+    label: 'Computer Use: CDP Act',
+    description: 'Click, type, or press on a dedicated CDP Chrome candidate.',
+    promptSnippet: 'Act on a c1/c2 candidate in the CDP Chrome profile.',
+    parameters: Type.Object({
+      candidateId: Type.String(),
+      type: Type.Union([Type.Literal('click'), Type.Literal('type'), Type.Literal('press')]),
+      text: Type.Optional(Type.String()),
+      key: Type.Optional(Type.String())
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (approvalMode !== 'never') {
+        const ok = await ctx.ui.confirm('Computer Use: CDP', `Run ${params.type} on ${params.candidateId}?`)
+        if (!ok) return { content: [{ type: 'text', text: 'CDP action cancelled.' }], details: { cancelled: true } }
+      }
+      const result = await cdpAction(params as Record<string, unknown>)
+      await audit({ type: 'cdp-browser', action: params.type, target: params.candidateId, ok: true })
+      return { content: [{ type: 'text', text: `${params.type} ${params.candidateId} → ${String((result.page as any)?.url ?? '')}` }], details: { result } }
+    }
+  })
+
+  pi.registerTool({
+    name: 'computer_use_cdp_close',
+    label: 'Computer Use: CDP Close',
+    description: 'Close the dedicated CDP Chrome context.',
+    parameters: Type.Object({}),
+    async execute() {
+      await closeCdp()
+      return { content: [{ type: 'text', text: 'CDP browser closed.' }], details: {} }
     }
   })
 

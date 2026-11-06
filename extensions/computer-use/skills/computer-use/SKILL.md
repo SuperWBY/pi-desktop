@@ -5,7 +5,7 @@ description: Safely inspect and operate macOS desktop applications with computer
 
 # Computer Use
 
-Use `computer_use_apps` to find the target application, then `computer_use_observe` before every action. Prefer `elementId` from the latest snapshot over raw coordinates.
+Use `computer_use_apps` to find the target application, then `computer_use_observe` before every action. Prefer `elementId` from the latest snapshot over raw coordinates. Observation is non-activating and returns a window-scoped screenshot plus bounds; use the screenshot for visual context and element IDs for precise actions.
 
 ## Rules
 

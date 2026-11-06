@@ -177,13 +177,22 @@ func findWindowId(pid: pid_t, title: String?, bounds: Rect?) -> Int? {
         if width < 120 || height < 120 { continue }
         guard let id = info[kCGWindowNumber as String] as? Int else { continue }
         let windowTitle = info[kCGWindowName as String] as? String
-        if let title, !title.isEmpty, windowTitle == title {
+        if let title, !title.isEmpty, let windowTitle, !windowTitle.isEmpty,
+           title == windowTitle || title.contains(windowTitle) || windowTitle.contains(title) {
             matches.append((id, width * height))
         }
         fallback.append((id, width * height))
     }
-    return matches.sorted { $0.area > $1.area }.first?.id
-        ?? fallback.sorted { $0.area > $1.area }.first?.id
+    if let title, !title.isEmpty {
+        // Title is the strongest signal. Never fall back to an arbitrary
+        // window when a named AX window does not have a CGWindow counterpart.
+        return matches.sorted { $0.area > $1.area }.first?.id
+    }
+    if let bounds {
+        // The caller has no title, so only accept a same-size window.
+        return fallback.first(where: { abs($0.area - bounds.width * bounds.height) < 5_000 })?.id
+    }
+    return fallback.sorted { $0.area > $1.area }.first?.id
 }
 
 func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
@@ -209,7 +218,8 @@ func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
             windowBounds = axBounds(selectedWindow)
         }
     }
-    let windowId: Int? = nil
+    let windowId = pid != 0 ? findWindowId(pid: pid, title: windowTitle, bounds: windowBounds) : nil
+    let captureMode = windowBounds != nil ? "region" : (windowId != nil ? "window" : "display")
     var elements: [Element] = []
     if pid != 0 && AXIsProcessTrusted() {
         var root = appElement
@@ -218,24 +228,28 @@ func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
             root = raw as! AXUIElement
         }
         var seen = Set<String>()
-        collect(appElement, depth: 0, maxDepth: 8, maxElements: 250, into: &elements, seen: &seen)
+        collect(root, depth: 0, maxDepth: 8, maxElements: 250, into: &elements, seen: &seen)
     }
     if let screenshotPath {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        process.arguments = ["-x", screenshotPath]
+        if let windowBounds {
+            process.arguments = ["-x", "-R\(Int(windowBounds.x)),\(Int(windowBounds.y)),\(Int(windowBounds.width)),\(Int(windowBounds.height))", screenshotPath]
+        } else if let windowId {
+            process.arguments = ["-x", "-l\(windowId)", screenshotPath]
+        } else {
+            process.arguments = ["-x", screenshotPath]
+        }
         try? process.run()
         process.waitUntilExit()
-        if true {
-            let size = screenSize()
-            let resize = Process()
-            resize.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
-            resize.arguments = ["-z", String(Int(size.height)), String(Int(size.width)), screenshotPath]
-            resize.standardOutput = FileHandle.nullDevice
-            resize.standardError = FileHandle.nullDevice
-            try? resize.run()
-            resize.waitUntilExit()
-        }
+        let resizeTarget = windowBounds.map { CGSize(width: $0.width, height: $0.height) } ?? screenSize()
+        let resize = Process()
+        resize.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        resize.arguments = ["-z", String(Int(resizeTarget.height)), String(Int(resizeTarget.width)), screenshotPath]
+        resize.standardOutput = FileHandle.nullDevice
+        resize.standardError = FileHandle.nullDevice
+        try? resize.run()
+        resize.waitUntilExit()
     }
     let size = screenSize()
     return Snapshot(
@@ -244,7 +258,7 @@ func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
         windowTitle: windowTitle,
         windowBounds: windowBounds,
         windowId: windowId,
-        captureMode: windowId == nil ? "display" : "window",
+        captureMode: captureMode,
         screenshot: screenshotPath,
         screenWidth: size.width,
         screenHeight: size.height,
@@ -346,6 +360,43 @@ func argument(_ name: String) -> String? {
     return CommandLine.arguments[index + 1]
 }
 
+func axDebug(_ appName: String?) -> [String: Any] {
+    let app = runningApplication(appName)
+    let pid = app?.processIdentifier ?? 0
+    var result: [String: Any] = [
+        "frontmost": NSWorkspace.shared.frontmostApplication?.localizedName ?? "",
+        "accessibility": AXIsProcessTrusted(),
+        "screenRecording": CGPreflightScreenCaptureAccess(),
+        "target": app?.localizedName ?? appName ?? "frontmost",
+        "pid": Int(pid),
+        "active": app?.isActive ?? false,
+        "hidden": app?.isHidden ?? false
+    ]
+    guard pid != 0 else { return result }
+    let element = AXUIElementCreateApplication(pid)
+    for (name, attribute) in [
+        ("title", kAXTitleAttribute),
+        ("windows", kAXWindowsAttribute),
+        ("focusedWindow", kAXFocusedWindowAttribute),
+        ("mainWindow", kAXMainWindowAttribute),
+        ("children", kAXChildrenAttribute)
+    ] {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+        var item: [String: Any] = ["error": Int(error.rawValue), "type": value.map { Int(CFGetTypeID($0)) } ?? 0]
+        if let array = value as? [AXUIElement] { item["count"] = array.count }
+        result[name] = item
+    }
+    if let raw = axValue(element, kAXFocusedWindowAttribute as CFString),
+       CFGetTypeID(raw) == AXUIElementGetTypeID() {
+        let window = raw as! AXUIElement
+        result["focusedTitle"] = axString(window, kAXTitleAttribute as CFString) ?? ""
+        result["focusedBounds"] = axBounds(window).map { ["x": $0.x, "y": $0.y, "width": $0.width, "height": $0.height] } ?? [:]
+    }
+    result["windowId"] = findWindowId(pid: pid, title: result["focusedTitle"] as? String, bounds: nil).map { $0 } ?? 0
+    return result
+}
+
 let command = CommandLine.arguments.dropFirst().first ?? "check"
 switch command {
 case "check":
@@ -356,10 +407,19 @@ case "check":
     ])
 case "apps":
     emit(["ok": true, "apps": listApps()])
+case "ax-debug":
+    emit(["ok": true, "debug": axDebug(argument("--app"))])
+case "activate":
+    guard let app = argument("--app") else { fail("Missing --app") }
+    activate(app)
+    emit(["ok": true])
 case "observe":
     let app = argument("--app")
     let screenshot = argument("--screenshot")
-    if let app { activate(app) }
+    // Observation must not steal focus: activating an app can switch the
+    // focused AX window to a lazy/empty window. Callers can opt in when
+    // they explicitly want a foreground app.
+    if CommandLine.arguments.contains("--activate"), let app { activate(app) }
     let snapshot = captureContext(app, screenshotPath: screenshot)
     emit(["ok": true, "snapshot": try! JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot))])
 case "click":

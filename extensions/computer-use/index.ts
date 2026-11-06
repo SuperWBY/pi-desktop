@@ -31,6 +31,8 @@ interface Snapshot {
   bundleId: string | null
   windowTitle: string | null
   windowBounds: { x: number; y: number; width: number; height: number } | null
+  windowId: number | null
+  captureMode: 'window' | 'region' | 'display'
   screenshot: string | null
   screenWidth: number
   screenHeight: number
@@ -83,6 +85,7 @@ function describeSnapshot(snapshot: Snapshot, id: string): string {
     `App: ${snapshot.app}${snapshot.bundleId ? ` (${snapshot.bundleId})` : ''}`,
     `Window: ${snapshot.windowTitle ?? '(untitled)'}`,
     `Snapshot: ${id}`,
+    `Capture: ${snapshot.captureMode}${snapshot.windowBounds ? ` @ ${Math.round(snapshot.windowBounds.x)},${Math.round(snapshot.windowBounds.y)} ${Math.round(snapshot.windowBounds.width)}×${Math.round(snapshot.windowBounds.height)}` : ''}`,
     `Screen: ${snapshot.screenWidth}×${snapshot.screenHeight}`,
     `Accessibility: ${snapshot.accessibility ? 'granted' : 'missing'}`,
     `Screen recording: ${snapshot.screenRecording ? 'granted' : 'missing'}`,

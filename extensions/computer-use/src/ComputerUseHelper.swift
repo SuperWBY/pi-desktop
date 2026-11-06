@@ -29,6 +29,8 @@ struct Snapshot: Encodable {
     let bundleId: String?
     let windowTitle: String?
     let windowBounds: Rect?
+    let windowId: Int?
+    let captureMode: String
     let screenshot: String?
     let screenWidth: Double
     let screenHeight: Double
@@ -103,6 +105,7 @@ func isSecure(_ element: AXUIElement) -> Bool {
 func collect(_ element: AXUIElement, depth: Int, maxDepth: Int, maxElements: Int, into elements: inout [Element], seen: inout Set<String>) {
     if elements.count >= maxElements { return }
     let role = roleOf(element)
+    if role.hasPrefix("AXMenu") { return }
     let title = axString(element, kAXTitleAttribute as CFString)
     let description = axString(element, kAXDescriptionAttribute as CFString)
     let interesting =
@@ -160,19 +163,53 @@ func screenSize() -> CGSize {
     return frame.size
 }
 
+func findWindowId(pid: pid_t, title: String?, bounds: Rect?) -> Int? {
+    guard let infos = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else { return nil }
+    var matches: [(id: Int, area: Double)] = []
+    var fallback: [(id: Int, area: Double)] = []
+    for info in infos {
+        guard let ownerPid = info[kCGWindowOwnerPID as String] as? pid_t, ownerPid == pid else { continue }
+        let layer = info[kCGWindowLayer as String] as? Int ?? -1
+        if layer != 0 { continue }
+        let rawBounds = info[kCGWindowBounds as String] as? [String: Any] ?? [:]
+        let width = rawBounds["Width"] as? Double ?? 0
+        let height = rawBounds["Height"] as? Double ?? 0
+        if width < 120 || height < 120 { continue }
+        guard let id = info[kCGWindowNumber as String] as? Int else { continue }
+        let windowTitle = info[kCGWindowName as String] as? String
+        if let title, !title.isEmpty, windowTitle == title {
+            matches.append((id, width * height))
+        }
+        fallback.append((id, width * height))
+    }
+    return matches.sorted { $0.area > $1.area }.first?.id
+        ?? fallback.sorted { $0.area > $1.area }.first?.id
+}
+
 func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
     let app = runningApplication(appName)
     let pid = app?.processIdentifier ?? 0
     let appElement = AXUIElementCreateApplication(pid)
+    AXUIElementSetAttributeValue(appElement, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
     var windowTitle: String?
     var windowBounds: Rect?
     if pid != 0 {
-        let focused = axValue(appElement, kAXFocusedWindowAttribute as CFString) as! AXUIElement?
-        if let focused {
-            windowTitle = axString(focused, kAXTitleAttribute as CFString)
-            windowBounds = axBounds(focused)
+        var selectedWindow: AXUIElement?
+        if let raw = axValue(appElement, kAXFocusedWindowAttribute as CFString),
+           CFGetTypeID(raw) == AXUIElementGetTypeID() {
+            selectedWindow = (raw as! AXUIElement)
+        }
+        if let windows = axValue(appElement, kAXWindowsAttribute as CFString) as? [AXUIElement] {
+            if selectedWindow == nil || axBounds(selectedWindow!) == nil {
+                selectedWindow = windows.first(where: { (axBounds($0)?.width ?? 0) > 100 }) ?? windows.first
+            }
+        }
+        if let selectedWindow {
+            windowTitle = axString(selectedWindow, kAXTitleAttribute as CFString)
+            windowBounds = axBounds(selectedWindow)
         }
     }
+    let windowId: Int? = nil
     var elements: [Element] = []
     if pid != 0 && AXIsProcessTrusted() {
         var root = appElement
@@ -181,7 +218,7 @@ func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
             root = raw as! AXUIElement
         }
         var seen = Set<String>()
-        collect(root, depth: 0, maxDepth: 8, maxElements: 250, into: &elements, seen: &seen)
+        collect(appElement, depth: 0, maxDepth: 8, maxElements: 250, into: &elements, seen: &seen)
     }
     if let screenshotPath {
         let process = Process()
@@ -189,14 +226,16 @@ func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
         process.arguments = ["-x", screenshotPath]
         try? process.run()
         process.waitUntilExit()
-        let size = screenSize()
-        let resize = Process()
-        resize.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
-        resize.arguments = ["-z", String(Int(size.height)), String(Int(size.width)), screenshotPath]
-        resize.standardOutput = FileHandle.nullDevice
-        resize.standardError = FileHandle.nullDevice
-        try? resize.run()
-        resize.waitUntilExit()
+        if true {
+            let size = screenSize()
+            let resize = Process()
+            resize.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+            resize.arguments = ["-z", String(Int(size.height)), String(Int(size.width)), screenshotPath]
+            resize.standardOutput = FileHandle.nullDevice
+            resize.standardError = FileHandle.nullDevice
+            try? resize.run()
+            resize.waitUntilExit()
+        }
     }
     let size = screenSize()
     return Snapshot(
@@ -204,6 +243,8 @@ func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
         bundleId: app?.bundleIdentifier,
         windowTitle: windowTitle,
         windowBounds: windowBounds,
+        windowId: windowId,
+        captureMode: windowId == nil ? "display" : "window",
         screenshot: screenshotPath,
         screenWidth: size.width,
         screenHeight: size.height,

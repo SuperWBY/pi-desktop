@@ -211,6 +211,7 @@ const pairs: Array<[string, string]> = [
   ['保存中…', 'Saving…'], ['保存', 'Save'],
   ['排队中', 'Queued'],
   ['到当前任务结束后发送', 'Sent after the current run'],
+  ['拖动调整排队顺序', 'Drag to reorder the queue'],
   ['引导', 'Guide'],
   ['引导中', 'Guiding'],
   ['把这条消息作为引导，当前工具结束后立即发送', 'Guide the run after the current tool call'],

@@ -838,6 +838,7 @@ interface AppActions {
   ) => Promise<boolean>
   stop: () => Promise<{ steering: string[]; followUp: string[] } | null>
   guideQueued: (index: number) => Promise<boolean>
+  reorderQueue: (from: number, to: number) => Promise<boolean>
   renameSession: (name: string) => Promise<void>
   deleteSession: (path: string) => Promise<void>
   setModel: (model: ModelInfo) => Promise<void>
@@ -1231,6 +1232,58 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       return true
     },
     [notify]
+  )
+
+  const reorderQueue = useCallback(
+    async (from: number, to: number): Promise<boolean> => {
+      const current = stateRef.current
+      if (!current.streaming) return false
+      const queue = [...current.queue.followUp]
+      if (
+        from < 0 ||
+        to < 0 ||
+        from >= queue.length ||
+        to >= queue.length ||
+        from === to
+      ) {
+        return false
+      }
+      const [moved] = queue.splice(from, 1)
+      queue.splice(to, 0, moved)
+      dispatch({
+        type: 'QUEUE_SET',
+        steering: current.queue.steering,
+        followUp: queue
+      })
+
+      // pi has no reorder command, so take the queue back and re-add it in the
+      // new order. Steering items are restored first, then follow-ups.
+      const cleared = await safeCommand<{ steering?: string[]; followUp?: string[] }>(
+        { type: 'clear_queue' },
+        15_000
+      )
+      if (!cleared?.success) {
+        dispatch({
+          type: 'QUEUE_SET',
+          steering: current.queue.steering,
+          followUp: current.queue.followUp
+        })
+        return false
+      }
+      const pendingSteering = normalizeQueue(cleared.data?.steering)
+      const pendingFollowUp = normalizeQueue(cleared.data?.followUp)
+      const available = new Set(pendingFollowUp)
+      const ordered = queue.filter((message) => available.has(message))
+      for (const message of pendingSteering) {
+        await safeCommand({ type: 'steer', message }, 120_000)
+      }
+      for (const message of ordered) {
+        await safeCommand({ type: 'follow_up', message }, 120_000)
+      }
+      dispatch({ type: 'QUEUE_SET', steering: pendingSteering, followUp: ordered })
+      return true
+    },
+    []
   )
 
   const stop = useCallback(async (): Promise<{ steering: string[]; followUp: string[] } | null> => {
@@ -1692,6 +1745,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       sendMessage,
       stop,
       guideQueued,
+      reorderQueue,
       renameSession,
       deleteSession,
       setModel,
@@ -1739,6 +1793,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       sendMessage,
       stop,
       guideQueued,
+      reorderQueue,
       renameSession,
       deleteSession,
       setModel,

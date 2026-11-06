@@ -18,6 +18,7 @@ import {
   Brain,
   Check,
   ChevronDown,
+  GripVertical,
   Image as ImageIcon,
   Plus,
   Square,
@@ -241,6 +242,8 @@ export function Composer(): ReactNode {
   const skipDraftWrite = useRef(false)
   const [sending, setSending] = useState(false)
   const [stopping, setStopping] = useState(false)
+  const [dragQueueIndex, setDragQueueIndex] = useState<number | null>(null)
+  const [dragOverQueue, setDragOverQueue] = useState<number | null>(null)
   const [dragging, setDragging] = useState(false)
   const [commandIndex, setCommandIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -519,7 +522,52 @@ export function Composer(): ReactNode {
               </div>
             ))}
             {state.queue.followUp.map((item, index) => (
-              <div className="queue-item" key={`follow-${index}`}>
+              <div
+                className={clsx(
+                  'queue-item',
+                  dragQueueIndex === index && 'is-dragging',
+                  dragOverQueue === index && dragQueueIndex !== index && 'is-drag-over'
+                )}
+                key={`follow-${index}`}
+                onDragOver={(event) => {
+                  if (!state.streaming || dragQueueIndex === null) return
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = 'move'
+                  setDragOverQueue(index)
+                }}
+                onDragLeave={() => {
+                  if (dragOverQueue === index) setDragOverQueue(null)
+                }}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  const from =
+                    dragQueueIndex ?? Number(event.dataTransfer.getData('text/plain'))
+                  setDragQueueIndex(null)
+                  setDragOverQueue(null)
+                  if (Number.isInteger(from) && from !== index) {
+                    void actions.reorderQueue(from, index)
+                  }
+                }}
+              >
+                <span
+                  className="queue-drag"
+                  draggable={state.streaming}
+                  role="button"
+                  tabIndex={-1}
+                  aria-label={t('拖动调整排队顺序')}
+                  title={t('拖动调整排队顺序')}
+                  onDragStart={(event) => {
+                    setDragQueueIndex(index)
+                    event.dataTransfer.effectAllowed = 'move'
+                    event.dataTransfer.setData('text/plain', String(index))
+                  }}
+                  onDragEnd={() => {
+                    setDragQueueIndex(null)
+                    setDragOverQueue(null)
+                  }}
+                >
+                  <GripVertical size={12} />
+                </span>
                 <span className="queue-index">{index + 1}</span>
                 <p>{item}</p>
                 <button

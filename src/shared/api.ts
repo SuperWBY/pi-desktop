@@ -19,6 +19,8 @@ import type {
   ScheduledTask,
   ScheduledTaskInput,
   SessionNotice,
+  UsageRange,
+  UsageSummary,
   SessionSummary,
   Settings,
   PiSettings,
@@ -81,6 +83,7 @@ export interface PiDesktopApi {
   listSchedules(): Promise<ScheduledTask[]>
   getSchedule(id: string): Promise<{ task: ScheduledTask; runs: ScheduledRun[] } | null>
   getSessionNotices(sessionPath: string): Promise<SessionNotice[]>
+  usageSummary(range: UsageRange): Promise<UsageSummary>
   createSchedule(input: ScheduledTaskInput): Promise<ScheduledTask>
   updateSchedule(id: string, patch: Partial<ScheduledTaskInput>): Promise<ScheduledTask | null>
   deleteSchedule(id: string): Promise<boolean>

@@ -54,6 +54,7 @@ import { listPackages, runPiPackageCommand } from './packages'
 import { scheduler } from './schedules'
 import { listSessionNotices } from './session-notices'
 import { rememberActiveSession } from './active-sessions'
+import { usageSummary } from './usage'
 
 let mainWindow: BrowserWindow | null = null
 let proc: PiProcess | null = null
@@ -431,6 +432,7 @@ function registerIpc(): void {
   )
 
   ipcMain.handle('schedules:list', () => scheduler.list())
+  ipcMain.handle('usage:summary', (_event, range) => usageSummary(range))
   ipcMain.handle('session:notices', (_event, sessionPath: string) => listSessionNotices(sessionPath))
   ipcMain.handle('schedules:get', (_event, id: string) => scheduler.get(id))
   ipcMain.handle('schedules:create', (_event, input) => scheduler.create(input))

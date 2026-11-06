@@ -54,6 +54,7 @@ const api: PiDesktopApi = {
   listSchedules: () => ipcRenderer.invoke('schedules:list'),
   getSchedule: (id) => ipcRenderer.invoke('schedules:get', id),
   getSessionNotices: (sessionPath: string) => ipcRenderer.invoke('session:notices', sessionPath),
+  usageSummary: (range: string) => ipcRenderer.invoke('usage:summary', range),
   createSchedule: (input) => ipcRenderer.invoke('schedules:create', input),
   updateSchedule: (id, patch) => ipcRenderer.invoke('schedules:update', id, patch),
   deleteSchedule: (id) => ipcRenderer.invoke('schedules:delete', id),

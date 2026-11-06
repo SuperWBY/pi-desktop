@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowLeft,
   ArrowUpRight,
+  BarChart3,
   Check,
   ChevronDown,
   FolderSearch,
@@ -26,10 +27,12 @@ import type {
   ModelsConfig,
   PiModelRow,
   PiSettings,
-  ThinkingLevel
+  ThinkingLevel,
+  UsageRange,
+  UsageSummary
 } from '@shared/types'
 import { useApp } from '../store'
-import { shortenPath } from '../lib/format'
+import { formatCost, formatTokens, shortenPath } from '../lib/format'
 import { shortcutKeys } from '../lib/platform'
 import { Popover } from './ui'
 
@@ -191,7 +194,7 @@ function draftToEntry(draft: ProviderDraft, existing?: CustomProviderEntry): Cus
   return entry
 }
 
-type CategoryId = 'general' | 'models' | 'tools' | 'appearance' | 'sessions' | 'shortcuts' | 'about'
+type CategoryId = 'general' | 'models' | 'tools' | 'appearance' | 'sessions' | 'usage' | 'shortcuts' | 'about'
 
 const NAV: {
   group: string
@@ -253,6 +256,12 @@ const NAV: {
   {
     group: '应用',
     items: [
+      {
+        id: 'usage',
+        label: '使用情况与费用',
+        icon: BarChart3,
+        keywords: ['使用', '用量', 'token', '费用', '计费', 'cost', 'usage', '预算', 'billing']
+      },
       {
         id: 'shortcuts',
         label: '键盘快捷键',
@@ -427,7 +436,34 @@ export function SettingsPage(): ReactNode {
   const [editingProvider, setEditingProvider] = useState<string | null>(null)
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT)
   const [saving, setSaving] = useState(false)
+  const [usageRange, setUsageRange] = useState<UsageRange>('month')
+  const [usage, setUsage] = useState<UsageSummary | null>(null)
+  const [usageLoading, setUsageLoading] = useState(false)
+  const [usageError, setUsageError] = useState<string | null>(null)
+  const [usageTab, setUsageTab] = useState<'model' | 'project' | 'session'>('model')
+  const [usageNonce, setUsageNonce] = useState(0)
   const contentRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open || active !== 'usage') return
+    let alive = true
+    setUsageLoading(true)
+    setUsageError(null)
+    void window.pi
+      .usageSummary(usageRange)
+      .then((summary) => {
+        if (alive) setUsage(summary)
+      })
+      .catch((error: unknown) => {
+        if (alive) setUsageError(error instanceof Error ? error.message : String(error))
+      })
+      .finally(() => {
+        if (alive) setUsageLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [active, open, usageRange, usageNonce])
 
   const piSettings: PiSettings = state.piSettings
   const piPath = state.settings.piPath ?? state.boot?.piPath ?? ''
@@ -1282,12 +1318,224 @@ export function SettingsPage(): ReactNode {
     </>
   )
 
+  const renderUsage = (): ReactNode => {
+    const data = usage
+    const rangeOptions: { value: UsageRange; label: string }[] = [
+      { value: 'today', label: t('今天') },
+      { value: '7d', label: t('7 天') },
+      { value: '30d', label: t('30 天') },
+      { value: 'month', label: t('本月') },
+      { value: 'all', label: t('全部') }
+    ]
+    const totals = data?.totals
+    const cacheHit =
+      totals && totals.cacheRead + totals.input > 0
+        ? totals.cacheRead / (totals.cacheRead + totals.input)
+        : 0
+    const maxDayCost = Math.max(0.000001, ...(data?.byDay.map((day) => day.cost) ?? []))
+    const tabRows =
+      usageTab === 'model'
+        ? data?.byModel ?? []
+        : usageTab === 'project'
+          ? data?.byProject ?? []
+          : []
+
+    return (
+      <>
+        <div className="usage-toolbar">
+          <div className="usage-range-tabs" role="tablist" aria-label={t('统计范围')}>
+            {rangeOptions.map((option) => (
+              <button
+                key={option.value}
+                className={clsx('usage-range-tab', usageRange === option.value && 'active')}
+                role="tab"
+                aria-selected={usageRange === option.value}
+                onClick={() => setUsageRange(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <div className="usage-toolbar-actions">
+            <span className="usage-estimate">{t('本机估算')}</span>
+            <button
+              className="settings-button"
+              onClick={() => setUsageNonce((value) => value + 1)}
+              disabled={usageLoading}
+            >
+              <RefreshCw size={12} className={usageLoading ? 'spin' : undefined} />
+              {t('刷新')}
+            </button>
+          </div>
+        </div>
+
+        {usageError && (
+          <div className="usage-error">{usageError}</div>
+        )}
+
+        {!data ? (
+          <div className="usage-loading">
+            {usageLoading ? <><RefreshCw size={14} className="spin" />{t('正在统计本地用量…')}</> : t('没有可用数据')}
+          </div>
+        ) : (
+          <>
+            <div className="usage-kpis">
+              <div className="usage-kpi">
+                <span>{t('总费用')}</span>
+                <strong>{formatCost(totals?.cost)}</strong>
+                <small>{t('按模型单价估算')}</small>
+              </div>
+              <div className="usage-kpi">
+                <span>Tokens</span>
+                <strong>{formatTokens(totals?.total)}</strong>
+                <small>
+                  {t('输入')} {formatTokens(totals?.input)} · {t('输出')} {formatTokens(totals?.output)}
+                </small>
+              </div>
+              <div className="usage-kpi">
+                <span>{t('请求数')}</span>
+                <strong>{totals?.requests ?? 0}</strong>
+                <small>
+                  {t('平均')} {formatCost((totals?.cost ?? 0) / Math.max(1, totals?.requests ?? 0))}
+                </small>
+              </div>
+              <div className="usage-kpi">
+                <span>{t('缓存命中')}</span>
+                <strong>{Math.round(cacheHit * 100)}%</strong>
+                <small>
+                  {t('缓存读取')} {formatTokens(totals?.cacheRead)}
+                </small>
+              </div>
+            </div>
+
+            <section className="usage-section">
+              <div className="usage-section-head">
+                <h3>{t('每日费用')}</h3>
+                <span>{t('按本机时区统计')}</span>
+              </div>
+              {data.totals.requests > 0 && data.byDay.length ? (
+                <div className="usage-chart" role="img" aria-label={t('每日费用图表')}>
+                  {data.byDay.map((day) => {
+                    const height = Math.max(2, Math.round((day.cost / maxDayCost) * 100))
+                    return (
+                      <div className="usage-bar-wrap" key={day.date} title={`${day.date} · ${formatCost(day.cost)} · ${formatTokens(day.total)} tokens`}>
+                        <div className="usage-bar" style={{ height: `${height}%` }} />
+                        <span className="usage-bar-label">{day.date.slice(5)}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="usage-empty">{t('这个范围内还没有用量记录。')}</div>
+              )}
+            </section>
+
+            <section className="usage-section">
+              <div className="usage-section-head">
+                <h3>{t('用量明细')}</h3>
+                <div className="usage-tabs" role="tablist">
+                  {([
+                    ['model', t('按模型')],
+                    ['project', t('按项目')],
+                    ['session', t('按会话')]
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      className={clsx('usage-tab', usageTab === value && 'active')}
+                      onClick={() => setUsageTab(value)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {usageTab === 'session' ? (
+                <div className="usage-table-wrap">
+                  <table className="usage-table">
+                    <thead>
+                      <tr><th>{t('会话')}</th><th>{t('项目')}</th><th>{t('请求')}</th><th>Tokens</th><th>{t('费用')}</th></tr>
+                    </thead>
+                    <tbody>
+                      {data.sessions.map((session) => (
+                        <tr
+                          key={session.path}
+                          className="usage-clickable"
+                          onClick={() => {
+                            close()
+                            void actions.openSession(session.cwd, session.path)
+                          }}
+                        >
+                          <td>{session.name}</td>
+                          <td className="usage-dim">{session.projectName}</td>
+                          <td>{session.requests}</td>
+                          <td>{formatTokens(session.total)}</td>
+                          <td>{formatCost(session.cost)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {!data.sessions.length && <div className="usage-empty">{t('这个范围内还没有用量记录。')}</div>}
+                </div>
+              ) : (
+                <div className="usage-table-wrap">
+                  <table className="usage-table">
+                    <thead>
+                      <tr>
+                        <th>{usageTab === 'model' ? t('模型') : t('项目')}</th>
+                        <th>{t('请求')}</th>
+                        <th>{t('输入')}</th>
+                        <th>{t('输出')}</th>
+                        <th>{t('缓存')}</th>
+                        <th>{t('费用')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tabRows.map((row) => (
+                        <tr key={'model' in row ? `${row.provider}/${row.model}` : row.path}>
+                          <td>
+                            {'model' in row ? (
+                              <>
+                                <span className="usage-model">{row.model}</span>
+                                <span className="usage-dim">{row.provider}</span>
+                              </>
+                            ) : (
+                              <>
+                                <span className="usage-model">{row.name}</span>
+                                <span className="usage-dim">{shortenPath(row.path, state.boot?.home)}</span>
+                              </>
+                            )}
+                          </td>
+                          <td>{row.requests}</td>
+                          <td>{formatTokens(row.input)}</td>
+                          <td>{formatTokens(row.output)}</td>
+                          <td>{formatTokens(row.cacheRead + row.cacheWrite)}</td>
+                          <td>{formatCost(row.cost)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {!tabRows.length && <div className="usage-empty">{t('这个范围内还没有用量记录。')}</div>}
+                </div>
+              )}
+            </section>
+
+            <p className="usage-note">
+              {t('费用来自本地会话记录中的 usage.cost，按模型单价估算；没有 usage 的旧会话只统计 Token。实际账单以服务商后台为准。')}
+            </p>
+          </>
+        )}
+      </>
+    )
+  }
+
   const CONTENT: Record<CategoryId, { title: string; render: () => ReactNode }> = {
     general: { title: '常规', render: renderGeneral },
     models: { title: '模型', render: renderModels },
     tools: { title: '工具与技能', render: renderTools },
     appearance: { title: '外观', render: renderAppearance },
     sessions: { title: '会话', render: renderSessions },
+    usage: { title: '使用情况与费用', render: renderUsage },
     shortcuts: { title: '键盘快捷键', render: renderShortcuts },
     about: { title: '关于', render: renderAbout }
   }

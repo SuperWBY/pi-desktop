@@ -490,6 +490,60 @@ export interface ScheduledRun {
   error?: string
 }
 
+export type UsageRange = 'today' | '7d' | '30d' | 'month' | 'all'
+
+export interface UsageTotals {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  total: number
+  requests: number
+  cost: number
+}
+
+export interface UsageEntry {
+  at: number
+  provider: string
+  model: string
+  usage: Record<string, unknown>
+}
+
+export interface UsageModelRow extends UsageTotals {
+  provider: string
+  model: string
+}
+
+export interface UsageProjectRow extends UsageTotals {
+  path: string
+  name: string
+}
+
+export interface UsageDay extends UsageTotals {
+  date: string
+}
+
+export interface UsageSessionRow extends UsageTotals {
+  path: string
+  name: string
+  cwd: string
+  projectPath: string
+  projectName: string
+  updatedAt: number
+}
+
+export interface UsageSummary {
+  range: UsageRange
+  from: number | null
+  to: number
+  totals: UsageTotals
+  byDay: UsageDay[]
+  byModel: UsageModelRow[]
+  byProject: UsageProjectRow[]
+  sessions: UsageSessionRow[]
+  generatedAt: number
+}
+
 export interface SessionNotice {
   id: string
   sessionPath: string

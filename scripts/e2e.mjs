@@ -1892,14 +1892,14 @@ async function caseScratchChat() {
   )
   const { app, page } = await launch(dirs)
   await page.locator('.new-session').click()
-  await page.waitForFunction(() => document.querySelector('.topbar-path')?.textContent?.includes('临时对话'))
+  await page.waitForFunction(() => document.querySelector('.topbar-path')?.textContent?.includes('新对话'))
   const projectRows = await page.locator('.project-row').count()
-  check('临时对话不进入项目列表', projectRows === 1, String(projectRows))
-  await page.locator('.composer-input').fill('临时对话消息')
+  check('新对话不进入项目列表', projectRows === 1, String(projectRows))
+  await page.locator('.composer-input').fill('新对话消息')
   await page.locator('.composer-input').press('Enter')
   await page.waitForTimeout(2500)
   const recent = await page.locator('.recent-sessions .session-item').count()
-  check('临时对话出现在最近对话', recent >= 1, String(recent))
+  check('新对话出现在最近对话', recent >= 1, String(recent))
   await app.close()
 }
 
@@ -1936,7 +1936,7 @@ async function caseScratchRestoreTrust() {
   mkdirSync(scratch, { recursive: true })
   mkdirSync(join(project, '.pi'), { recursive: true })
   writeFileSync(join(project, '.pi', 'settings.json'), '{}')
-  const last = seedSession(dirs.sessions, 'saved-scratch', '已保存的临时对话', 1, scratch)
+  const last = seedSession(dirs.sessions, 'saved-scratch', '已保存的新对话', 1, scratch)
   const settingsPath = join(dirs.userData, 'settings.json')
   for (const lastWorkspace of [project, undefined]) {
     writeFileSync(settingsPath, JSON.stringify({
@@ -1949,15 +1949,15 @@ async function caseScratchRestoreTrust() {
       const title = await page.locator('.topbar-path').innerText()
       const banner = await page.locator('.project-trust-banner, .project-trust-collapsed').count()
       const restored = await page.evaluate(async () => (await window.pi.command({ type: 'get_state' })).data?.sessionFile)
-      const messagesRestored = await page.locator('.user-message').getByText('已保存的临时对话 question 0', { exact: true }).count() === 1
-      check('临时对话按自身目录恢复，无项目横幅', title === '临时对话' && banner === 0 && restored === last && messagesRestored,
+      const messagesRestored = await page.locator('.user-message').getByText('已保存的新对话 question 0', { exact: true }).count() === 1
+      check('新对话按自身目录恢复，无项目横幅', title === '新对话' && banner === 0 && restored === last && messagesRestored,
         JSON.stringify({ hasLastProject: !!lastWorkspace, title, banner, sameSession: restored === last, messagesRestored }))
       if (lastWorkspace) {
         await page.getByRole('button', { name: '在 project 中新建对话' }).click()
         await page.locator('.project-trust-banner').waitFor()
         await page.locator('.new-session').click()
-        await page.locator('.topbar-path').getByText('临时对话', { exact: true }).waitFor()
-        check('从项目切换到新临时对话时清除项目横幅', !await page.locator('.project-trust-banner, .project-trust-collapsed').count())
+        await page.locator('.topbar-path').getByText('新对话', { exact: true }).waitFor()
+        check('从项目切换到新对话时清除项目横幅', !await page.locator('.project-trust-banner, .project-trust-collapsed').count())
       }
     } finally {
       await app.close()
@@ -2644,9 +2644,9 @@ async function caseStreamingGuard() {
   )
   check('流式输出中模型 / 强度不可切换', disabled.every(Boolean), JSON.stringify(disabled))
   await page.locator('.new-session').click()
-  await page.locator('.topbar-path').getByText('临时对话', { exact: true }).waitFor()
-  check('新建会话先落在临时对话', true)
-  check('临时对话不在输入框里放文件夹芯片', await page.locator('.composer-project-row').count() === 0)
+  await page.locator('.topbar-path').getByText('新对话', { exact: true }).waitFor()
+  check('新建会话先落在新对话', true)
+  check('新对话不在输入框里放文件夹芯片', await page.locator('.composer-project-row').count() === 0)
   const streamingProject = page.locator('.project-tree', { hasText: 'streaming' })
   await streamingProject.hover()
   await streamingProject.getByRole('button', { name: '在 streaming 中新建对话' }).click()
@@ -2744,10 +2744,10 @@ async function caseProjectStability() {
   const { app, page } = await launch(dirs)
   await page.waitForFunction(() => [...document.querySelectorAll('.project-row')].some((row) => row.textContent?.includes('project-stability')))
   await page.locator('.new-session').click()
-  await page.waitForFunction(() => document.querySelector('.topbar-path')?.textContent?.includes('临时对话'))
+  await page.waitForFunction(() => document.querySelector('.topbar-path')?.textContent?.includes('新对话'))
   await page.waitForTimeout(1200)
   check(
-    '切到临时对话后原项目仍在项目列表',
+    '切到新对话后原项目仍在项目列表',
     (await page.locator('.project-row').filter({ hasText: 'project-stability' }).count()) === 1
   )
   check(
@@ -3746,9 +3746,9 @@ const CASES = [
   { tags: ['schedules', 'schedules-phase2'], label: 'cron, timezone, continue session, tools', run: caseScheduleAdvanced },
   { tags: ['schedules', 'schedules-failures'], label: 'consecutive failures pause', run: caseScheduleFailures },
   { tags: ['schedules', 'schedules-event'], label: 'file-change trigger', run: caseScheduleEvent },
-  { tags: ['sidebar', 'scratch'], label: 'temporary chat without project', run: caseScratchChat },
-  { tags: ['scratch-startup'], label: 'temporary chat startup surface', run: caseScratchStartup },
-  { tags: ['scratch-trust'], label: 'temporary chat restoration and project trust', run: caseScratchRestoreTrust },
+  { tags: ['sidebar', 'scratch'], label: 'new chat without project', run: caseScratchChat },
+  { tags: ['scratch-startup'], label: 'new chat startup surface', run: caseScratchStartup },
+  { tags: ['scratch-trust'], label: 'new chat restoration and project trust', run: caseScratchRestoreTrust },
   { tags: ['schedules', 'schedules-slash'], label: '/schedule composer command', run: caseScheduleSlash },
   { tags: ['schedules', 'schedules-bridge'], label: 'chat scheduling bridge CLI', run: caseScheduleBridge },
   { tags: ['schedules', 'schedules-notice'], label: 'one-time completion notice', run: caseScheduleNotice },

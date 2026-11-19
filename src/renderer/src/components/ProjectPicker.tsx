@@ -9,8 +9,8 @@ import { Popover } from './ui'
 /**
  * The project selector for a brand-new conversation. It lives in the empty
  * chat state, not in the sidebar: a new chat starts unbound, and the user can
- * choose a project before sending the first message (or stay in a temporary
- * conversation, which shows up under Recent).
+ * choose a project before sending the first message (or stay in a new chat
+ * without a folder, which shows up under Recent).
  */
 export function ProjectPicker(): ReactNode {
   const t = useTranslation()
@@ -41,7 +41,7 @@ export function ProjectPicker(): ReactNode {
 
   const temporary = state.scratchWorkspace || isTemporaryWorkspace(state.workspace, state.boot?.scratchPath)
   const currentLabel = temporary
-    ? t('临时对话')
+    ? t('新对话')
     : projectName(state.settings.workspaceNames, state.workspace) || t('选择文件夹')
 
   return (
@@ -119,7 +119,7 @@ export function ProjectPicker(): ReactNode {
           >
             <MessageCircle size={15} />
             <span className="project-picker-main">
-              <span className="project-picker-name">{t('临时对话')}</span>
+              <span className="project-picker-name">{t('新对话')}</span>
               <span className="project-picker-path">{t('对话会出现在「最近对话」里')}</span>
             </span>
             {temporary && <Check size={14} className="project-picker-check" />}

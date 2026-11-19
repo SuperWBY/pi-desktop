@@ -16,9 +16,9 @@ export function TopBar(): ReactNode {
 
   const temporary = state.scratchWorkspace || isTemporaryWorkspace(state.workspace, state.boot?.scratchPath)
   const place = temporary
-    ? t('临时对话')
-    : projectName(state.settings.workspaceNames, state.workspace) || t('临时对话')
-  const placeLabel = looksLikeRawPath(place) ? t('临时对话') : place
+    ? t('新对话')
+    : projectName(state.settings.workspaceNames, state.workspace) || t('新对话')
+  const placeLabel = looksLikeRawPath(place) ? t('新对话') : place
   const title = sessionDisplayTitle({
     sessionName: state.sessionName,
     messages: state.messages,

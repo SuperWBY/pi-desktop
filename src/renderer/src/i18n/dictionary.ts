@@ -352,7 +352,8 @@ const pairs: Array<[string, string]> = [
   ['定时任务运行完成', 'Scheduled task finished'],
   ['定时任务运行失败', 'Scheduled task failed'],
   ['查看结果', 'View result'],
-  ['临时对话', 'Temporary chat'],
+  ['新对话', 'New chat'],
+  ['未关联文件夹', 'No folder linked'],
   ['不关联项目，出现在最近对话', 'No project; appears in recent conversations'],
   ['选择文件夹…', 'Choose folder…'],
   ['选择项目', 'Choose project'],
@@ -679,7 +680,8 @@ english.set('在 console.x.ai 的 API keys 页面创建。', 'Create one on the 
 english.set('在 console.mistral.ai 的 API keys 页面创建。', 'Create one on the API keys page at console.mistral.ai.')
 english.set('在 OpenCode 账号的 API keys 页面创建。', 'Create one on the API keys page of your OpenCode account.')
 english.set('到服务商网站的 API keys 页面创建，然后粘贴到这里。', 'Create one on the provider’s API keys page, then paste it here.')
-english.set('临时对话', 'Temporary chat')
+english.set('新对话', 'New chat')
+english.set('未关联文件夹', 'No folder linked')
 english.set('这次对话没有关联文件夹', 'This chat is not tied to a folder')
 english.set('不关联文件夹', 'No folder')
 english.set('只聊天，不选文件夹', 'Just chat, without a folder')

@@ -919,9 +919,16 @@ export function Composer(): ReactNode {
                         ['full', '不受限', '保护：不受限']
                       ] as const).map(([id, name, hint]) => {
                         const active = protection === id
+                        // ask without files:read-only still shows as 只读, but keep the row
+                        // clickable so the user can apply the read-only sandbox.
+                        const applied = id === 'readonly'
+                          ? sessionSecurity?.files === 'read-only'
+                          : id === 'full'
+                            ? sessionSecurity?.permission === 'full'
+                            : sessionSecurity?.permission === 'review' && sessionSecurity?.files !== 'read-only'
                         return (
                           <button key={id} type="button" className={clsx('menu-item', active && 'active')} title={t(hint)}
-                            aria-pressed={active} disabled={streaming || sending || active} onClick={() => {
+                            aria-pressed={active} disabled={streaming || sending || applied} onClick={() => {
                               close()
                               if (id === 'full') setFullAccessTarget(key)
                               else if (id === 'readonly') void changePermission('ask', 'read-only')

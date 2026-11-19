@@ -52,6 +52,7 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
   const [answer, setAnswer] = useState('')
   const entered = useRef(false)
   const providerRef = useRef(choice.id)
+  const keyCheck = useRef(0)
   providerRef.current = choice.id
 
   useEffect(() => {
@@ -65,20 +66,27 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
   const enter = async (provider: string, model: string): Promise<void> => {
     if (entered.current || !model) return
     entered.current = true
-    await actions.updatePiSettings({ defaultProvider: provider, defaultModel: model })
-    await actions.newScratchSession()
+    try {
+      await actions.updatePiSettings({ defaultProvider: provider, defaultModel: model })
+      await actions.newScratchSession()
+    } catch (error) {
+      entered.current = false
+      throw error
+    }
   }
 
   useEffect(() => {
     if (tab !== 'key' || key.trim().length < 12) return
     const secret = key.trim()
     const provider = choice.id
+    const model = choice.model
+    const token = ++keyCheck.current
     setChecking(true)
     setError('')
     setStatus('idle')
     const timer = window.setTimeout(() => {
       void window.pi.validateApiKey(provider, secret).then(async (result) => {
-        if (providerRef.current !== provider) return
+        if (token !== keyCheck.current || providerRef.current !== provider) return
         setChecking(false)
         if (!result.ok) {
           setStatus('bad')
@@ -88,19 +96,25 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
         setStatus('ok')
         try {
           await window.pi.saveApiKey(provider, secret)
-          await enter(provider, choice.model)
+          if (token !== keyCheck.current || providerRef.current !== provider) return
+          await enter(provider, model)
         } catch (reason) {
+          if (token !== keyCheck.current) return
           entered.current = false
           setStatus('bad')
           setError(t(quietError(reason instanceof Error ? reason.message : String(reason))))
         }
       }).catch(() => {
+        if (token !== keyCheck.current) return
         setChecking(false)
         setStatus('bad')
         setError(t('无法连接，请检查网络'))
       })
     }, 400)
-    return () => window.clearTimeout(timer)
+    return () => {
+      window.clearTimeout(timer)
+      keyCheck.current += 1
+    }
   }, [key, choice, tab])
 
   useEffect(() => {
@@ -120,10 +134,14 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
       } else if (kind === 'done') {
         setRunning(false)
         const id = providerRef.current
-        void enter(id, modelFor(id) || 'gpt-4o-mini').catch(() => setAccountError(t('暂时无法登录')))
+        void enter(id, modelFor(id) || 'gpt-4o-mini').catch((reason) => {
+          entered.current = false
+          setAccountError(t(quietError(reason instanceof Error ? reason.message : String(reason))))
+        })
       } else if (kind === 'error') {
         setRunning(false)
         setPrompt(null)
+        entered.current = false
         setAccountError(t(quietError(String(event.message ?? ''))))
       }
     })

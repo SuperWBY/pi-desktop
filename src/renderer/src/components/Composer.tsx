@@ -1022,8 +1022,8 @@ export function Composer(): ReactNode {
               className={clsx('send-button', streaming && 'stop')}
               onClick={() => void (streaming ? stop() : submit())}
               disabled={streaming ? stopping : !canSend}
-              title={streaming ? t('Stop (Esc)') : t('Send (Enter)')}
-              aria-label={streaming ? t('Stop (Esc)') : t('Send (Enter)')}
+              title={streaming ? t('停止') : t('Send (Enter)')}
+              aria-label={streaming ? t('停止') : t('Send (Enter)')}
             >
               {sending || stopping ? <Spinner size={14} /> : streaming ? <Square size={11} fill="currentColor" /> : <ArrowUp size={16} />}
             </button>

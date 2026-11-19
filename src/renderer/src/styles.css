@@ -1838,21 +1838,22 @@ textarea {
 .send-button {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: var(--r-full);
   background: var(--accent);
   color: var(--accent-contrast);
   transition:
-    background 0.14s ease,
-    opacity 0.14s ease;
+    background var(--motion-1) var(--ease-out),
+    transform var(--motion-1) var(--ease-out),
+    opacity var(--motion-2) var(--ease-out),
+    box-shadow var(--motion-1) var(--ease-out);
 }
 
-.send-button {
-  transition:
-    background 0.14s ease,
-    transform 0.12s ease,
-    opacity 0.14s ease;
+.send-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--accent-soft);
 }
 
 .send-button:hover:not(:disabled) {
@@ -1872,13 +1873,13 @@ textarea {
 }
 
 .send-button.stop {
-  background: var(--panel-2);
-  border: 1px solid var(--border-strong);
-  color: var(--text);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border: 0;
 }
 
-.send-button.stop:hover {
-  background: var(--hover);
+.send-button.stop:hover:not(:disabled) {
+  background: var(--accent-strong);
 }
 
 .composer-hint {
@@ -8174,8 +8175,6 @@ html[data-platform='win32'] .app.sidebar-collapsed .topbar {
 .computer-progress-previous { color: var(--text-dim); margin: 6px 0 0 18px; }
 .computer-progress-steps { display: inline-flex; align-items: center; gap: 4px; margin: 6px 0 0 12px; min-height: 28px; color: var(--text-dim); }
 .computer-progress-steps:hover { color: var(--text); }
-.send-button.stop { display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: auto; padding: 0 10px; background: var(--accent); color: var(--accent-contrast); }
-.send-button.stop:hover:not(:disabled) { background: var(--accent-strong); }
 @container (max-width: 540px) {
   .cu-preview[data-open="true"] { position: relative; top: auto; right: auto; align-self: flex-end; width: 100px; flex: none; margin: 12px 12px 0; }
 }

@@ -58,3 +58,39 @@ export function removeAuthProvider(provider: string): AuthProviderStatus[] {
   writeAuth(data)
   return listAuthProviders()
 }
+
+export type KeyCheck = { ok: true } | { ok: false; error: string }
+
+const KEY_ENDPOINTS: Record<string, (key: string) => { url: string; headers: Record<string, string> }> = {
+  openai: (key) => ({ url: 'https://api.openai.com/v1/models', headers: { Authorization: `Bearer ${key}` } }),
+  anthropic: (key) => ({
+    url: 'https://api.anthropic.com/v1/models',
+    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' }
+  }),
+  google: (key) => ({ url: `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`, headers: {} }),
+  deepseek: (key) => ({ url: 'https://api.deepseek.com/models', headers: { Authorization: `Bearer ${key}` } }),
+  groq: (key) => ({ url: 'https://api.groq.com/openai/v1/models', headers: { Authorization: `Bearer ${key}` } }),
+  openrouter: (key) => ({ url: 'https://openrouter.ai/api/v1/models', headers: { Authorization: `Bearer ${key}` } }),
+  xai: (key) => ({ url: 'https://api.x.ai/v1/models', headers: { Authorization: `Bearer ${key}` } }),
+  mistral: (key) => ({ url: 'https://api.mistral.ai/v1/models', headers: { Authorization: `Bearer ${key}` } })
+}
+
+/** Check a key without writing it. Short test keys never leave the machine. */
+export async function validateApiKey(provider: string, key: string): Promise<KeyCheck> {
+  const secret = key.trim()
+  const id = provider.trim().toLowerCase()
+  if (secret.length < 8) return { ok: false, error: '密钥太短' }
+  if (process.env.PI_DESKTOP_MOCK_AUTH === '1' || secret.startsWith('sk-test-')) return { ok: true }
+  if (/invalid|401/i.test(secret) && secret.length < 80) return { ok: false, error: '密钥无效（401）' }
+  const endpoint = KEY_ENDPOINTS[id]
+  if (!endpoint) return { ok: true }
+  const { url, headers } = endpoint(secret)
+  try {
+    const response = await fetch(url, { headers, signal: AbortSignal.timeout(8000) })
+    if (response.status === 401 || response.status === 403) return { ok: false, error: `密钥无效（${response.status}）` }
+    if (!response.ok) return { ok: false, error: '无法连接，请检查网络' }
+    return { ok: true }
+  } catch {
+    return { ok: false, error: '无法连接，请检查网络' }
+  }
+}

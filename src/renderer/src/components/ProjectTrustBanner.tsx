@@ -3,6 +3,7 @@ import { ShieldAlert, ShieldCheck, X } from 'lucide-react'
 import type { ProjectTrustStatus } from '@shared/types'
 import { useTranslation } from '../i18n'
 import { useApp } from '../store'
+import { isTemporaryWorkspace } from '@shared/paths'
 import { projectName, shortenPath } from '../lib/format'
 import { Modal } from './ui'
 
@@ -18,7 +19,7 @@ export function ProjectTrustBanner(): ReactNode {
   const currentSession = useRef({ workspace: state.workspace, sessionPath: state.sessionPath, streaming: state.streaming })
   currentSession.current = { workspace: state.workspace, sessionPath: state.sessionPath, streaming: state.streaming }
 
-  const isTemporary = state.scratchWorkspace || state.workspace === state.boot?.scratchPath
+  const isTemporary = state.scratchWorkspace || isTemporaryWorkspace(state.workspace, state.boot?.scratchPath)
   const workspace = isTemporary ? null : state.workspace
   const cwd = managed ?? workspace
   const status = loaded?.cwd === cwd ? loaded?.status : null
@@ -46,10 +47,14 @@ export function ProjectTrustBanner(): ReactNode {
   }, [refresh])
 
   useEffect(() => {
-    const manage = (event: Event): void => setManaged((event as CustomEvent<string>).detail)
+    const manage = (event: Event): void => {
+      const path = (event as CustomEvent<string>).detail
+      if (isTemporaryWorkspace(path, state.boot?.scratchPath)) return
+      setManaged(path)
+    }
     window.addEventListener('pi:manage-project-trust', manage)
     return () => window.removeEventListener('pi:manage-project-trust', manage)
-  }, [])
+  }, [state.boot?.scratchPath])
 
   const showBanner = Boolean(workspace && workspace === cwd && status?.required && status.decision === null)
   if (!showBanner && !managed) return null

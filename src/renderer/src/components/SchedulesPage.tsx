@@ -385,6 +385,7 @@ export function SchedulesPage(): ReactNode {
     const value = draft.cadence
     if (value) {
       setKind(value.type)
+      if (value.type === 'cron' || value.type === 'event') setAdvancedOpen(true)
       if (value.type === 'cron') setCronExpression(value.expression)
       if (value.type === 'once') setOnceAt(toZonedInput(value.at, DEFAULT_TZ))
       if (value.type === 'hourly') setMinute(value.minute)

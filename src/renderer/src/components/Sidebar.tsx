@@ -674,14 +674,24 @@ export function Sidebar(): ReactNode {
         <button
           className="footer-meta"
           onClick={() => actions.openDiagnostics(true)}
-          title={`${t('pi 运行状态与诊断')}${state.boot?.piVersion ? ` · ${state.boot.piVersion}` : ''}`}
+          title={(() => {
+            const version = state.boot?.piVersion
+            const needsCheck = state.status === 'error' || state.status === 'exited' || Boolean(state.boot && !version)
+            const ready = !needsCheck && (state.status === 'ready' || state.status === 'idle')
+            return ready && version ? `${t('已就绪')} · ${version}` : needsCheck ? t('需要检查') : ready ? t('已就绪') : t('正在准备')
+          })()}
         >
-          <span className={clsx('status-dot', `is-${state.status}`)} />
-          <span>{state.status === 'error' || (state.boot && !state.boot.piVersion)
-            ? t('需要检查')
-            : state.status === 'ready' || state.status === 'idle'
-              ? t('已就绪')
-              : t('正在准备')}</span>
+          {(() => {
+            const version = state.boot?.piVersion
+            const needsCheck = state.status === 'error' || state.status === 'exited' || Boolean(state.boot && !version)
+            const ready = !needsCheck && (state.status === 'ready' || state.status === 'idle')
+            return (
+              <>
+                <span className={clsx('status-dot', needsCheck ? 'is-error' : ready ? 'is-ready' : 'is-starting')} />
+                <span>{needsCheck ? t('需要检查') : ready ? t('已就绪') : t('正在准备')}</span>
+              </>
+            )
+          })()}
         </button>
       </div>
 

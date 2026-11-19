@@ -1,7 +1,7 @@
 import { useTranslation } from '../i18n'
 import { useApp } from '../store'
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
-import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react'
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, Pencil } from 'lucide-react'
 import clsx from 'clsx'
 import type {
   AssistantMessage,
@@ -11,8 +11,8 @@ import type {
   ToolRun,
   UserMessage
 } from '@shared/types'
-import { formatCost, formatDuration, formatTokens, timeOfDay } from '../lib/format'
-import { Markdown, CopyButton } from './Markdown'
+import { formatDuration, timeOfDay } from '../lib/format'
+import { Markdown } from './Markdown'
 import { ToolCard } from './ToolCard'
 import { ToolGroup } from './ToolGroup'
 
@@ -128,6 +128,43 @@ function ThinkingBlock({
   )
 }
 
+function MessageActions({
+  text,
+  time,
+  align
+}: {
+  text: string
+  time?: string
+  align: 'start' | 'end'
+}): ReactNode {
+  const t = useTranslation()
+  const { actions } = useApp()
+  const [copied, setCopied] = useState(false)
+
+  const copy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    } catch {
+      // clipboard unavailable
+    }
+  }
+
+  return (
+    <div className={clsx('message-action-row', align === 'end' && 'is-end')}>
+      {time ? <time>{time}</time> : null}
+      <button type="button" className="message-action" aria-label={t('复制消息')} title={t('复制消息')} onClick={() => void copy()}>
+        {copied ? <Check size={14} /> : <Copy size={14} />}
+      </button>
+      <button type="button" className="message-action" aria-label={t('编辑')} title={t('编辑')} onClick={() => actions.fillComposer(text)}>
+        <Pencil size={14} />
+      </button>
+      {copied ? <span className="message-copied" role="status">{t('已复制')}</span> : null}
+    </div>
+  )
+}
+
 export const UserMessageView = memo(function UserMessageView({
   message,
   optimistic
@@ -149,10 +186,6 @@ export const UserMessageView = memo(function UserMessageView({
 
   return (
     <div className={clsx('message user-message', optimistic && 'optimistic')}>
-      <div className="message-label">
-        <span>{t("你")}</span>
-        <span className="message-time">{optimistic ? t('sending…') : timeOfDay(message.timestamp)}</span>
-      </div>
       <div className="user-card">
         {images.length > 0 && (
           <div className="user-images">
@@ -166,12 +199,8 @@ export const UserMessageView = memo(function UserMessageView({
           </div>
         )}
         {text && <div className="user-text">{text}</div>}
-        {text && (
-          <div className="user-actions">
-            <CopyButton text={text} />
-          </div>
-        )}
       </div>
+      {text ? <MessageActions text={text} time={optimistic ? t('sending…') : timeOfDay(message.timestamp)} align="end" /> : null}
     </div>
   )
 })
@@ -191,23 +220,15 @@ function AssistantMessageViewImpl({
   message,
   toolRuns,
   results,
-  streaming,
-  hideHeader,
-  isLast = false
+  streaming
 }: AssistantProps): ReactNode {
   const blocks = message.content ?? []
-  const usage = message.usage
-  const tokens = (usage?.totalTokens ?? 0) || (usage?.input ?? 0) + (usage?.output ?? 0)
-  const cost = usage?.cost?.total ?? 0
-  const model = message.responseModel || message.model
   const text = blocks
     .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
     .map((block) => block.text)
     .join('\n\n')
   const hasProse = text.trim().length > 0
   const hasImages = blocks.some((block: ContentBlock) => block.type === 'image')
-  // Tool-only steps carry no identity: the row itself says what happened.
-  const showHeader = !hideHeader && (hasProse || hasImages)
 
   // 「read × 5」这种连续同类调用合成一组，避免一轮刷出十几张卡。
   type Segment =
@@ -255,19 +276,6 @@ function AssistantMessageViewImpl({
 
   return (
     <div className={clsx('message assistant-message', streaming && 'is-streaming', !hasProse && !hasImages && 'is-tool-only')}>
-      {showHeader && (
-        <div className="message-label">
-          <span className="assistant-mark">π</span>
-          <span>{model ? model.split('/').pop() : 'pi'}</span>
-          <span className="message-time">{timeOfDay(message.timestamp)}</span>
-          {text && !streaming && (
-            <span className="message-actions">
-              <CopyButton text={text} />
-            </span>
-          )}
-        </div>
-      )}
-
       <div className="assistant-body">
         {segments.map((segment, segmentIndex) => {
           if (segment.kind === 'group') {
@@ -320,13 +328,8 @@ function AssistantMessageViewImpl({
           </div>
         )}
 
-        {!streaming && isLast && (tokens > 0 || cost > 0) && (
-          <div className="message-meta">
-            {tokens > 0 && <span>{formatTokens(tokens)} tokens</span>}
-            {cost > 0 && <span>{formatCost(cost)}</span>}
-          </div>
-        )}
       </div>
+      {hasProse && !streaming ? <MessageActions text={text} time={timeOfDay(message.timestamp)} align="start" /> : null}
     </div>
   )
 }
@@ -350,7 +353,6 @@ function areMessagePropsEqual(prev: AssistantProps, next: AssistantProps): boole
 /** The visible answer of a folded turn, including images and failures. */
 export const AnswerOnly = memo(function AnswerOnly({
   text,
-  model,
   message,
   streaming = false
 }: {
@@ -365,11 +367,6 @@ export const AnswerOnly = memo(function AnswerOnly({
   if (!text.trim() && !images.length && !message?.errorMessage) return null
   return (
     <div className="message assistant-message folded-answer">
-      <div className="message-label">
-        <span className="assistant-mark">π</span>
-        <span>{model ? model.split('/').pop() : 'pi'}</span>
-        {text && <span className="message-actions"><CopyButton text={text} /></span>}
-      </div>
       <div className="assistant-body">
         {text && <TextBlockView text={text} streaming={streaming} />}
         {images.map((image, index) => (
@@ -379,6 +376,7 @@ export const AnswerOnly = memo(function AnswerOnly({
           <div className="message-error"><AlertTriangle size={14} /><span>{message.errorMessage}</span></div>
         )}
       </div>
+      {text.trim() && !streaming ? <MessageActions text={text} time={message ? timeOfDay(message.timestamp) : undefined} align="start" /> : null}
     </div>
   )
 })

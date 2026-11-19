@@ -46,6 +46,7 @@ export interface PiDesktopApi {
   checkUpdate(): Promise<import('./types').UpdateInfo>
   listAuthProviders(): Promise<import('./types').AuthProviderStatus[]>
   saveApiKey(provider: string, key: string): Promise<import('./types').AuthProviderStatus[]>
+  validateApiKey(provider: string, key: string): Promise<{ ok: true } | { ok: false; error: string }>
   removeAuthProvider(provider: string): Promise<import('./types').AuthProviderStatus[]>
   listOAuthProviders(): Promise<{ id: string; name: string; oauth: boolean; apiKey: boolean }[]>
   startOAuth(provider: string): Promise<{ ok: boolean; error?: string }>
@@ -83,7 +84,7 @@ export interface PiDesktopApi {
   openSession(options: { cwd: string; sessionPath?: string | null; scratch?: boolean }): Promise<OpenSessionResult>
   closeSession(): Promise<void>
   sessionSecurity(sessionPath: string | null): Promise<SessionSecurity | null>
-  setSessionPermission(input: { cwd: string; sessionPath: string | null; permission: SessionPermission }): Promise<SessionSecurity>
+  setSessionPermission(input: { cwd: string; sessionPath: string | null; permission: SessionPermission; files?: 'workspace-write' | 'read-only' }): Promise<SessionSecurity>
   command<T = unknown>(command: Record<string, unknown>, timeoutMs?: number): Promise<PiResponse<T>>
   uiResponse(response: Record<string, unknown>): void
   openExternal(url: string): Promise<void>

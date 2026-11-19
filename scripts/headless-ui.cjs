@@ -86,8 +86,13 @@ async function main() {
         onUpdateProgress: noop, onSandboxDomainDenied: noop, onOAuthEvent: noop,
         sandboxStatus: async () => ({ available: false, reason: '测试环境' }),
         sessionSecurity: async () => sessionPermission,
-        setSessionPermission: async ({ permission }) => {
-          sessionPermission = { ...sessionPermission, permission, mode: permission === 'ask' ? 'all' : 'dangerous' }
+        setSessionPermission: async ({ permission, files }) => {
+          sessionPermission = {
+            permission,
+            mode: permission === 'full' ? 'never' : permission === 'ask' ? 'all' : 'dangerous',
+            sandboxed: false,
+            ...(permission === 'ask' && files === 'read-only' ? { files: 'read-only' } : {})
+          }
           return sessionPermission
         },
         projectTrustStatus: async () => ({ required: true, decision: null, resources: ['/work/alpha/.pi/extensions'] }),
@@ -143,14 +148,13 @@ async function main() {
       throw new Error(`项目列表未加载: ${errors.join('; ') || '无页面异常'}; 内容: ${(await page.locator('body').innerText()).slice(0, 500)}`, { cause: error })
     })
     await page.waitForSelector('.turn')
-    await page.getByRole('button', { name: '这一次对话' }).click()
-    if (!await page.getByText('保护未开启', { exact: true }).isVisible()) throw Error('权限菜单没有说明当前保护状态')
-    if (!await page.getByText('之后的新对话', { exact: true }).isVisible()) throw Error('权限菜单没有分开新对话的默认方式')
-    await page.getByRole('menuitem', { name: /每次先问我/ }).click()
-    await page.getByRole('button', { name: '这一次对话' }).getByText('每次先问我', { exact: true }).waitFor()
+    await page.getByRole('button', { name: /保护/ }).click()
+    await page.getByRole('menuitem', { name: '只读', exact: true }).click()
+    await page.getByRole('button', { name: /保护：只读/ }).waitFor()
     if ((await page.evaluate(() => JSON.parse(sessionStorage.getItem('mock-settings') || '{}'))).toolApprovalMode === 'all') throw Error('切换当前会话误改了全局默认权限')
-    await page.getByRole('button', { name: '这一次对话' }).click()
-    await page.getByRole('menuitem', { name: /通常直接做/ }).click()
+    await page.getByRole('button', { name: /保护：只读/ }).click()
+    await page.getByRole('menuitem', { name: '标准', exact: true }).click()
+    await page.getByRole('button', { name: /保护：标准/ }).waitFor()
     await page.getByRole('button', { name: '查看并信任' }).click()
     if (!await page.getByText('/work/alpha/.pi/extensions', { exact: true }).isVisible()) throw Error('信任提示没有显示检测到的资源')
     await page.getByRole('button', { name: '取消', exact: true }).click()
@@ -228,10 +232,9 @@ async function main() {
     const liveTurn = page.locator('.turn.is-streaming').last()
     const liveToggle = liveTurn.locator('.turn-summary-main')
     if (await liveToggle.getAttribute('aria-expanded') !== 'true') throw Error('运行中的过程默认应展开')
-    const liveSummary = liveTurn.locator('.turn-summary-text')
-    const firstLiveSummary = await liveSummary.innerText()
+    const firstLiveSummary = await liveToggle.getAttribute('title')
     await page.waitForTimeout(1200)
-    if (await liveSummary.innerText() === firstLiveSummary) throw Error('运行中耗时没有更新')
+    if (await liveToggle.getAttribute('title') === firstLiveSummary) throw Error('运行中耗时没有更新')
     await liveToggle.click()
     if (await liveToggle.getAttribute('aria-expanded') !== 'false') throw Error('运行中不能收起过程')
     await liveToggle.click()
@@ -250,7 +253,7 @@ async function main() {
     if (await liveToggle.getAttribute('aria-expanded') !== 'false') throw Error('新消息覆盖了手动收起')
     await page.locator('.attachment-remove').click()
     await page.locator('.composer-input').fill('请任务结束后再检查')
-    if (!await page.getByRole('button', { name: '排队发送' }).isVisible()) throw Error('运行中没有排队发送按钮')
+    if (!await page.getByRole('button', { name: '停止 (Esc)' }).isVisible()) throw Error('运行中没有停止按钮')
     await page.locator('.composer-input').press('Enter')
     await page.waitForFunction(() => window.sentCommands.some((command) => command.type === 'follow_up' && command.message === '请任务结束后再检查'))
     await page.waitForFunction(() => document.querySelector('.composer-input').value === '')
@@ -263,7 +266,7 @@ async function main() {
     await page.evaluate(() => window.emitRecord({ type: 'message_start', message: { role: 'user', content: '现在调整方向', timestamp: Date.now() } }))
     await page.waitForFunction(() => !Array.from(document.querySelectorAll('.queue-item p')).some((el) => el.textContent === '现在调整方向'))
     await page.locator('.composer-input').fill('再排队一条')
-    if (!await page.getByRole('button', { name: '排队发送' }).isVisible()) throw Error('插话后没有恢复默认排队')
+    if (!await page.getByRole('button', { name: '停止 (Esc)' }).isVisible()) throw Error('插话后没有恢复停止按钮')
     await page.setViewportSize({ width: 860, height: 560 })
     await page.waitForTimeout(350)
     if (await page.locator('.composer-bar').evaluate((el) => el.scrollWidth > el.clientWidth + 1)) throw Error('运行中窄窗口发送控件溢出')

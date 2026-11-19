@@ -35,18 +35,20 @@ function textField(source: unknown, keys: string[]): string {
   return ''
 }
 
-/** Collapsed rows say what happened. The raw command stays in the expanded body. */
+function clipObject(value: string): string {
+  const trimmed = value.replace(/\s+/g, ' ').trim()
+  if (trimmed.length <= 40) return trimmed
+  return `${trimmed.slice(0, 39)}…`
+}
+
+function shortPath(path: string): string {
+  const parts = path.split(/[/\\]/).filter(Boolean)
+  return clipObject(parts.slice(-2).join('/'))
+}
+
+/** The row keeps the thing that actually ran. The full text stays in the expanded body. */
 function describeCommand(command: string): Pick<ToolMeta, 'subtitle' | 'translateSubtitle'> {
-  const trimmed = command.replace(/\s+/g, ' ').trim()
-  const host = hostOf(trimmed)
-  if (host) return { subtitle: host, translateSubtitle: false }
-  if (/\b(env|printenv)\b/.test(trimmed)) return { subtitle: '查看环境信息', translateSubtitle: true }
-  if (/^\s*(ls|dir|pwd)\b/.test(trimmed)) return { subtitle: '查看文件列表', translateSubtitle: true }
-  if (/\b(rg|grep|find|fd)\b/.test(trimmed)) return { subtitle: '搜索文件内容', translateSubtitle: true }
-  const read = trimmed.match(/(?:^|\s)(?:cat|head|tail|less|more)\s+([^\s;|&]+)/)
-  const name = read ? fileNameOf(read[1]) : ''
-  if (name) return { subtitle: name, translateSubtitle: false }
-  return { subtitle: '一条命令', translateSubtitle: true }
+  return { subtitle: clipObject(command), translateSubtitle: false }
 }
 
 export function readRangeLabel(args: Record<string, unknown>): { start: number; end: number | null } | null {
@@ -78,13 +80,13 @@ export function browserActionResultUnknown(name: string, isError: boolean, text:
 export function toolPhrases(name: string): ToolPhrases {
   switch (name) {
     case 'bash':
-      return { running: '正在运行', done: '已运行', failed: '运行失败', group: '运行了 {count} 条命令' }
+      return { running: '运行', done: '运行', failed: '运行失败', group: '运行了 {count} 条命令' }
     case 'read':
-      return { running: '正在读取', done: '已读取', failed: '读取失败', group: '读取了 {count} 个文件' }
+      return { running: '读取', done: '读取', failed: '读取失败', group: '读取了 {count} 个文件' }
     case 'write':
-      return { running: '正在写入', done: '已写入', failed: '写入失败', group: '写入了 {count} 个文件' }
+      return { running: '写入', done: '写入', failed: '写入失败', group: '写入了 {count} 个文件' }
     case 'edit':
-      return { running: '正在编辑', done: '已编辑', failed: '编辑失败', group: '编辑了 {count} 个文件' }
+      return { running: '编辑', done: '编辑', failed: '编辑失败', group: '编辑了 {count} 个文件' }
     case 'computer_use_observe':
       return { running: '正在查看桌面', done: '已查看桌面', failed: '查看桌面失败', group: '查看桌面 {count} 次' }
     case 'computer_use_act':
@@ -181,11 +183,11 @@ export function toolMeta(name: string, args: Record<string, unknown>, details?: 
       return { kind: 'bash', title: 'Bash', ...describeCommand(command) }
     }
     case 'read':
-      return { kind: 'read', title: 'Read', subtitle: fileName || '文件', translateSubtitle: !fileName }
+      return { kind: 'read', title: 'Read', subtitle: path ? shortPath(path) : '文件', translateSubtitle: !path }
     case 'write':
-      return { kind: 'write', title: 'Write', subtitle: fileName || '文件', translateSubtitle: !fileName }
+      return { kind: 'write', title: 'Write', subtitle: path ? shortPath(path) : '文件', translateSubtitle: !path }
     case 'edit':
-      return { kind: 'edit', title: 'Edit', subtitle: fileName || '文件', translateSubtitle: !fileName }
+      return { kind: 'edit', title: 'Edit', subtitle: path ? shortPath(path) : '文件', translateSubtitle: !path }
     case 'computer_use_observe':
       return { kind: 'tool', title: name, subtitle: named || page, translateSubtitle: false }
     case 'computer_use_session_wait':

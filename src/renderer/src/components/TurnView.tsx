@@ -61,14 +61,18 @@ export function TurnSummary({
   const elapsed = stats.startedAt && (turn.streaming || stats.endedAt)
     ? formatDuration(Math.max(0, (turn.streaming ? Date.now() : stats.endedAt!) - stats.startedAt))
     : ''
-  const hasComputerUse = Object.keys(stats.tools).some((name) => name.startsWith('computer_use_'))
-  const parts: string[] = [turn.streaming ? t('执行中') : turn.failed ? t('过程有错误') : t(hasComputerUse ? '执行结束' : '已完成')]
   const toolCount = Object.values(stats.tools).reduce((total, count) => total + count, 0)
-  if (toolCount) parts.push(t('{count} 次操作').replace('{count}', String(toolCount)))
-  if (stats.files.length) parts.push(t('{count} files').replace('{count}', String(stats.files.length)))
-  if (elapsed) parts.push(turn.streaming ? `${t('运行中')} ${elapsed}` : elapsed)
-  if (!turn.streaming && stats.tokens) parts.push(`${formatTokens(stats.tokens)} tokens`)
-  if (!turn.streaming && stats.cost) parts.push(formatCost(stats.cost))
+  const status = turn.streaming ? t('执行中') : turn.failed ? t('过程有错误') : '✓'
+  const parts = [
+    status,
+    toolCount ? t('{count} 步').replace('{count}', String(toolCount)) : '',
+    stats.files.length ? t('改了 {count} 个文件').replace('{count}', String(stats.files.length)) : ''
+  ].filter(Boolean)
+  const detail = [
+    elapsed,
+    !turn.streaming && stats.tokens ? `${formatTokens(stats.tokens)} tokens` : '',
+    !turn.streaming && stats.cost ? formatCost(stats.cost) : ''
+  ].filter(Boolean).join(' · ')
 
   const copy = async (): Promise<void> => {
     try {
@@ -85,11 +89,11 @@ export function TurnSummary({
       <button
         className="turn-summary-main"
         onClick={() => onLevel(level === 0 ? 1 : 0)}
-        title={t('展开/收起过程')}
+        title={detail || t('展开/收起过程')}
         aria-expanded={level === 0}
       >
         {level === 0 ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        <span className="turn-summary-text">{hasComputerUse && !turn.failed ? t(level === 0 ? '收起步骤' : '查看步骤') : parts.join(' · ')}</span>
+        <span className="turn-summary-text">{parts.join(' · ')}</span>
         {stats.errors > 0 && (
           <span className="turn-summary-error">
             <AlertTriangle size={11} /> {stats.errors}
@@ -216,7 +220,8 @@ export function TurnView({
   onRetry,
   toolRuns,
   results,
-  busy
+  busy,
+  fresh
 }: {
   turn: Turn
   level: FoldLevel
@@ -226,6 +231,7 @@ export function TurnView({
   toolRuns: Record<string, ToolRun>
   results: Record<string, ToolResultMessage>
   busy?: boolean
+  fresh?: boolean
 }): ReactNode {
   const { state } = useApp()
   const computerLive = turn.streaming && Object.keys(turn.stats.tools).some(name => name.startsWith('computer_use_'))
@@ -255,7 +261,7 @@ export function TurnView({
   })()
 
   return (
-    <div className={clsx('turn', turn.streaming && 'is-streaming')} data-turn-key={turn.key}>
+    <div className={clsx('turn', turn.streaming && 'is-streaming', fresh && 'is-new')} data-turn-key={turn.key}>
       {turn.user ? (
         <UserMessageView message={turn.user as UserMessage} />
       ) : null}

@@ -17,6 +17,7 @@ const api: PiDesktopApi = {
   checkUpdate: () => ipcRenderer.invoke('app:check-update'),
   listAuthProviders: () => ipcRenderer.invoke('auth:list'),
   saveApiKey: (provider: string, key: string) => ipcRenderer.invoke('auth:save-api-key', provider, key),
+  validateApiKey: (provider: string, key: string) => ipcRenderer.invoke('auth:validate-api-key', provider, key),
   removeAuthProvider: (provider: string) => ipcRenderer.invoke('auth:remove', provider),
   listOAuthProviders: () => ipcRenderer.invoke('auth:oauth-providers'),
   startOAuth: (provider: string) => ipcRenderer.invoke('auth:oauth-start', provider),

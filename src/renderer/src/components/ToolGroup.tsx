@@ -1,6 +1,6 @@
 import { useTranslation } from '../i18n'
 import { useState, type ReactNode } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
 import clsx from 'clsx'
 import type { ToolCallBlock, ToolResultMessage, ToolRun } from '@shared/types'
 import { formatDuration } from '../lib/format'
@@ -66,7 +66,7 @@ export function ToolGroup({
         aria-expanded={open}
       >
         <span className="tool-chevron">
-          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          <ChevronRight size={13} />
         </span>
         <span className="tool-title">{uncertain ? t('操作结果未知，请核对') : label}</span>
         <span className="tool-status">

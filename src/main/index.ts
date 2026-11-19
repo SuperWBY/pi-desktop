@@ -60,7 +60,7 @@ import { augmentedPath, piVersion } from './pi-locate'
 import { resolvePiPath } from './pi-runtime'
 import { projectTrustStatus, setProjectTrust } from './project-trust'
 import { checkForUpdate, downloadUpdate, openReleasePage } from './update'
-import { listAuthProviders, removeAuthProvider, saveApiKey } from './auth-store'
+import { listAuthProviders, removeAuthProvider, saveApiKey, validateApiKey } from './auth-store'
 import { cancelOAuth, listOAuthProviders, respondOAuth, startOAuth } from './pi-auth'
 import { deleteSession, listSessions, restoreSession, searchSessions, sessionExists, sessionsRoot } from './sessions'
 import { listWorkspaceFiles } from './workspace-files'
@@ -304,6 +304,7 @@ function bindSessionPath(process: PiProcess, path: string | null): void {
 }
 
 function wireProcess(process: PiProcess, key: string): void {
+  let heldStderr = ''
   process.on('record', (record: PiRecord) => {
     if (sessionUiRequests.receive(process, record)) return
     if (proc === process) send('pi:record', record)
@@ -327,8 +328,18 @@ function wireProcess(process: PiProcess, key: string): void {
         visible.push(line)
       }
     }
-    if (visible.length && proc === process) send('pi:stderr', `${visible.join('\n')}\n`)
+    if (visible.length) {
+      const text = `${visible.join('\n')}\n`
+      if (proc === process) send('pi:stderr', text)
+      else heldStderr += text
+    }
   })
+  const flushStderr = (): void => {
+    if (!heldStderr || proc !== process) return
+    send('pi:stderr', heldStderr)
+    heldStderr = ''
+  }
+  ;(process as PiProcess & { flushStderr?: () => void }).flushStderr = flushStderr
   process.on('exit', (info: { code: number | null; signal: string | null; intentional?: boolean }) => {
     if (process.sandboxed) appendSandboxAudit({ type: 'exit', code: info.code, signal: info.signal })
     sessionUiRequests.drop(process)
@@ -409,6 +420,7 @@ async function doOpenSession(options: {
   sessionPath?: string | null
   scratch?: boolean
   permission?: SessionPermission
+  files?: 'workspace-write' | 'read-only'
   replace?: PiProcess
   emptySession?: boolean
 }): Promise<OpenSessionResult> {
@@ -462,7 +474,9 @@ async function doOpenSession(options: {
 
   const settings = loadSettings()
   const permission = options.permission ?? (settings.toolApprovalMode === 'all' ? 'ask' : 'review')
-  const needsSandbox = permission !== 'full' && settings.sandboxEnabled === true
+  const readOnly = options.files === 'read-only'
+  const wantsSandbox = permission !== 'full' && (settings.sandboxEnabled === true || readOnly)
+  const sandboxSettings = readOnly ? { ...settings, sandboxMode: 'read-only' as const } : settings
   const piPath = resolvePiPath(settings.piPath)
   const process = new PiProcess()
   const key = targetKey ?? `new:${cwd}:${++sessionCounter}`
@@ -479,15 +493,15 @@ async function doOpenSession(options: {
       '--extension', join(runtime, 'src', 'desktop-access-extension.ts'),
       '--skill', join(runtime, 'desktop-guidance')
     ]
-    const sandbox = needsSandbox ? createSandbox(cwd, settings) : null
-    if (needsSandbox && !sandbox) {
+    const sandbox = wantsSandbox ? createSandbox(cwd, sandboxSettings) : null
+    if (wantsSandbox && !sandbox && settings.sandboxEnabled === true) {
       throw new Error('沙箱已启用，但当前环境没有可用的 sandbox runtime 或 Node.js。请在设置中关闭沙箱后重试。')
     }
     if (sandbox) {
       appendSandboxAudit({
         type: 'start',
         cwd,
-        mode: settings.sandboxMode ?? 'workspace-write',
+        mode: sandboxSettings.sandboxMode ?? 'workspace-write',
         network: settings.sandboxNetwork ?? 'model',
         domains: settings.sandboxAllowedDomains ?? []
       })
@@ -503,7 +517,9 @@ async function doOpenSession(options: {
         permission,
         mode: permission === 'full' ? 'never' : permission === 'ask' ? 'all' : 'dangerous',
         sandboxed: Boolean(sandbox),
-        ...(sandbox ? { files: settings.sandboxMode ?? 'workspace-write', network: settings.sandboxNetwork ?? 'model' } : {})
+        ...(sandbox
+          ? { files: readOnly ? 'read-only' as const : settings.sandboxMode ?? 'workspace-write', network: settings.sandboxNetwork ?? 'model' }
+          : readOnly ? { files: 'read-only' as const } : {})
       },
       extraEnv: { ...jevEnv(), ...proxyEnv(settings) },
       sandbox: sandbox ?? undefined,
@@ -550,6 +566,7 @@ async function doOpenSession(options: {
     processes.set(key, process)
     bindSessionPath(process, sessionFile)
     proc = process
+    ;(process as PiProcess & { flushStderr?: () => void }).flushStderr?.()
     sessionUiRequests.activate(process)
     if (options.replace) stopProcess(options.replace)
     publishPendingSessionRequests()
@@ -563,7 +580,7 @@ async function doOpenSession(options: {
   }
 }
 
-async function setSessionPermission(input: { cwd: string; sessionPath: string | null; permission: SessionPermission }): Promise<SessionSecurity> {
+async function setSessionPermission(input: { cwd: string; sessionPath: string | null; permission: SessionPermission; files?: 'workspace-write' | 'read-only' }): Promise<SessionSecurity> {
   const settings = loadSettings()
   const english = settings.language === 'en'
   const current = proc
@@ -571,10 +588,9 @@ async function setSessionPermission(input: { cwd: string; sessionPath: string | 
     throw new Error(english ? 'The active conversation changed. Try again.' : '当前会话已切换，请重试。')
   }
   if (input.permission !== 'ask' && input.permission !== 'review' && input.permission !== 'full') throw new Error('Invalid permission mode.')
-  if (input.permission === 'full' && settings.allowFullAccess !== true) {
-    throw new Error(english ? 'Enable full access in Settings first.' : '请先在设置中允许使用完全访问。')
-  }
-  if (current.security.permission === input.permission) return current.security
+  const files = input.permission === 'ask' && input.files === 'read-only' ? 'read-only' as const : undefined
+  const sameFiles = input.permission !== 'ask' || (current.security.files === 'read-only') === (files === 'read-only')
+  if (current.security.permission === input.permission && sameFiles) return current.security
 
   const busy = english ? 'Wait for the current operation to finish before switching permissions.' : '请等待当前操作结束后再切换权限。'
   if (current.hasPendingWork || sessionUiRequests.pendingOwners().includes(current)) throw new Error(busy)
@@ -588,7 +604,7 @@ async function setSessionPermission(input: { cwd: string; sessionPath: string | 
     // Pi reserves a path before it writes the first message. Reopen that same
     // path in an empty conversation so the composer keeps its draft owner.
     const opened = await doOpenSession({
-      cwd: current.cwd, sessionPath: actualPath, permission: input.permission,
+      cwd: current.cwd, sessionPath: actualPath, permission: input.permission, files,
       replace: current, emptySession: state.data.messageCount === 0
     })
     if (!opened.ok || !proc) throw new Error(opened.error ?? (english ? 'Could not change permissions.' : '无法切换权限。'))
@@ -695,6 +711,7 @@ function registerIpc(): void {
   ipcMain.handle('app:download-update', () => downloadUpdate((progress) => send('app:update-progress', progress)))
   ipcMain.handle('auth:list', () => listAuthProviders())
   ipcMain.handle('auth:save-api-key', (_event, provider: string, key: string) => saveApiKey(provider, key))
+  ipcMain.handle('auth:validate-api-key', (_event, provider: string, key: string) => validateApiKey(provider, key))
   ipcMain.handle('auth:remove', (_event, provider: string) => removeAuthProvider(provider))
   ipcMain.handle('auth:oauth-providers', () => listOAuthProviders())
   ipcMain.handle('auth:oauth-start', (event, provider: string) => startOAuth(provider, event.sender))

@@ -15,28 +15,40 @@ import {
 } from 'react'
 import {
   ArrowUp,
+  Eye,
   FileText,
-  Brain,
   Check,
   ChevronDown,
   GripVertical,
   Image as ImageIcon,
   Plus,
+  Shield,
   ShieldCheck,
   Square,
+  TriangleAlert,
   X
 } from 'lucide-react'
 import clsx from 'clsx'
 import type { ModelInfo, ScheduleCadence, SessionPermission, SessionSecurity, ThinkingLevel } from '@shared/types'
+import { isTemporaryWorkspace } from '@shared/paths'
 import { useApp, type Attachment } from '../store'
-import { formatCost, formatTokens } from '../lib/format'
+import { formatTokens, projectName } from '../lib/format'
 import { Modal, Popover, Spinner } from './ui'
-import { ProjectPicker } from './ProjectPicker'
 
-const PERMISSIONS: Record<SessionPermission, { label: string; detail: string }> = {
-  ask: { label: '每次先问我', detail: '做任何操作之前都会先问你。' },
-  review: { label: '通常直接做', detail: '一般操作直接进行；发现危险命令时再问你。' },
-  full: { label: '不再询问', detail: '可以修改这台电脑上的文件并联网，不再逐次询问。只在你完全信任这次任务时使用。' }
+type Protection = 'standard' | 'readonly' | 'full'
+
+function protectionOf(security: SessionSecurity | null): Protection | null {
+  if (!security) return null
+  if (security.permission === 'full') return 'full'
+  if (security.permission === 'ask' || security.files === 'read-only') return 'readonly'
+  return 'standard'
+}
+
+function reasoningBars(level: string): number {
+  if (level === 'medium') return 2
+  if (level === 'high') return 3
+  if (level === 'xhigh' || level === 'max') return 4
+  return 1
 }
 
 type Draft = { text: string; attachments: Attachment[] }
@@ -321,6 +333,7 @@ export function Composer(): ReactNode {
   const [sessionSecurity, setSessionSecurity] = useState<SessionSecurity | null>(null)
   const [changingPermission, setChangingPermission] = useState(false)
   const [fullAccessTarget, setFullAccessTarget] = useState<string | null>(null)
+  const [atCap, setAtCap] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const focusedWhileStarting = useRef(false)
@@ -346,13 +359,13 @@ export function Composer(): ReactNode {
     window.dispatchEvent(new CustomEvent('pi:settings-section', { detail: section }))
   }
 
-  const changePermission = async (permission: SessionPermission): Promise<void> => {
+  const changePermission = async (permission: SessionPermission, files?: 'read-only'): Promise<void> => {
     const workspace = state.workspace
     if (!workspace || changingPermission || sending || streaming || state.status !== 'ready') return
     setFullAccessTarget(null)
     setChangingPermission(true)
     try {
-      const security = await window.pi.setSessionPermission({ cwd: workspace, sessionPath: state.sessionPath, permission })
+      const security = await window.pi.setSessionPermission({ cwd: workspace, sessionPath: state.sessionPath, permission, files })
       if (draftRef.current.key === key) setSessionSecurity(security)
     } catch (error) {
       actions.notify('error', t('无法切换权限'), (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': Error: /, ''))
@@ -407,7 +420,9 @@ export function Composer(): ReactNode {
     const node = textareaRef.current
     if (!node) return
     node.style.height = '0px'
-    node.style.height = `${Math.min(node.scrollHeight, 240)}px`
+    const next = Math.min(node.scrollHeight, 240)
+    node.style.height = `${next}px`
+    setAtCap(node.scrollHeight > 240)
   }, [text])
 
   useEffect(() => {
@@ -772,12 +787,12 @@ export function Composer(): ReactNode {
         </div>
       )}
 
-      {state.messages.length === 0 && (
+      {state.messages.length === 0 && state.workspace && !state.scratchWorkspace && !isTemporaryWorkspace(state.workspace, state.boot?.scratchPath) && (
         <div className="composer-project-row">
-          <ProjectPicker />
+          <span className="composer-project-name">{projectName(state.settings.workspaceNames, state.workspace)}</span>
         </div>
       )}
-      <div className="composer">
+      <div className={clsx('composer', atCap && 'at-cap')}>
         {attachments.length > 0 && (
           <div className="attachment-row">
             {(() => { let remaining = 64 * 1024; return attachments.map((attachment) => {
@@ -855,9 +870,7 @@ export function Composer(): ReactNode {
           rows={1}
           spellCheck={false}
           aria-label={t("输入消息")}
-          placeholder={
-            streaming ? (state.settings.language === 'en' ? 'Add a follow-up message…' : '输入后续消息…') : state.messages.length === 0 ? t('例如，帮我比较两个网页的内容…') : t('输入后续消息…')
-          }
+          placeholder={t('问点什么…')}
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => {
             setText(event.target.value)
             updateMention(event.target.value, event.target.selectionStart ?? event.target.value.length)
@@ -886,68 +899,54 @@ export function Composer(): ReactNode {
                 event.target.value = ''
               }}
             />
-            <Popover width={380} trigger={(open, toggle, expanded) => (
-              <button className={clsx('approval-mode-chip', sessionSecurity && `permission-${sessionSecurity.permission}`, open && 'open')}
-                onClick={toggle} disabled={changingPermission || state.status !== 'ready'} aria-label={t('这一次对话')} title={t('这一次对话')} {...expanded}>
-                {changingPermission ? <Spinner size={13} /> : <ShieldCheck size={13} />}
-                <span className="approval-mode-label">
-                  {t(changingPermission ? '正在切换权限…' : sessionSecurity ? PERMISSIONS[sessionSecurity.permission].label : '会话权限')}
-                </span>
-                <ChevronDown size={12} />
-              </button>
-            )}>
-              {(close) => <div className="menu">
-                <div className="menu-group">
-                  <div className="menu-group-label">{t('这一次对话')}</div>
-                  <p className="approval-menu-note">{t('只影响正在进行的这次对话。')}</p>
-                  {(['ask', 'review', ...(state.settings.allowFullAccess || sessionSecurity?.permission === 'full' ? ['full'] as const : [])] as const).map((permission) => {
-                    const { label, detail } = PERMISSIONS[permission]
-                    const active = permission === sessionSecurity?.permission
-                    return (
-                      <button key={permission} className={clsx('menu-item', 'approval-menu-item', `permission-${permission}`, active && 'active')}
-                        aria-pressed={active} disabled={streaming || sending || active} onClick={() => {
-                          close()
-                          if (permission === 'full') setFullAccessTarget(key)
-                          else void changePermission(permission)
-                        }}>
-                        <span className="approval-dot" aria-hidden="true" />
-                        <span className="menu-item-main"><span className="menu-item-title">{t(label)}</span><span className="menu-item-sub">{t(detail)}</span></span>
-                        {active && <Check size={14} />}
+            {(() => {
+              const protection = protectionOf(sessionSecurity)
+              const label = protection === 'full' ? '保护：不受限' : protection === 'readonly' ? '保护：只读' : '保护：标准'
+              const tone = protection === 'full' ? 'full' : protection === 'readonly' ? 'ask' : 'review'
+              const Icon = changingPermission ? null : protection === 'full' ? TriangleAlert : protection === 'readonly' ? Eye : sessionSecurity?.sandboxed ? ShieldCheck : Shield
+              return (
+                <Popover width={220} trigger={(open, toggle, expanded) => (
+                  <button className={clsx('approval-mode-chip', `permission-${tone}`, open && 'open')}
+                    onClick={toggle} disabled={changingPermission || state.status !== 'ready'} aria-label={t(label)} title={t(label)} {...expanded}>
+                    {changingPermission || !Icon ? <Spinner size={14} /> : <Icon size={15} />}
+                  </button>
+                )}>
+                  {(close) => <div className="menu">
+                    <div className="menu-group">
+                      {([
+                        ['standard', '标准', '保护：标准'],
+                        ['readonly', '只读', '保护：只读'],
+                        ['full', '不受限', '保护：不受限']
+                      ] as const).map(([id, name, hint]) => {
+                        const active = protection === id
+                        return (
+                          <button key={id} type="button" className={clsx('menu-item', active && 'active')} title={t(hint)}
+                            aria-pressed={active} disabled={streaming || sending || active} onClick={() => {
+                              close()
+                              if (id === 'full') setFullAccessTarget(key)
+                              else if (id === 'readonly') void changePermission('ask', 'read-only')
+                              else void changePermission('review')
+                            }}>
+                            <span className="menu-item-title">{t(name)}</span>
+                            {active && <Check size={14} />}
+                          </button>
+                        )
+                      })}
+                      <button type="button" className="menu-item" onClick={() => { close(); openPermissionSettings('tools') }}>
+                        <span className="menu-item-title">{t('默认设置')} ›</span>
                       </button>
-                    )
-                  })}
-                  <div className="permission-menu-scope">
-                    <ShieldCheck size={13} aria-hidden="true" />
-                    <span>{sessionSecurity?.sandboxed
-                      ? t('保护已开启')
-                      : t(sessionSecurity ? '保护未开启' : '权限状态加载中…')}</span>
-                    <button type="button" className="permission-settings-link" onClick={() => { close(); openPermissionSettings('network') }}>
-                      {t('查看保护设置')}
-                    </button>
-                  </div>
-                  <div className="permission-menu-later">
-                    <div className="menu-group-label">{t('之后的新对话')}</div>
-                    <p>{t('这里的选择不会改变以后新建对话的默认方式。')}</p>
-                    <button type="button" className="menu-item" onClick={() => { close(); openPermissionSettings('tools') }}>
-                      {t('更改新对话的默认方式')}
-                    </button>
-                  </div>
-                  {streaming && <p className="approval-menu-note">{t('任务结束后可切换权限。')}</p>}
-                  {!state.settings.allowFullAccess && sessionSecurity?.permission !== 'full' && (
-                    <button type="button" className="menu-item permission-more" onClick={() => { close(); openPermissionSettings('tools') }}>
-                      {t('在设置中启用完全访问')}
-                    </button>
-                  )}
-                </div>
-              </div>}
-            </Popover>
+                    </div>
+                  </div>}
+                </Popover>
+              )
+            })()}
             {fullAccessTarget === key && (
-              <Modal open title={t('这次对话不再询问？')}
-                subtitle={t('可以修改这台电脑上的文件并联网，不再逐次询问。只在你完全信任当前任务时使用。')}
+              <Modal open title={t('这次不受限？')}
+                subtitle={t('仅这次对话。')}
                 onClose={() => setFullAccessTarget(null)}
                 footer={<>
                   <button type="button" className="button ghost" onClick={() => setFullAccessTarget(null)}>{t('取消')}</button>
-                  <button type="button" className="button primary" onClick={() => void changePermission('full')}>{t('这次不再询问')}</button>
+                  <button type="button" className="button primary" onClick={() => void changePermission('full')}>{t('确认')}</button>
                 </>} children={null} />
             )}
           </div>
@@ -982,31 +981,30 @@ export function Composer(): ReactNode {
 
             <Popover
               width={220}
-              trigger={(open, toggle, expanded) => (
-                <button
-                  className={clsx('chip', open && 'open')}
-                  onClick={toggle}
-                  disabled={streaming || !ready}
-                  title={streaming ? t("本轮结束后可切换推理强度") : t("推理强度")}
-                  aria-label={t("推理强度")}
-                  {...expanded}
-                >
-                  <Brain size={13} />
-                  <span className="chip-label">
-                    {t(THINKING_LABELS[state.piState?.thinkingLevel ?? 'off'] ?? 'Off')}
-                  </span>
-                  <ChevronDown size={12} />
-                </button>
-              )}
+              trigger={(open, toggle, expanded) => {
+                const level = state.piState?.thinkingLevel ?? 'off'
+                const bars = reasoningBars(level)
+                return (
+                  <button
+                    className={clsx('reasoning-button', open && 'open')}
+                    onClick={toggle}
+                    disabled={streaming || !ready}
+                    title={`${t('推理强度')} · ${t(THINKING_LABELS[level] ?? 'Off')}`}
+                    aria-label={t('推理强度')}
+                    {...expanded}
+                  >
+                    <span className="reasoning-bars" aria-hidden="true">
+                      {[1, 2, 3, 4].map((bar) => <i key={bar} className={bar <= bars ? 'on' : undefined} style={{ height: 4 + bar * 2 }} />)}
+                    </span>
+                  </button>
+                )
+              }}
             >
               {(close) => <ThinkingMenu close={close} />}
             </Popover>
-            {context?.tokens ? (
-              <div
-                className="context-ring"
-                title={`${formatTokens(context.tokens)} / ${formatTokens(context.contextWindow)} tokens · ${formatCost(state.stats?.cost)}`}
-              >
-                <svg viewBox="0 0 20 20" width="20" height="20">
+            {percent > 50 ? (
+              <div className="context-ring" title={`${t('上下文')} ${Math.round(percent)}%`}>
+                <svg viewBox="0 0 20 20" width="16" height="16">
                   <circle cx="10" cy="10" r="7.5" className="ring-bg" />
                   <circle
                     cx="10"
@@ -1017,42 +1015,23 @@ export function Composer(): ReactNode {
                     transform="rotate(-90 10 10)"
                   />
                 </svg>
-                <span>{t("上下文")} {Math.round(percent)}%</span>
               </div>
             ) : null}
 
-            {streaming && (
-              <button
-                className="send-button stop"
-                onClick={() => void stop()}
-                disabled={stopping}
-                title={t("Stop (Esc)")}
-                aria-label={t("Stop (Esc)")}
-              >
-                {stopping ? <Spinner size={14} /> : <Square size={11} fill="currentColor" />}
-                {t("停止")}
-              </button>
-            )}
-            {(!streaming || canSend || sending) && (
-              <button
-                className="send-button"
-                onClick={() => void submit()}
-                disabled={!canSend}
-                title={streaming ? (state.settings.language === 'en' ? 'Queue message' : '排队发送') : t("Send (Enter)")}
-                aria-label={streaming ? (state.settings.language === 'en' ? 'Queue message' : '排队发送') : t("Send (Enter)")}
-              >
-                {sending ? <Spinner size={14} /> : <ArrowUp size={16} />}
-              </button>
-            )}
+            <button
+              className={clsx('send-button', streaming && 'stop')}
+              onClick={() => void (streaming ? stop() : submit())}
+              disabled={streaming ? stopping : !canSend}
+              title={streaming ? t('Stop (Esc)') : t('Send (Enter)')}
+              aria-label={streaming ? t('Stop (Esc)') : t('Send (Enter)')}
+            >
+              {sending || stopping ? <Spinner size={14} /> : streaming ? <Square size={11} fill="currentColor" /> : <ArrowUp size={16} />}
+            </button>
           </div>
         </div>
       </div>
 
-      <div className={clsx('composer-hint', starting && 'is-starting')} role={starting ? 'status' : undefined}>
-        {starting ? t('正在准备会话…') : streaming
-          ? (state.settings.language === 'en' ? 'Enter to queue · Esc to stop' : 'Enter 排队发送 · Esc 停止')
-          : t("Enter 发送 · Shift+Enter 换行")}
-      </div>
+      {starting ? <div className="composer-hint is-starting" role="status">{t('正在准备会话…')}</div> : null}
     </div>
   )
 }

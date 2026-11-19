@@ -333,7 +333,7 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
   }, [browserActive, taskDoc, turnKey])
 
   return (
-    <aside className={clsx('work-panel', !open && 'is-closed', maximized && 'is-maximized')} style={{ width: open ? width : 0 }} aria-hidden={!open}>
+    <aside className={clsx('work-panel', !open && 'is-closed', maximized && 'is-maximized')} style={{ width: open ? width : 0 }} aria-hidden={!open} inert={!open ? true : undefined}>
       <div
         className="work-resize"
         onMouseDown={onDragStart}
@@ -344,7 +344,7 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
         aria-orientation="vertical"
         aria-disabled={maximized}
         aria-label={state.settings.language === 'en' ? 'Resize work panel' : '调整工作面板宽度'}
-        tabIndex={maximized ? -1 : 0}
+        tabIndex={open && !maximized ? 0 : -1}
         onKeyDown={(event) => {
           if (maximized || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
           event.preventDefault()

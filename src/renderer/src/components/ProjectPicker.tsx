@@ -41,7 +41,7 @@ export function ProjectPicker(): ReactNode {
 
   const temporary = state.scratchWorkspace || isTemporaryWorkspace(state.workspace, state.boot?.scratchPath)
   const currentLabel = temporary
-    ? t('不关联文件夹')
+    ? t('临时对话')
     : projectName(state.settings.workspaceNames, state.workspace) || t('选择文件夹')
 
   return (
@@ -119,7 +119,7 @@ export function ProjectPicker(): ReactNode {
           >
             <MessageCircle size={15} />
             <span className="project-picker-main">
-              <span className="project-picker-name">{t('只聊天，不选文件夹')}</span>
+              <span className="project-picker-name">{t('临时对话')}</span>
               <span className="project-picker-path">{t('对话会出现在「最近对话」里')}</span>
             </span>
             {temporary && <Check size={14} className="project-picker-check" />}

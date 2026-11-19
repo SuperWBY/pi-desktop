@@ -12,6 +12,11 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 
+if (process.argv.includes('--version')) {
+  console.log('0.74.0')
+  process.exit(0)
+}
+
 const scenario = process.env.MOCK_SCENARIO ?? 'default'
 const args = process.argv.slice(2)
 const sessionFlag = args.indexOf('--session')
@@ -309,6 +314,7 @@ function stats() {
 function stream(text) {
   const message = {
     role: 'assistant',
+    timestamp: Date.now(),
     content: [{ type: 'text', text: '' }],
     usage: { input: 100, output: 20, totalTokens: 120, cost: { total: 0.001 } }
   }
@@ -409,13 +415,14 @@ function handle(command) {
         return response('prompt', undefined, false, '401 Unauthorized: invalid api key')
       }
       const text = String(command.message ?? '')
-      messages.push({ role: 'user', content: [{ type: 'text', text }] })
+      const sentAt = Date.now()
+      messages.push({ role: 'user', timestamp: sentAt, content: [{ type: 'text', text }] })
       if (text === 'local approval test' && process.env.MOCK_BACKGROUND_CONFIRM === '1') {
         setTimeout(() => write({ type: 'extension_ui_request', id: 'fixture-confirm', method: 'confirm', title: `Fixture ${process.pid}`, message: 'Local test only' }), 800)
         return response('prompt', { disposition: 'started' })
       }
-      write({ type: 'message_start', message: { role: 'user', content: command.message } })
-      write({ type: 'message_end', message: { role: 'user', content: command.message } })
+      write({ type: 'message_start', message: { role: 'user', timestamp: sentAt, content: command.message } })
+      write({ type: 'message_end', message: { role: 'user', timestamp: sentAt, content: command.message } })
       const body = `mock reply ${messages.length}: ${text} ${'— streaming padding '.repeat(30)}`
       setTimeout(() => stream(body), 30)
       if (process.env.MOCK_PROMPT_DELAY) {

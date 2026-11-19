@@ -10,13 +10,13 @@ function scrubIds(text: string): string {
     .replace(/\b(?=[a-zA-Z0-9_-]*\d)(?=[a-zA-Z0-9_-]*[A-Za-z])[a-zA-Z0-9_-]{16,}\b/g, ' ')
 }
 
-/** First sentence: CJK closers, or .!? only when followed by space/end (not file.ts / v1.2). */
+/** First sentence: earliest of CJK closers or .!? followed by space/end (not file.ts / v1.2). */
 function firstSentence(text: string): string {
-  const cjk = text.match(/^(.+?[。！？])/u)
-  if (cjk?.[1]) return cjk[1].trim()
-  const latin = text.match(/^(.+?[.!?])(?=\s|$)/u)
-  if (latin?.[1]) return latin[1].trim()
-  return text
+  const cjk = text.match(/[。！？]/u)
+  const latin = text.match(/[.!?](?=\s|$)/u)
+  const ends = [cjk?.index, latin?.index].filter((index): index is number => typeof index === 'number')
+  if (!ends.length) return text
+  return text.slice(0, Math.min(...ends) + 1).trim()
 }
 
 /**

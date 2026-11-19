@@ -40,6 +40,11 @@ assert.equal(
   assert.match(summary, /internationalization/)
 }
 
+assert.equal(
+  cleanReplySummary('Done for now. 下面继续说明其余细节。'),
+  'Done for now.'
+)
+
 const long = '这是一句没有句号但非常非常非常非常非常非常非常非常非常非常非常非常长的摘要内容需要截断处理'
 const clipped = cleanReplySummary(long, 40)
 assert.ok([...clipped].length <= 41, clipped)

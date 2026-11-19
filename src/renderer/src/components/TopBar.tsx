@@ -17,7 +17,7 @@ export function TopBar(): ReactNode {
   const temporary = state.scratchWorkspace || isTemporaryWorkspace(state.workspace, state.boot?.scratchPath)
   const place = temporary
     ? t('临时对话')
-    : projectName(state.settings.workspaceNames, state.workspace) || t('No project')
+    : projectName(state.settings.workspaceNames, state.workspace) || t('不关联文件夹')
   const placeLabel = looksLikeRawPath(place) ? t('临时对话') : place
   const firstUser = state.messages.find((message) => message.role === 'user')
   const fallbackTitle = firstUser

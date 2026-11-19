@@ -179,6 +179,10 @@ async function main() {
 
     const welcome = await open('welcome')
     await welcome.getByText('第一次使用，先完成准备工作').waitFor()
+    const welcomeSubtitle = (await welcome.locator('.topbar-path').innerText()).trim()
+    if (welcomeSubtitle !== '不关联文件夹' || welcomeSubtitle.includes('项目')) {
+      throw new Error(`首次打开的标题仍带项目说法: ${welcomeSubtitle}`)
+    }
     await shot(welcome, '01-welcome-setup')
     await welcome.close()
 
@@ -245,10 +249,38 @@ async function main() {
     await preview.close()
 
     const permission = await open('permission')
-    await permission.getByRole('button', { name: '这一次对话' }).click()
-    await permission.getByText('之后的新对话', { exact: true }).waitFor()
-    await permission.getByText('保护未开启', { exact: true }).waitFor()
-    await shot(permission, '07-permission')
+    const assertMenuClearsComposer = async (label) => {
+      const box = await permission.evaluate(() => {
+        const menu = document.querySelector('.popover')?.getBoundingClientRect()
+        const composer = document.querySelector('.composer')?.getBoundingClientRect()
+        const popover = document.querySelector('.popover')
+        if (!menu || !composer || !popover) return { missing: true }
+        popover.scrollTop = popover.scrollHeight
+        const last = [...popover.querySelectorAll('.menu-item')].at(-1)?.getBoundingClientRect()
+        return {
+          gap: composer.top - menu.bottom,
+          menuTop: menu.top,
+          menuBottom: menu.bottom,
+          composerTop: composer.top,
+          scrollHeight: popover.scrollHeight,
+          clientHeight: popover.clientHeight,
+          lastVisible: Boolean(last && last.top >= menu.top - 1 && last.bottom <= menu.bottom + 1 && last.height > 8)
+        }
+      })
+      if (box.missing || box.gap < 6 || box.menuTop < 4 || !box.lastVisible) {
+        throw new Error(`权限菜单在 ${label} 压住或裁切了输入框: ${JSON.stringify(box)}`)
+      }
+    }
+    for (const [width, height] of [[1440, 900], [1024, 640], [900, 520]]) {
+      await permission.setViewportSize({ width, height })
+      await permission.waitForTimeout(200)
+      if (!await permission.locator('.popover').count()) {
+        await permission.getByRole('button', { name: '这一次对话' }).click()
+      }
+      await permission.getByText('之后的新对话', { exact: true }).waitFor()
+      await assertMenuClearsComposer(`${width}×${height}`)
+      if (width === 1440) await shot(permission, '07-permission')
+    }
     await permission.close()
 
     const network = await open('chat')

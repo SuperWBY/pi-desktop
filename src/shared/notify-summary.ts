@@ -3,6 +3,22 @@ export const NOTIFY_SUMMARY_MAX = 40
 
 export type NotifyKind = 'done' | 'approval' | 'error'
 
+/** Hex-like or mixed letter+digit tokens that look like ids/hashes, not English words. */
+function scrubIds(text: string): string {
+  return text
+    .replace(/\b[a-f0-9]{8,}\b/gi, ' ')
+    .replace(/\b(?=[a-zA-Z0-9_-]*\d)(?=[a-zA-Z0-9_-]*[A-Za-z])[a-zA-Z0-9_-]{16,}\b/g, ' ')
+}
+
+/** First sentence: CJK closers, or .!? only when followed by space/end (not file.ts / v1.2). */
+function firstSentence(text: string): string {
+  const cjk = text.match(/^(.+?[。！？])/u)
+  if (cjk?.[1]) return cjk[1].trim()
+  const latin = text.match(/^(.+?[.!?])(?=\s|$)/u)
+  if (latin?.[1]) return latin[1].trim()
+  return text
+}
+
 /**
  * Turn a final assistant reply into a short, plain notification line:
  * first sentence, no markdown/code/URLs/ids/parenthetical metadata.
@@ -21,16 +37,14 @@ export function cleanReplySummary(text: string, maxChars = NOTIFY_SUMMARY_MAX): 
     .replace(/https?:\/\/\S+/gi, ' ')
     .replace(/\([^)]{0,240}\)/g, ' ')
     .replace(/\[[^\]]{0,240}\]/g, ' ')
-    .replace(/\b[a-zA-Z0-9_-]{16,}\b/g, ' ')
-    .replace(/\b[a-f0-9]{8,}\b/gi, ' ')
+
+  s = scrubIds(s)
     .replace(/\s+/g, ' ')
     .replace(/\s+([。！？.!?,，、；;])/g, '$1')
     .trim()
 
   if (!s) return ''
-
-  const sentence = s.match(/^(.+?[。！？.!?])/u)
-  if (sentence?.[1]) s = sentence[1].trim()
+  s = firstSentence(s)
 
   const chars = [...s]
   if (chars.length <= maxChars) return s

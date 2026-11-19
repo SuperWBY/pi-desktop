@@ -24,6 +24,22 @@ assert.equal(
   'Hash and id gone.'
 )
 
+{
+  const summary = cleanReplySummary('Updated README.md and package.json for v1.2.3. Next we ship.')
+  assert.ok(summary.includes('README.md'), summary)
+  assert.notEqual(summary, 'Updated README.')
+  assert.ok(!summary.includes('Next we ship'), summary)
+}
+
+{
+  const summary = cleanReplySummary(
+    'Here are recommendations for internationalization in the app.',
+    80
+  )
+  assert.match(summary, /recommendations/)
+  assert.match(summary, /internationalization/)
+}
+
 const long = '这是一句没有句号但非常非常非常非常非常非常非常非常非常非常非常非常长的摘要内容需要截断处理'
 const clipped = cleanReplySummary(long, 40)
 assert.ok([...clipped].length <= 41, clipped)

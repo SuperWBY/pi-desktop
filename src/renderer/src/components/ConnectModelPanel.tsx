@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Check, Loader2, X } from 'lucide-react'
 import clsx from 'clsx'
+import { userFacingError } from '@shared/errors'
 import { useTranslation } from '../i18n'
 import { useApp } from '../store'
 
@@ -27,8 +28,9 @@ function modelFor(id: string): string {
 }
 
 function quietError(message: string): string {
-  if (/服务商|models\.json|pi /i.test(message)) return '请检查接口地址'
-  return message || '暂时无法登录'
+  const cleaned = userFacingError(message, '暂时无法登录')
+  if (/服务商|models\.json|pi /i.test(cleaned)) return '请检查接口地址'
+  return cleaned || '暂时无法登录'
 }
 
 export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNode {
@@ -46,6 +48,7 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
   const [customKey, setCustomKey] = useState('')
   const [customModel, setCustomModel] = useState('')
   const [providers, setProviders] = useState<{ id: string; name: string }[]>([])
+  const [accountStatus, setAccountStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle')
   const [accountError, setAccountError] = useState('')
   const [running, setRunning] = useState(false)
   const [prompt, setPrompt] = useState<{ id: string; message: string; secret: boolean } | null>(null)
@@ -134,10 +137,19 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
 
   useEffect(() => {
     if (tab !== 'account') return
+    setAccountStatus('loading')
+    setAccountError('')
     void window.pi.listOAuthProviders()
-      .then((list) => setProviders(list.filter((item) => item.oauth).map((item) => ({ id: item.id, name: item.name }))))
-      .catch(() => setAccountError(t('暂时无法登录')))
-  }, [tab, t])
+      .then((list) => {
+        const next = list.filter((item) => item.oauth).map((item) => ({ id: item.id, name: item.name }))
+        setProviders(next)
+        setAccountStatus(next.length ? 'ready' : 'unavailable')
+      })
+      .catch(() => {
+        setProviders([])
+        setAccountStatus('unavailable')
+      })
+  }, [tab])
 
   useEffect(() => {
     return window.pi.onOAuthEvent((event) => {
@@ -252,32 +264,43 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
         </div>
       ) : (
         <div className="connect-body" role="tabpanel">
-          <div className="connect-providers">
-            {(providers.length ? providers : QUICK.map((item) => ({ id: item.id, name: item.label }))).map((item) => (
-              <button key={item.id} type="button" className="connect-provider" disabled={running} onClick={() => void startAccount(item.id)}>
-                <span>{item.name.slice(0, 1)}</span>
-                {item.name}
-              </button>
-            ))}
-          </div>
-          {prompt && (
-            <label className="connect-key">
-              <input
-                type={prompt.secret ? 'password' : 'text'}
-                value={answer}
-                aria-label={prompt.message || t('继续')}
-                onChange={(event) => setAnswer(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && answer) {
-                    window.pi.respondOAuth(prompt.id, answer)
-                    setPrompt(null)
-                  }
-                }}
-              />
-            </label>
+          {accountStatus === 'loading' || accountStatus === 'idle' ? (
+            <p className="connect-wait"><Loader2 size={14} className="spin" /></p>
+          ) : accountStatus === 'unavailable' ? (
+            <div className="connect-oauth-unavailable">
+              <p>{t('当前版本暂不支持账号登录，请用 API Key')}</p>
+              <button type="button" className="button primary" onClick={() => setTab('key')}>{t('使用 API Key')}</button>
+            </div>
+          ) : (
+            <>
+              <div className="connect-providers">
+                {providers.map((item) => (
+                  <button key={item.id} type="button" className="connect-provider" disabled={running} onClick={() => void startAccount(item.id)}>
+                    <span>{item.name.slice(0, 1)}</span>
+                    {item.name}
+                  </button>
+                ))}
+              </div>
+              {prompt && (
+                <label className="connect-key">
+                  <input
+                    type={prompt.secret ? 'password' : 'text'}
+                    value={answer}
+                    aria-label={prompt.message || t('继续')}
+                    onChange={(event) => setAnswer(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && answer) {
+                        window.pi.respondOAuth(prompt.id, answer)
+                        setPrompt(null)
+                      }
+                    }}
+                  />
+                </label>
+              )}
+              {running && !prompt ? <p className="connect-wait"><Loader2 size={14} className="spin" /></p> : null}
+              {accountError ? <p className="connect-error" role="alert">{accountError}</p> : null}
+            </>
           )}
-          {running && !prompt ? <p className="connect-wait"><Loader2 size={14} className="spin" /></p> : null}
-          {accountError ? <p className="connect-error" role="alert">{accountError}</p> : null}
         </div>
       )}
     </div>

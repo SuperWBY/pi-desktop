@@ -45,6 +45,7 @@ import type {
   SessionSecurity,
   ThinkingLevel
 } from '@shared/types'
+import { userFacingError } from '@shared/errors'
 import { isTemporaryWorkspace } from '@shared/paths'
 import { useApp, type Attachment } from '../store'
 import { formatTokens, projectName } from '../lib/format'
@@ -481,7 +482,7 @@ export function Composer(): ReactNode {
       const security = await window.pi.setSessionPermission({ cwd: workspace, sessionPath: state.sessionPath, permission, files })
       if (draftRef.current.key === key) setSessionSecurity(security)
     } catch (error) {
-      actions.notify('error', t('无法切换权限'), (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': Error: /, ''))
+      actions.notify('error', t('无法切换权限'), userFacingError(error))
     } finally {
       setChangingPermission(false)
     }

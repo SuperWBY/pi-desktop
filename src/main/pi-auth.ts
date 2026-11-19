@@ -2,8 +2,10 @@ import { app, shell, type WebContents } from 'electron'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { agentDir } from './pi-settings'
+import { locatePi } from './pi-locate'
 import { seedRoot } from './pi-runtime'
 
 export interface OAuthProvider {
@@ -13,23 +15,79 @@ export interface OAuthProvider {
   apiKey: boolean
 }
 
+export const OAUTH_UNAVAILABLE = '当前版本暂不支持账号登录，请用 API Key'
+
 function helperPath(): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'pi-auth-helper.mjs')
     : join(app.getAppPath(), 'build', 'pi-auth-helper.mjs')
 }
 
-function authPackagePath(): string {
-  const root = seedRoot()
-  if (!existsSync(root)) throw new Error('内置 Pi runtime 不存在，无法使用账号登录。')
-  const versions = readdirSync(root)
-    .filter((name) => /^\d+\.\d+\.\d+/.test(name))
-    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+function compareVersions(a: string, b: string): number {
+  const parse = (value: string): number[] => value.split(/[.+-]/).map((part) => Number.parseInt(part, 10) || 0)
+  const left = parse(a)
+  const right = parse(b)
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0)
+    if (difference !== 0) return difference
+  }
+  return 0
+}
+
+/** Look for pi-coding-agent dist/index.js under a versioned root (seed or releases). */
+function findAuthPackageInRoot(root: string): string | null {
+  if (!existsSync(root)) return null
+  const direct = join(root, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'index.js')
+  if (existsSync(direct)) return direct
+  let versions: string[] = []
+  try {
+    versions = readdirSync(root)
+      .filter((name) => /^\d+\.\d+\.\d+/.test(name))
+      .sort(compareVersions)
+      .reverse()
+  } catch {
+    return null
+  }
   for (const version of versions) {
     const file = join(root, version, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'index.js')
     if (existsSync(file)) return file
   }
-  throw new Error('找不到 Pi 的认证模块，请重新安装 Pi Desktop。')
+  return null
+}
+
+function managedInstallRoots(): string[] {
+  const roots = [join(homedir(), '.pi', 'agent', 'install', 'releases')]
+  const appData = process.env.APPDATA
+  if (appData) roots.push(join(appData, 'pi', 'agent', 'install', 'releases'))
+  return roots
+}
+
+/** Prefer bundled seed, then the user's managed Pi install (same as chat fallback). */
+export function authPackagePath(): string {
+  if (process.env.PI_DESKTOP_SKIP_SEED !== '1') {
+    const bundled = findAuthPackageInRoot(seedRoot())
+    if (bundled) return bundled
+  }
+
+  for (const root of managedInstallRoots()) {
+    const found = findAuthPackageInRoot(root)
+    if (found) return found
+  }
+
+  // Derive from a located pi binary under ~/.pi/agent/bin → ../install/releases
+  try {
+    const piPath = locatePi()
+    if (piPath !== 'pi' && existsSync(piPath)) {
+      const agentRoot = dirname(dirname(piPath))
+      const releases = join(agentRoot, 'install', 'releases')
+      const found = findAuthPackageInRoot(releases)
+      if (found) return found
+    }
+  } catch {
+    // ignore and fall through
+  }
+
+  throw new Error(OAUTH_UNAVAILABLE)
 }
 
 function deviceId(): string {
@@ -45,6 +103,7 @@ function deviceId(): string {
 }
 
 function helperEnv(): NodeJS.ProcessEnv {
+  if (!existsSync(helperPath())) throw new Error(OAUTH_UNAVAILABLE)
   return {
     ...process.env,
     ELECTRON_RUN_AS_NODE: '1',
@@ -69,7 +128,14 @@ function collect(provider: ChildProcessWithoutNullStreams, onLine: (value: Recor
 
 export async function listOAuthProviders(): Promise<OAuthProvider[]> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [helperPath(), '--list'], { env: helperEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
+    let env: NodeJS.ProcessEnv
+    try {
+      env = helperEnv()
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(OAUTH_UNAVAILABLE))
+      return
+    }
+    const child = spawn(process.execPath, [helperPath(), '--list'], { env, stdio: ['ignore', 'pipe', 'pipe'] })
     let output = ''
     child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString() })
     child.stderr.on('data', () => undefined)
@@ -83,7 +149,7 @@ export async function listOAuthProviders(): Promise<OAuthProvider[]> {
         if (parsed.type !== 'providers' || !Array.isArray(parsed.providers)) throw new Error('服务商列表格式无效。')
         resolve(parsed.providers.filter((provider) => provider.oauth))
       } catch (error) {
-        reject(new Error(code === 0 ? (error instanceof Error ? error.message : String(error)) : '无法读取 OAuth 服务商列表。'))
+        reject(new Error(code === 0 ? (error instanceof Error ? error.message : String(error)) : '无法读取账号登录服务商列表。'))
       }
     })
   })

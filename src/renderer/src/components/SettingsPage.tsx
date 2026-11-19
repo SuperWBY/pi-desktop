@@ -2410,7 +2410,12 @@ export function SettingsPage(): ReactNode {
       <ChromeImportDialog open={chromeOpen} onClose={() => setChromeOpen(false)} />
       <ChromeBridgeDialog open={chromeBridgeOpen} onClose={() => setChromeBridgeOpen(false)} />
       <ProviderAuthDialog open={authOpen} onClose={() => setAuthOpen(false)} onSaved={() => { void loadModels(); void refreshCatalog().catch(() => undefined) }} />
-      <ProviderOAuthDialog open={oauthOpen} onClose={() => setOauthOpen(false)} onSaved={() => { void loadModels(); void refreshCatalog().catch(() => undefined) }} />
+      <ProviderOAuthDialog
+        open={oauthOpen}
+        onClose={() => setOauthOpen(false)}
+        onSaved={() => { void loadModels(); void refreshCatalog().catch(() => undefined) }}
+        onUseApiKey={() => { setOauthOpen(false); setAuthOpen(true) }}
+      />
     </div>
   )
 }

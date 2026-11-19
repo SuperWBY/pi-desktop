@@ -10,7 +10,7 @@
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { stripTypeScriptTypes } from 'node:module'
@@ -3518,8 +3518,10 @@ async function caseProviderOAuth() {
       providers = await page.evaluate(() => window.pi.listOAuthProviders())
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      if (/认证模块|内置 Pi runtime/.test(message)) {
+      check('IPC 错误不带 Electron 前缀', !/Error invoking remote method/.test(message), message.split('\n')[0])
+      if (/认证模块|内置 Pi runtime|暂不支持账号登录/.test(message)) {
         check('当前环境没有内置 Pi 认证模块，跳过 OAuth 发现', true, message.split('\n')[0])
+        await page.getByRole('button', { name: '设置', exact: true }).click().catch(() => undefined)
         return
       }
       throw error
@@ -3529,6 +3531,53 @@ async function caseProviderOAuth() {
     const invalid = await page.evaluate(() => window.pi.startOAuth('unknown-provider-xyz'))
     check('未知 OAuth 服务商不会启动', invalid.ok === false)
   } finally { await app.close() }
+}
+
+async function caseOAuthUnavailableUi() {
+  const dirs = freshDirs('oauth-unavailable-ui')
+  // Seed launcher without auth module; HOME isolates us from ~/.pi installs.
+  const seedDir = join(root, 'build', 'pi-seed', '0.0.0-oauth-ui')
+  const seedLauncher = join(seedDir, 'pi')
+  mkdirSync(seedDir, { recursive: true })
+  writeFileSync(seedLauncher, '#!/bin/sh\necho 0.0.0-oauth-ui\n')
+  chmodSync(seedLauncher, 0o755)
+  // Temporarily hide other seed versions that may include an auth module.
+  const seedRootDir = join(root, 'build', 'pi-seed')
+  const hidden = []
+  for (const name of readdirSync(seedRootDir)) {
+    if (name === '0.0.0-oauth-ui') continue
+    const from = join(seedRootDir, name)
+    const to = join(dirs.base, `hidden-seed-${name}`)
+    renameSync(from, to)
+    hidden.push({ from, to })
+  }
+  const { app, page } = await launch(dirs, 'default', {
+    PI_DESKTOP_PI_PATH: join(dirs.base, 'missing-pi'),
+    PATH: '/usr/bin:/bin',
+    SHELL: '/bin/sh'
+  })
+  try {
+    await page.getByRole('button', { name: '连接模型', exact: true }).click()
+    await page.locator('.connect-model').waitFor()
+    await page.getByRole('tab', { name: '用账号登录' }).click()
+    await page.getByText('当前版本暂不支持账号登录，请用 API Key').waitFor({ timeout: 8000 })
+    check('连接面板账号页无空下拉', await page.locator('.connect-model select').count() === 0)
+    const message = await page.evaluate(async () => {
+      try {
+        await window.pi.listOAuthProviders()
+        return ''
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error)
+      }
+    })
+    check('账号登录不可用时错误为中文短句', /暂不支持账号登录/.test(message) && !/Error invoking remote method/.test(message), message)
+  } finally {
+    await app.close()
+    rmSync(seedDir, { recursive: true, force: true })
+    for (const item of hidden) {
+      if (existsSync(item.to)) renameSync(item.to, item.from)
+    }
+  }
 }
 
 async function caseSessionSearch() {
@@ -3771,6 +3820,7 @@ const CASES = [
   { tags: ['session-search'], label: 'full text session search', run: caseSessionSearch },
   { tags: ['session-tree'], label: 'session tree view', run: caseSessionTree },
   { tags: ['provider-oauth'], label: 'provider OAuth provider discovery', run: caseProviderOAuth },
+  { tags: ['provider-oauth', 'oauth-unavailable'], label: 'OAuth unavailable UI', run: caseOAuthUnavailableUi },
   { tags: ['provider-auth'], label: 'provider API key storage', run: caseProviderAuth },
   { tags: ['pi-seed'], label: 'bundled Pi runtime seed', run: caseBundledSeed },
   { tags: ['general-task-suggestions'], label: 'General task suggestions', run: caseGeneralTaskSuggestions },

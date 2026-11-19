@@ -35,6 +35,7 @@ import { buildTurns, turnsToMarkdown } from './lib/turns'
 import { translate } from './i18n/dictionary'
 import { desktopNotifyCopy } from '@shared/notify-summary'
 import { sessionDisplayTitle } from './lib/session-title'
+import { resolveThinkingAfterModelChange } from './lib/thinking'
 
 export type SendMode = 'steer' | 'followUp'
 export interface QueuedImage { type: 'image'; data: string; mimeType: string }
@@ -541,7 +542,13 @@ export type Action =
       scratch?: boolean
     }
   | { type: 'SESSION_ERROR'; error: string }
-  | { type: 'STATS'; stats: SessionStats | null; piState: PiState | null; sessionPath?: string | null }
+  | {
+      type: 'STATS'
+      stats: SessionStats | null
+      piState: PiState | null
+      sessionPath?: string | null
+      levels?: ThinkingLevel[]
+    }
   | { type: 'RECORD'; record: PiRecord }
   | { type: 'RECORDS'; records: PiRecord[] }
   | { type: 'SEND_OPTIMISTIC'; text: string; images: { data: string; mimeType: string }[] }
@@ -659,7 +666,9 @@ export function reducer(state: AppState, action: Action): AppState {
         stats: action.stats,
         piState: action.piState ?? state.piState,
         sessionPath:
-          action.sessionPath ?? action.piState?.sessionFile ?? state.sessionPath
+          action.sessionPath ?? action.piState?.sessionFile ?? state.sessionPath,
+        // Re-derive thinking levels when the current model changes.
+        levels: action.levels ?? state.levels
       }
 
     case 'RECORD':
@@ -992,15 +1001,20 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   }, [])
 
   const refreshMeta = useCallback(async () => {
-    const [stateResponse, statsResponse] = await Promise.all([
+    const [stateResponse, statsResponse, levelsResponse] = await Promise.all([
       safeCommand<PiState>({ type: 'get_state' }, 20_000),
-      safeCommand<SessionStats>({ type: 'get_session_stats' }, 20_000)
+      safeCommand<SessionStats>({ type: 'get_session_stats' }, 20_000),
+      safeCommand<{ levels: ThinkingLevel[] }>({ type: 'get_available_thinking_levels' }, 20_000)
     ])
     dispatch({
       type: 'STATS',
       stats: statsResponse?.data ?? null,
       piState: stateResponse?.data ?? null,
-      sessionPath: stateResponse?.data?.sessionFile ?? undefined
+      sessionPath: stateResponse?.data?.sessionFile ?? undefined,
+      // Only replace when pi answered; keep the prior list on a failed probe.
+      ...(levelsResponse?.data?.levels ? { levels: levelsResponse.data.levels } : levelsResponse?.data
+        ? { levels: [] }
+        : {})
     })
   }, [])
 
@@ -1495,12 +1509,20 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
 
   const setModel = useCallback(
     async (model: ModelInfo) => {
+      const previousLevel = stateRef.current.piState?.thinkingLevel
       const response = await safeCommand({ type: 'set_model', provider: model.provider, modelId: model.id })
-      if (response?.success) {
-        dispatch({ type: 'SET_MODEL', model })
-        void refreshMeta()
-      } else {
+      if (!response?.success) {
         notify('error', '无法切换模型', response?.error)
+        return
+      }
+      dispatch({ type: 'SET_MODEL', model })
+      await refreshMeta()
+      const levels = stateRef.current.levels
+      const reported = stateRef.current.piState?.thinkingLevel
+      const next = resolveThinkingAfterModelChange(levels, previousLevel, reported)
+      if (next && next !== reported) {
+        const thinking = await safeCommand({ type: 'set_thinking_level', level: next })
+        if (thinking?.success) dispatch({ type: 'SET_THINKING', level: next })
       }
     },
     [notify, refreshMeta]

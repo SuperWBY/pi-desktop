@@ -41,6 +41,7 @@ import type {
 import { useApp } from '../store'
 import { formatCost, formatTokens, shortenPath } from '../lib/format'
 import { shortcutKeys } from '../lib/platform'
+import { ALL_THINKING_LEVELS, THINKING_LABELS } from '../lib/thinking'
 import { Modal, Popover } from './ui'
 import { ChromeImportDialog } from './ChromeImportDialog'
 import { ChromeBridgeDialog } from './ChromeBridgeDialog'
@@ -64,13 +65,6 @@ const SHORTCUTS: { keys: string; label: string }[] = [
   { keys: 'Esc', label: '停止运行 / 关闭面板' }
 ]
 
-/** Same 低/中/高/极高 wording as the composer thinking control. */
-const DEFAULT_THINKING_OPTIONS: { value: ThinkingLevel; label: string }[] = [
-  { value: 'low', label: '低' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' },
-  { value: 'xhigh', label: '极高' }
-]
 
 const BUILTIN_TOOLS: { name: string; desc: string }[] = [
   { name: 'read', desc: '读取文件内容' },
@@ -1068,23 +1062,19 @@ export function SettingsPage(): ReactNode {
         >
           <Select
             label={t("默认思考程度")}
-            value={
-              thinkingValue === 'minimal' || thinkingValue === 'low'
-                ? 'low'
-                : thinkingValue === 'medium'
-                  ? 'medium'
-                  : thinkingValue === 'high'
-                    ? 'high'
-                    : thinkingValue === 'xhigh' || thinkingValue === 'max'
-                      ? 'xhigh'
-                      : ''
-            }
+            value={thinkingValue}
             onChange={(value) =>
               void actions.updatePiSettings({
                 defaultThinkingLevel: (value || undefined) as ThinkingLevel | undefined
               })
             }
-            options={[{ value: '', label: t('自动') }, ...DEFAULT_THINKING_OPTIONS.map((option) => ({ value: option.value, label: t(option.label) }))]}
+            options={[
+              { value: '', label: t('自动') },
+              ...ALL_THINKING_LEVELS.map((level) => ({
+                value: level,
+                label: t(THINKING_LABELS[level])
+              }))
+            ]}
           />
         </Row>
       </Block>

@@ -42,13 +42,13 @@ import type {
   ModelInfo,
   ScheduleCadence,
   SessionPermission,
-  SessionSecurity,
-  ThinkingLevel
+  SessionSecurity
 } from '@shared/types'
 import { userFacingError } from '@shared/errors'
 import { isTemporaryWorkspace } from '@shared/paths'
 import { useApp, type Attachment } from '../store'
 import { formatTokens, projectName } from '../lib/format'
+import { thinkingLabel, thinkingOptionsFor } from '../lib/thinking'
 import { Modal, Popover, Spinner } from './ui'
 import { requestSkillsTab } from './SkillsPage'
 
@@ -121,41 +121,6 @@ function saveDraft(key: string, draft: Draft): void {
   } catch { /* The in-memory draft still works when storage is unavailable. */ }
 }
 
-/** Standard thinking levels — show only those the model supports. */
-const EFFORT_OPTIONS: { level: ThinkingLevel; label: string; aliases: ThinkingLevel[] }[] = [
-  { level: 'low', label: '低', aliases: ['minimal'] },
-  { level: 'medium', label: '中', aliases: [] },
-  { level: 'high', label: '高', aliases: [] },
-  { level: 'xhigh', label: '极高', aliases: ['max'] }
-]
-
-function resolveEffortLevel(option: (typeof EFFORT_OPTIONS)[number], available: ThinkingLevel[]): ThinkingLevel | null {
-  for (const level of [option.level, ...option.aliases]) {
-    if (available.includes(level)) return level
-  }
-  return null
-}
-
-function effortLabelFor(level: ThinkingLevel | undefined): string | null {
-  if (!level || level === 'off') return null
-  for (const option of EFFORT_OPTIONS) {
-    if (option.level === level || option.aliases.includes(level)) return option.label
-  }
-  return null
-}
-
-function effortOptionsFor(available: ThinkingLevel[]): Array<{
-  level: ThinkingLevel
-  label: string
-  value: ThinkingLevel
-}> {
-  const options: Array<{ level: ThinkingLevel; label: string; value: ThinkingLevel }> = []
-  for (const option of EFFORT_OPTIONS) {
-    const value = resolveEffortLevel(option, available)
-    if (value) options.push({ level: option.level, label: option.label, value })
-  }
-  return options
-}
 
 function readImage(file: File): Promise<Attachment> {
   return new Promise((resolve, reject) => {
@@ -286,11 +251,10 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
   }
 
   let index = -1
-  const availableLevels = state.levels.length ? state.levels : (['off'] as ThinkingLevel[])
-  const effortOptions = effortOptionsFor(availableLevels)
+  // Levels come from the current model (get_available_thinking_levels), in provider order.
+  const effortOptions = thinkingOptionsFor(state.levels)
   const showEffort = Boolean(current?.reasoning) && effortOptions.length > 0
   const currentLevel = state.piState?.thinkingLevel
-  const currentLabel = effortLabelFor(currentLevel)
 
   return (
     <div className="menu">
@@ -370,10 +334,10 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
           <div className="menu-group-label">{t('思考程度')}</div>
           <div className="thinking-effort-options" style={{ ['--effort-count' as string]: String(effortOptions.length) }}>
             {effortOptions.map((option) => {
-              const selected = currentLabel === option.label
+              const selected = currentLevel === option.value
               return (
                 <button
-                  key={option.level}
+                  key={option.value}
                   type="button"
                   role="radio"
                   aria-checked={selected}
@@ -1275,7 +1239,7 @@ export function Composer(): ReactNode {
               width={320}
               keyboardNav={false}
               trigger={(open, toggle, expanded) => {
-                const effort = model?.reasoning ? effortLabelFor(state.piState?.thinkingLevel) : null
+                const effort = model?.reasoning ? thinkingLabel(state.piState?.thinkingLevel) : null
                 const label = model
                   ? effort
                     ? `${model.name} · ${t(effort)}`

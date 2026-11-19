@@ -2430,14 +2430,16 @@ async function caseComposerLayout() {
       /^\d+%$/.test(ringText.trim()) &&
       /上下文\s+\d+%/.test(ringTitle ?? '') &&
       /自动摘要历史|接近上限/.test(ringTitle ?? '') &&
-      /·\s*(低|中|高|极高)/.test(layout.modelLabel),
+      /·\s*(关|最低|低|中|高|极高|最高)/.test(layout.modelLabel),
     JSON.stringify({ ...layout, ringText, ringTitle })
   )
   await page.locator('.model-chip').click()
   await page.waitForSelector('.thinking-effort')
+  const effortLabels = await page.locator('.thinking-effort-option').allTextContents()
   check(
-    '模型菜单含标准思考程度段',
-    (await page.locator('.thinking-effort-option').count()) >= 3
+    '模型菜单按当前模型报告的思考程度展示',
+    effortLabels.length >= 3 && effortLabels.includes('高') && effortLabels.includes('最高'),
+    JSON.stringify(effortLabels)
   )
   await page.locator('.thinking-effort-option').filter({ hasText: /^高$/ }).click()
   await page.waitForFunction(() => /·\s*高/.test(document.querySelector('.model-chip .chip-label')?.textContent ?? ''))

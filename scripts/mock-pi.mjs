@@ -140,7 +140,11 @@ const MODELS = [
   }
 ]
 
-const LEVELS = ['off', 'low', 'medium', 'high', 'max']
+/** Per-model thinking levels (order matters for the UI). */
+function levelsFor(next) {
+  if (next?.id === 'mock-deep') return ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+  return ['off', 'low', 'medium', 'high', 'max']
+}
 let model = MODELS[0]
 let thinkingLevel = 'medium'
 let streamingTimer = null
@@ -387,7 +391,7 @@ function handle(command) {
     case 'get_available_models':
       return response('get_available_models', { models: MODELS })
     case 'get_available_thinking_levels':
-      return response('get_available_thinking_levels', { levels: LEVELS })
+      return response('get_available_thinking_levels', { levels: levelsFor(model) })
     case 'get_commands':
       if (process.env.MOCK_COMMANDS_FAIL === '1') return response('get_commands', undefined, false, 'registry unavailable')
       return response('get_commands', { commands: [] })
@@ -400,6 +404,12 @@ function handle(command) {
         return response('set_model', undefined, false, 'mock: model switch rejected')
       }
       model = next
+      const levels = levelsFor(model)
+      // Model default when the previous level is not supported.
+      if (!levels.includes(thinkingLevel)) {
+        thinkingLevel = levels.includes('medium') ? 'medium' : levels[0]
+        write({ type: 'thinking_level_changed', level: thinkingLevel })
+      }
       write({ type: 'model_changed', model })
       return response('set_model', undefined)
     }

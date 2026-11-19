@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { canonicalWorkspacePath, pathsEqual } from '@shared/paths'
 import type { Settings } from '@shared/types'
 
 const defaults: Settings = {
@@ -18,18 +19,41 @@ export function settingsFile(): string {
   return join(app.getPath('userData'), 'settings.json')
 }
 
-function projectFolders(paths: string[]): string[] {
-  const folders = new Set<string>()
+function folderName(names: Record<string, string> | undefined, path: string): string | undefined {
+  if (!names) return undefined
+  const direct = names[path]
+  if (typeof direct === 'string' && direct.trim()) return direct.trim()
+  const alias = Object.entries(names).find(([key, value]) => typeof value === 'string' && value.trim() && pathsEqual(key, path))
+  return alias?.[1].trim()
+}
+
+function projectFolders(paths: string[], names?: Record<string, string>): string[] {
+  const chosen = new Map<string, string>()
   for (const path of paths) {
     if (typeof path !== 'string' || !path) continue
+    let resolved = path
     try {
-      folders.add(realpathSync.native(path))
+      resolved = realpathSync.native(path)
     } catch {
       // Keep disconnected volumes and temporarily unavailable projects in the list.
-      folders.add(path)
+      resolved = path
     }
+    const key = canonicalWorkspacePath(resolved)
+    const current = chosen.get(key)
+    // /var and /private/var are the same folder. Prefer the entry that has a name.
+    if (!current || (!folderName(names, current) && folderName(names, resolved))) chosen.set(key, resolved)
   }
-  return [...folders]
+  return [...chosen.values()]
+}
+
+function remapWorkspaceNames(names: Record<string, string> | undefined, folders: string[]): Record<string, string> | undefined {
+  if (!names) return names
+  const next: Record<string, string> = {}
+  for (const folder of folders) {
+    const name = folderName(names, folder)
+    if (name) next[folder] = name
+  }
+  return next
 }
 
 export function loadSettings(): Settings {
@@ -37,6 +61,7 @@ export function loadSettings(): Settings {
   try {
     const raw = readFileSync(settingsFile(), 'utf8')
     const parsed = JSON.parse(raw) as Partial<Settings>
+    const workspaces = projectFolders(parsed.workspaces ?? [], parsed.workspaceNames)
     cached = {
       ...defaults,
       ...parsed,
@@ -44,7 +69,8 @@ export function loadSettings(): Settings {
       allowFullAccess: parsed.allowFullAccess === true,
       computerUseEnabled: parsed.computerUseEnabled === true,
       language: parsed.language === 'en' ? 'en' : 'zh-CN',
-      workspaces: projectFolders(parsed.workspaces ?? [])
+      workspaces,
+      workspaceNames: remapWorkspaceNames(parsed.workspaceNames, workspaces)
     }
   } catch {
     cached = { ...defaults }
@@ -60,8 +86,9 @@ export function saveSettings(patch: Partial<Settings>): Settings {
   if (next.language !== 'en') next.language = 'zh-CN'
   next.toolApprovalMode = next.toolApprovalMode === 'all' ? 'all' : 'dangerous'
   next.allowFullAccess = next.allowFullAccess === true
-  if (patch.workspaces) {
-    next.workspaces = projectFolders(patch.workspaces)
+  if (patch.workspaces || patch.workspaceNames) {
+    next.workspaces = projectFolders(next.workspaces, next.workspaceNames)
+    next.workspaceNames = remapWorkspaceNames(next.workspaceNames, next.workspaces)
   }
   const file = settingsFile()
   if (!existsSync(dirname(file))) mkdirSync(dirname(file), { recursive: true })

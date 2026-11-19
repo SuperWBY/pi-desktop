@@ -124,7 +124,7 @@ export function ComputerPreview({expandedDocument}: {expandedDocument: string | 
   const phrases = toolPhrases(run.name)
   const status = state.uiRequests.length && run.status === 'running' ? '等待你确认' : run.status === 'error' ? phrases.failed : computerUseOutcome(run.name, run.resultDetails) || (run.status === 'running' ? phrases.running : phrases.done)
   const pending = state.uiRequests.length > 0 && state.streaming
-  return <section ref={measurePreview} className="cu-preview" style={style} data-moved={!!position}
+  return <section ref={measurePreview} className="cu-preview" style={style} data-moved={position ? 'true' : 'false'}
     onPointerDown={startDrag} onPointerMove={move} onPointerCancel={() => { drag.current = null }}
     onLostPointerCapture={() => { drag.current = null }} onPointerUp={e => {
       if (drag.current?.id !== e.pointerId) return

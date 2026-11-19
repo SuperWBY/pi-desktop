@@ -34,9 +34,9 @@ import { Modal, Popover, Spinner } from './ui'
 import { ProjectPicker } from './ProjectPicker'
 
 const PERMISSIONS: Record<SessionPermission, { label: string; detail: string }> = {
-  ask: { label: '询问审批', detail: '每次调用工具前询问你。' },
-  review: { label: '自动审核', detail: '按本地规则检查终端命令，识别到高风险操作时询问你。' },
-  full: { label: '完全访问', detail: '本会话的 Pi 可访问系统允许的文件和网络，工具调用无需审批。' }
+  ask: { label: '每次先问我', detail: '做任何操作之前都会先问你。' },
+  review: { label: '通常直接做', detail: '一般操作直接进行；发现危险命令时再问你。' },
+  full: { label: '不再询问', detail: '可以修改这台电脑上的文件并联网，不再逐次询问。只在你完全信任这次任务时使用。' }
 }
 
 type Draft = { text: string; attachments: Attachment[] }
@@ -886,9 +886,9 @@ export function Composer(): ReactNode {
                 event.target.value = ''
               }}
             />
-            <Popover width={350} trigger={(open, toggle, expanded) => (
+            <Popover width={380} trigger={(open, toggle, expanded) => (
               <button className={clsx('approval-mode-chip', sessionSecurity && `permission-${sessionSecurity.permission}`, open && 'open')}
-                onClick={toggle} disabled={changingPermission || state.status !== 'ready'} aria-label={t('当前会话权限')} title={t('当前会话权限')} {...expanded}>
+                onClick={toggle} disabled={changingPermission || state.status !== 'ready'} aria-label={t('这一次对话')} title={t('这一次对话')} {...expanded}>
                 {changingPermission ? <Spinner size={13} /> : <ShieldCheck size={13} />}
                 <span className="approval-mode-label">
                   {t(changingPermission ? '正在切换权限…' : sessionSecurity ? PERMISSIONS[sessionSecurity.permission].label : '会话权限')}
@@ -898,7 +898,8 @@ export function Composer(): ReactNode {
             )}>
               {(close) => <div className="menu">
                 <div className="menu-group">
-                  <div className="menu-group-label">{t('当前会话权限')}</div>
+                  <div className="menu-group-label">{t('这一次对话')}</div>
+                  <p className="approval-menu-note">{t('只影响正在进行的这次对话。')}</p>
                   {(['ask', 'review', ...(state.settings.allowFullAccess || sessionSecurity?.permission === 'full' ? ['full'] as const : [])] as const).map((permission) => {
                     const { label, detail } = PERMISSIONS[permission]
                     const active = permission === sessionSecurity?.permission
@@ -918,10 +919,17 @@ export function Composer(): ReactNode {
                   <div className="permission-menu-scope">
                     <ShieldCheck size={13} aria-hidden="true" />
                     <span>{sessionSecurity?.sandboxed
-                      ? `${t(sessionSecurity.files === 'read-only' ? '项目只读' : '项目可写')} · ${t(sessionSecurity.network === 'off' ? '网络已关闭' : '联网受限')}`
-                      : t(sessionSecurity ? '沙箱未开启' : '权限状态加载中…')}</span>
+                      ? t('保护已开启')
+                      : t(sessionSecurity ? '保护未开启' : '权限状态加载中…')}</span>
                     <button type="button" className="permission-settings-link" onClick={() => { close(); openPermissionSettings('network') }}>
-                      {t('文件与网络')}
+                      {t('查看保护设置')}
+                    </button>
+                  </div>
+                  <div className="permission-menu-later">
+                    <div className="menu-group-label">{t('之后的新对话')}</div>
+                    <p>{t('这里的选择不会改变以后新建对话的默认方式。')}</p>
+                    <button type="button" className="menu-item" onClick={() => { close(); openPermissionSettings('tools') }}>
+                      {t('更改新对话的默认方式')}
                     </button>
                   </div>
                   {streaming && <p className="approval-menu-note">{t('任务结束后可切换权限。')}</p>}
@@ -934,12 +942,12 @@ export function Composer(): ReactNode {
               </div>}
             </Popover>
             {fullAccessTarget === key && (
-              <Modal open title={t('为当前会话启用完全访问？')}
-                subtitle={t('本会话会关闭 Pi 沙箱并跳过工具审批。Pi 可读写系统允许的文件并联网。浏览器和电脑操作仍由各自的权限设置管理。')}
+              <Modal open title={t('这次对话不再询问？')}
+                subtitle={t('可以修改这台电脑上的文件并联网，不再逐次询问。只在你完全信任当前任务时使用。')}
                 onClose={() => setFullAccessTarget(null)}
                 footer={<>
                   <button type="button" className="button ghost" onClick={() => setFullAccessTarget(null)}>{t('取消')}</button>
-                  <button type="button" className="button primary" onClick={() => void changePermission('full')}>{t('启用完全访问')}</button>
+                  <button type="button" className="button primary" onClick={() => void changePermission('full')}>{t('这次不再询问')}</button>
                 </>} children={null} />
             )}
           </div>

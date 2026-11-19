@@ -3,6 +3,7 @@ import { Check, ChevronDown, FolderOpen, MessageCircle, Plus, Search } from 'luc
 import { useApp } from '../store'
 import { useTranslation } from '../i18n'
 import { projectName, shortenPath } from '../lib/format'
+import { isTemporaryWorkspace } from '@shared/paths'
 import { Popover } from './ui'
 
 /**
@@ -18,11 +19,11 @@ export function ProjectPicker(): ReactNode {
 
   const projects = useMemo(() => {
     const scratchPath = state.boot?.scratchPath
-    const list = state.settings.workspaces.filter((path) => path !== scratchPath)
+    const list = state.settings.workspaces.filter((path) => !isTemporaryWorkspace(path, scratchPath))
     if (
       state.workspace &&
       !state.scratchWorkspace &&
-      state.workspace !== scratchPath &&
+      !isTemporaryWorkspace(state.workspace, scratchPath) &&
       !list.includes(state.workspace)
     ) {
       list.unshift(state.workspace)
@@ -38,19 +39,20 @@ export function ProjectPicker(): ReactNode {
     )
   }, [projects, query, state.settings.workspaceNames])
 
-  const currentLabel = state.scratchWorkspace
-    ? t('选择项目')
-    : projectName(state.settings.workspaceNames, state.workspace) || t('选择项目')
+  const temporary = state.scratchWorkspace || isTemporaryWorkspace(state.workspace, state.boot?.scratchPath)
+  const currentLabel = temporary
+    ? t('不关联文件夹')
+    : projectName(state.settings.workspaceNames, state.workspace) || t('选择文件夹')
 
   return (
     <Popover
       width={310}
       trigger={(_open, toggle, expanded) => (
         <button
-          className={`project-picker-trigger composer-project-tab${state.scratchWorkspace ? '' : ' active'}`}
+          className={`project-picker-trigger composer-project-tab${temporary ? '' : ' active'}`}
           onClick={toggle}
           disabled={state.status === 'starting'}
-          title={state.scratchWorkspace ? t('不关联项目') : state.workspace ?? ''}
+          title={temporary ? t('这次对话没有关联文件夹') : shortenPath(state.workspace, state.boot?.home)}
           {...expanded}
         >
           <FolderOpen size={13} />
@@ -109,18 +111,18 @@ export function ProjectPicker(): ReactNode {
             </span>
           </button>
           <button
-            className={state.scratchWorkspace ? 'project-picker-item active' : 'project-picker-item'}
+            className={temporary ? 'project-picker-item active' : 'project-picker-item'}
             onClick={() => {
               close()
-              if (!state.scratchWorkspace) void actions.newScratchSession()
+              if (!temporary) void actions.newScratchSession()
             }}
           >
             <MessageCircle size={15} />
             <span className="project-picker-main">
-              <span className="project-picker-name">{t('不在项目中工作')}</span>
-              <span className="project-picker-path">{t('出现在最近对话')}</span>
+              <span className="project-picker-name">{t('只聊天，不选文件夹')}</span>
+              <span className="project-picker-path">{t('对话会出现在「最近对话」里')}</span>
             </span>
-            {state.scratchWorkspace && <Check size={14} className="project-picker-check" />}
+            {temporary && <Check size={14} className="project-picker-check" />}
           </button>
         </div>
       )}

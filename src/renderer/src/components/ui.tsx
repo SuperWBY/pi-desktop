@@ -91,19 +91,25 @@ export function Popover({
     const node = rootRef.current
     if (!node) return
     const rect = node.getBoundingClientRect()
-    const gap = 6
+    const gap = 8
+    const edge = 8
+    // A chip inside the composer sits below the text field. Anchor to the
+    // composer box so the menu clears the input instead of covering it.
+    const composer = node.closest('.composer')?.getBoundingClientRect()
+    const anchorTop = composer ? composer.top : rect.top
+    const anchorBottom = composer ? composer.bottom : rect.bottom
     const left = Math.min(
-      Math.max(8, align === 'right' ? rect.right - width : rect.left),
-      Math.max(8, window.innerWidth - width - 8)
+      Math.max(edge, align === 'right' ? rect.right - width : rect.left),
+      Math.max(edge, window.innerWidth - width - edge)
     )
-    const below = window.innerHeight - rect.bottom - gap - 8
-    const above = rect.top - gap - 8
-    const openUp = below < 260 && above > below
-    const maxHeight = Math.max(180, Math.min(460, openUp ? above : below))
+    const above = Math.max(0, anchorTop - gap - edge)
+    const below = Math.max(0, window.innerHeight - anchorBottom - gap - edge)
+    const openUp = below < 220 && above >= below
+    const maxHeight = Math.min(460, openUp ? above : below)
     if (openUp) {
-      setStyle({ bottom: window.innerHeight - rect.top + gap, left, width, maxHeight })
+      setStyle({ bottom: window.innerHeight - anchorTop + gap, left, width, maxHeight })
     } else {
-      setStyle({ top: rect.bottom + gap, left, width, maxHeight })
+      setStyle({ top: anchorBottom + gap, left, width, maxHeight })
     }
   }
 

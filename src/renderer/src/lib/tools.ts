@@ -6,7 +6,55 @@ export type ToolKind = 'bash' | 'read' | 'write' | 'edit' | 'tool'
 export interface ToolMeta {
   kind: ToolKind
   title: string
+  /** Filename, hostname, or a Chinese phrase. Phrases are translated; names are not. */
   subtitle: string
+  translateSubtitle?: boolean
+}
+
+function hostOf(value: string): string {
+  const match = value.match(/https?:\/\/[^\s'")]+/)
+  if (!match) return ''
+  try {
+    return new URL(match[0]).hostname.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
+}
+
+function fileNameOf(path: string): string {
+  return path.split(/[/\\]/).filter(Boolean).pop() ?? ''
+}
+
+function textField(source: unknown, keys: string[]): string {
+  if (!source || typeof source !== 'object') return ''
+  const record = source as Record<string, unknown>
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
+}
+
+/** Collapsed rows say what happened. The raw command stays in the expanded body. */
+function describeCommand(command: string): Pick<ToolMeta, 'subtitle' | 'translateSubtitle'> {
+  const trimmed = command.replace(/\s+/g, ' ').trim()
+  const host = hostOf(trimmed)
+  if (host) return { subtitle: host, translateSubtitle: false }
+  if (/\b(env|printenv)\b/.test(trimmed)) return { subtitle: '查看环境信息', translateSubtitle: true }
+  if (/^\s*(ls|dir|pwd)\b/.test(trimmed)) return { subtitle: '查看文件列表', translateSubtitle: true }
+  if (/\b(rg|grep|find|fd)\b/.test(trimmed)) return { subtitle: '搜索文件内容', translateSubtitle: true }
+  const read = trimmed.match(/(?:^|\s)(?:cat|head|tail|less|more)\s+([^\s;|&]+)/)
+  const name = read ? fileNameOf(read[1]) : ''
+  if (name) return { subtitle: name, translateSubtitle: false }
+  return { subtitle: '一条命令', translateSubtitle: true }
+}
+
+export function readRangeLabel(args: Record<string, unknown>): { start: number; end: number | null } | null {
+  const offset = typeof args.offset === 'number' ? args.offset : null
+  const limit = typeof args.limit === 'number' ? args.limit : null
+  if (offset == null && limit == null) return null
+  const start = offset ?? 1
+  return { start, end: limit != null ? start + Math.max(limit, 1) - 1 : null }
 }
 
 /**
@@ -65,7 +113,7 @@ export function toolPhrases(name: string): ToolPhrases {
     case 'computer_use_session_takeover':
       return { running: '等待人工接管', done: '人工接管已处理', failed: '人工接管中断', group: '人工接管 {count} 次' }
     default:
-      return { running: '正在调用', done: '已调用', failed: '调用失败', group: '调用了 {count} 次 {name}' }
+      return { running: '正在处理', done: '已完成一步', failed: '这一步失败', group: '完成了 {count} 步' }
   }
 }
 
@@ -121,43 +169,31 @@ export function contentText(value: unknown): string {
   return ''
 }
 
-export function toolMeta(name: string, args: Record<string, unknown>): ToolMeta {
+export function toolMeta(name: string, args: Record<string, unknown>, details?: unknown): ToolMeta {
   const path = typeof args.path === 'string' ? args.path : ''
-  const fileName = path.split('/').filter(Boolean).pop() ?? path
+  const fileName = fileNameOf(path)
+  const page = hostOf(textField(args, ['url', 'href', 'page'])) || hostOf(textField(details, ['url', 'href', 'page']))
+  const named = textField(args, ['title', 'name', 'app', 'query']) || textField(details, ['title', 'windowTitle', 'app'])
 
   switch (name) {
     case 'bash': {
       const command = typeof args.command === 'string' ? args.command : ''
-      return { kind: 'bash', title: 'Bash', subtitle: command.replace(/\s+/g, ' ').trim() }
+      return { kind: 'bash', title: 'Bash', ...describeCommand(command) }
     }
-    case 'read': {
-      const range: string[] = []
-      if (typeof args.offset === 'number') range.push(`from ${args.offset}`)
-      if (typeof args.limit === 'number') range.push(`${args.limit} lines`)
-      return {
-        kind: 'read',
-        title: 'Read',
-        subtitle: fileName + (range.length ? ` · ${range.join(', ')}` : '')
-      }
-    }
+    case 'read':
+      return { kind: 'read', title: 'Read', subtitle: fileName || '文件', translateSubtitle: !fileName }
     case 'write':
-      return { kind: 'write', title: 'Write', subtitle: fileName }
-    case 'edit': {
-      const count = editPairs(args).length
-      return {
-        kind: 'edit',
-        title: 'Edit',
-        subtitle: fileName + (count > 1 ? ` · ${count} changes` : '')
-      }
-    }
+      return { kind: 'write', title: 'Write', subtitle: fileName || '文件', translateSubtitle: !fileName }
+    case 'edit':
+      return { kind: 'edit', title: 'Edit', subtitle: fileName || '文件', translateSubtitle: !fileName }
     case 'computer_use_observe':
-      return { kind: 'tool', title: name, subtitle: typeof args.app === 'string' ? args.app : '' }
+      return { kind: 'tool', title: name, subtitle: named || page, translateSubtitle: false }
     case 'computer_use_session_wait':
-      return { kind: 'tool', title: name, subtitle: typeof args.name === 'string' ? args.name : '' }
+      return { kind: 'tool', title: name, subtitle: typeof args.name === 'string' ? args.name : page, translateSubtitle: false }
     case 'computer_use_session_verify_file':
-      return { kind: 'tool', title: name, subtitle: typeof args.expectedName === 'string' ? args.expectedName : '' }
+      return { kind: 'tool', title: name, subtitle: typeof args.expectedName === 'string' ? args.expectedName : fileName, translateSubtitle: false }
     default:
-      return { kind: 'tool', title: name, subtitle: '' }
+      return { kind: 'tool', title: name, subtitle: page || named || fileName, translateSubtitle: false }
   }
 }
 

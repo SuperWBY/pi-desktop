@@ -4,20 +4,21 @@ import clsx from 'clsx'
 import { Download, FolderOpen, Plus, RefreshCw } from 'lucide-react'
 import { useApp } from '../store'
 import { projectName, shortenPath } from '../lib/format'
+import { isTemporaryWorkspace } from '@shared/paths'
 import { PiLogo } from './PiLogo'
 
 export function Welcome(): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
-  const workspaces = state.settings.workspaces.slice().reverse()
+  const workspaces = state.settings.workspaces.filter((path) => !isTemporaryWorkspace(path, state.boot?.scratchPath)).slice().reverse()
   const piMissing = Boolean(state.boot && !state.boot.piVersion)
   const needsModel = Boolean(state.boot?.piVersion && !state.piSettings?.defaultProvider && !state.piSettings?.defaultModel)
-  const piBundled = state.boot?.piBundled === true
   const [installing, setInstalling] = useState(false)
   const [rechecking, setRechecking] = useState(false)
   const [installError, setInstallError] = useState('')
   const [installMessage, setInstallMessage] = useState('')
   const [installLog, setInstallLog] = useState('')
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const autoStarted = useRef(false)
 
   useEffect(() => window.pi.onPiInstallProgress((progress) => setInstallMessage(progress.message)), [])
@@ -31,7 +32,8 @@ export function Welcome(): ReactNode {
     try {
       const result = await window.pi.installPi()
       if (!result.ok) {
-        setInstallError(result.error || t('准备失败，请检查网络后重试。'))
+        setInstallError(result.error || t('请检查网络后再试一次。'))
+        setShowAdvanced(true)
         setInstallLog(result.output || '')
         return
       }
@@ -65,7 +67,8 @@ export function Welcome(): ReactNode {
     try {
       const result = await window.pi.recheckPi()
       if (!result.piVersion) {
-        setInstallError(t('还没有找到 Pi。请先完成准备，或检查设置里的 Pi 路径。'))
+        setInstallError(t('还是没有准备好。可以再试一次，或打开高级选项查看详情。'))
+        setShowAdvanced(true)
         return
       }
       window.location.reload()
@@ -83,46 +86,55 @@ export function Welcome(): ReactNode {
           <PiLogo size={44} />
         </div>
         <h1>Pi Desktop</h1>
-        <p className="welcome-sub">{needsModel ? t('先选择 AI 模型，再打开项目开始对话。') : t('打开一个项目，让 Pi 帮你研究问题、处理文件、规划任务或编写代码。')}</p>
+        <p className="welcome-sub">{needsModel ? t('连接一个 AI 模型后就可以开始聊天。不一定要先选文件夹。') : t('可以直接开始聊天。如果要处理某个文件夹里的文件，再选择文件夹。')}</p>
 
         {piMissing && (
           <div className="welcome-setup" role="region" aria-label={t('准备 Pi')}>
             <div className="welcome-setup-head">
               <span className="welcome-setup-icon"><Download size={17} /></span>
               <div>
-                <strong>{t('准备 Pi')}</strong>
-                <p>{t('Pi 是这个应用的 AI 引擎，负责理解问题、使用工具和处理文件。首次启动会自动准备，通常不需要你操作。')}</p>
+                <strong>{installError ? t('准备工作没有完成') : installing ? t('正在完成准备工作') : t('第一次使用，先完成准备工作')}</strong>
+                <p>{installing ? t('通常一两分钟，请不要关闭窗口。') : t('这是应用自己的准备步骤，一般不需要你操作。')}</p>
               </div>
             </div>
             <div className="welcome-setup-actions">
               <button className="button primary" disabled={installing} onClick={() => void installPi()}>
                 {installing ? <RefreshCw size={14} className="spin" /> : <Download size={14} />}
-                {installing ? t('正在准备…') : installError ? t('重试准备') : t('立即准备')}
-              </button>
-              <button className="button ghost" disabled={installing || rechecking} onClick={() => void recheckPi()}>
-                <RefreshCw size={14} className={rechecking ? 'spin' : undefined} />
-                {t('重新检测')}
+                {installing ? t('正在准备…') : installError ? t('再试一次') : t('开始准备')}
               </button>
             </div>
-            {installing && <p className="welcome-setup-status">{installMessage || t('正在自动准备，通常需要一两分钟。请不要关闭窗口。')}</p>}
+            {installing && <p className="welcome-setup-status">{installMessage || t('通常一两分钟，请不要关闭窗口。')}</p>}
             {installError && <p className="welcome-setup-error" role="alert">{installError}</p>}
-            {installLog && (
-              <details className="welcome-setup-log">
-                <summary>{t('查看安装日志')}</summary>
-                <pre>{installLog.replace(/\x1b\[[0-9;]*m/g, '').slice(-4000)}</pre>
+            {(installError || showAdvanced) ? (
+              <details className="welcome-setup-log" open>
+                <summary>{t('高级')}</summary>
+                <div className="welcome-setup-actions">
+                  <button className="button ghost" disabled={installing || rechecking} onClick={() => void recheckPi()}>
+                    <RefreshCw size={14} className={rechecking ? 'spin' : undefined} />
+                    {t('重新检测')}
+                  </button>
+                  <button className="button ghost" onClick={() => actions.openSettings(true)}>{t('手动指定程序位置')}</button>
+                </div>
+                {installLog && <pre>{installLog.replace(/\x1b\[[0-9;]*m/g, '').slice(-4000)}</pre>}
+                {state.boot?.piVersion && <p className="welcome-setup-status">{t('检测到的版本')} {state.boot.piVersion}</p>}
               </details>
+            ) : (
+              <button className="welcome-setup-settings" onClick={() => setShowAdvanced(true)}>{t('高级')}</button>
             )}
-            <button className="welcome-setup-settings" onClick={() => actions.openSettings(true)}>{t('已经安装过？设置 Pi 路径')}</button>
           </div>
         )}
 
         {!piMissing && needsModel && (
-          <div className="welcome-model" role="region" aria-label={t('选择模型')}>
+          <div className="welcome-model is-guide" role="region" aria-label={t('连接模型')}>
             <div className="welcome-model-head">
-              <strong>{t('还差一步：选择 AI 模型')}</strong>
-              <p>{t(piBundled ? 'Pi 已准备好。选择一个 AI 服务商并填写 API Key 即可使用。' : 'Pi 已安装。选择一个 AI 服务商并填写 API Key 即可使用。')}</p>
+              <strong>{t('还差一步：连接 AI 模型')}</strong>
+              <p>{t('API Key 是服务商给你的一串密钥，只保存在这台电脑上。也可以用账号登录。连接后就能开始聊天，不需要先选文件夹。')}</p>
             </div>
-            <button className="button primary" onClick={openModelSettings}>{t('选择模型')}</button>
+            <button className="button primary" onClick={openModelSettings}>{t('连接模型')}</button>
+            <details className="welcome-setup-log">
+              <summary>{t('我还没有密钥')}</summary>
+              <p>{t('到服务商网站的 API keys 页面创建。常见的有 OpenAI、Anthropic、Google AI Studio 和 DeepSeek。创建后回到这里粘贴。')}</p>
+            </details>
           </div>
         )}
 
@@ -136,8 +148,10 @@ export function Welcome(): ReactNode {
 
         {!piMissing && (
           <div className="welcome-actions">
-            <button className={clsx('button', needsModel ? 'ghost' : 'primary')} onClick={() => actions.openAddProject(true)}>
-              <FolderOpen size={15} />{t("打开项目")}</button>
+            <button className={clsx('button', needsModel ? 'ghost' : 'primary')} onClick={() => void actions.newScratchSession()}>
+              {t('开始聊天')}</button>
+            <button className="button ghost" onClick={() => actions.openAddProject(true)}>
+              <FolderOpen size={15} />{t('选择文件夹')}</button>
             <button className="button ghost" onClick={() => actions.openSettings(true)}>{t("设置")}</button>
           </div>
         )}
@@ -164,9 +178,6 @@ export function Welcome(): ReactNode {
           </div>
         )}
 
-        <div className="welcome-hint">
-          {state.boot ? `${piBundled ? '内置 Pi' : 'pi'} ${state.boot.piVersion ?? 'unknown'}` : ''}
-        </div>
       </div>
     </div>
   )

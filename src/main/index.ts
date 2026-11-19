@@ -70,6 +70,7 @@ import { proxyEnv } from './network-env'
 import { appendSandboxAudit, readSandboxAudit } from './sandbox-audit'
 import { searchPackageCatalog } from './package-catalog'
 import { browserRouterStatus, startCdpBrowser } from './browser-router-status'
+import { isTemporaryWorkspace } from '@shared/paths'
 import { loadSettings, saveSettings, settingsFile } from './settings'
 import { jevEnv, jevStatus, saveJevSettings } from './jev-store'
 import { validateCron } from './schedule-cadence'
@@ -434,7 +435,7 @@ async function doOpenSession(options: {
         const existingPath = stateResponse.data?.sessionFile ?? options.sessionPath ?? null
         const existingScratch = existing.cwd === scratchRoot
         if (existingPath) rememberActiveSession(existing.cwd, existingPath)
-        if (!existingScratch) {
+        if (!existingScratch && !isTemporaryWorkspace(existing.cwd)) {
           saveSettings({
             lastWorkspace: existing.cwd,
             workspaces: [...loadSettings().workspaces, existing.cwd]
@@ -539,7 +540,7 @@ async function doOpenSession(options: {
     if (sessionFile) rememberActiveSession(cwd, sessionFile)
 
     saveSettings(
-      scratch
+      scratch || isTemporaryWorkspace(cwd)
         ? {}
         : {
             lastWorkspace: cwd,

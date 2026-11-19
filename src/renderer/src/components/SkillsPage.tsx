@@ -43,11 +43,42 @@ const skillLabels: Record<string, [string, string]> = {
   'chatcut-create-pixel-processor': ['制作画面效果', '为视频画面添加遮罩、色彩或特效。'],
   'chatcut-doctor': ['排查 ChatCut 问题', '诊断连接、项目打开或导出失败。'],
   'chatcut-media-offer': ['整理素材与文字稿', '整理字幕、文案及音视频素材信息。'],
-  'anti-ui-slop': ['改进界面设计', '检查界面布局与交互，提出具体修改。']
+  'anti-ui-slop': ['改进界面设计', '检查界面布局与交互，提出具体修改。'],
+  'design-taste-frontend': ['设计落地页', '按说明调整页面、作品集和改版，避免套用模板。'],
+  'frontend-design': ['设计界面', '做新界面或改现有界面时，给出具体的视觉方案。'],
+  gamma: ['生成演示文稿', '把内容做成可以翻页的演示。'],
+  'guizang-ppt-skill': ['生成演示文稿', '把内容做成可以翻页的演示。'],
+  alpha: ['读取表格', '读取表格里的记录、字段和视图。'],
+  beta: ['整理长内容', '把很长的文字整理成摘要。'],
+  'lark-approval': ['处理飞书审批', '查看和处理审批待办。'],
+  'lark-apps': ['使用飞书应用', '查看和操作飞书里的应用。'],
+  'lark-attendance': ['查看考勤', '查看自己的考勤打卡记录。'],
+  'lark-base': ['使用多维表格', '查看和整理飞书多维表格。'],
+  'lark-calendar': ['管理日历', '查看日程，创建或更新会议。'],
+  'lark-contact': ['查找联系人', '按姓名或部门查找飞书联系人。']
+}
+
+const SKILL_GROUP_ORDER = ['查找资料', '办公协作', '设计与呈现', '其他能力']
+
+function skillGroupTitle(skill: SkillEntry): string {
+  const blob = `${skill.name} ${skill.description} ${skill.summary ?? ''}`
+  if (/lark|feishu|飞书|审批|考勤|日历|多维表格|联系人/.test(blob)) return '办公协作'
+  if (/design|frontend|界面|设计|ppt|演示|动效|ui-slop/i.test(blob)) return '设计与呈现'
+  if (/reach|search|research|搜索|调研|网页|字幕|摘要|表格/.test(blob)) return '查找资料'
+  return '其他能力'
+}
+
+function sentenceOf(text: string): string {
+  const sentence = text.replace(/\s+/g, ' ').trim().split(/[。！？\n]/)[0]?.trim() ?? ''
+  if (!sentence) return ''
+  return sentence.length > 32 ? `${sentence.slice(0, 31)}…` : sentence
 }
 
 function skillLabel(skill: SkillEntry, t: (text: string) => string): string {
-  return skill.displayName || (skillLabels[skill.name] ? t(skillLabels[skill.name][0]) : skill.name)
+  if (skill.displayName?.trim()) return skill.displayName.trim()
+  if (skillLabels[skill.name]) return t(skillLabels[skill.name][0])
+  const fromDescription = sentenceOf(skill.summary || skill.description || '')
+  return fromDescription || t('未命名技能')
 }
 
 function skillSummary(skill: SkillEntry, t: (text: string) => string): string {
@@ -585,13 +616,13 @@ export function SkillsPage(): ReactNode {
         <>
           <div className="skills-tabs">
             <button className={clsx('skills-tab', tab === 'skills' && 'active')} onClick={() => setTab('skills')}>
-              {t('技能')} {skills.length}
+              {t('技能')}
             </button>
             <button className={clsx('skills-tab', tab === 'connectors' && 'active')} onClick={() => setTab('connectors')}>
               {t('应用连接')}
             </button>
             <button className={clsx('skills-tab', tab === 'plugins' && 'active')} onClick={() => setTab('plugins')}>
-              {t('插件')} {packages.length}
+              {t('插件')}
             </button>
           </div>
 
@@ -648,24 +679,27 @@ export function SkillsPage(): ReactNode {
                   visibleSkills.length === 0 ? (
                     <div className="skills-empty">{t('没有匹配的技能')}</div>
                   ) : (
-                    <div className="skills-grid">
-                      {visibleSkills.map((skill) => (
-                        <button className="skill-card" key={skill.path} onClick={() => void openSkill(skill)}>
-                          <div className="skill-tile">
-                            <Sparkles size={16} />
-                          </div>
-                          <div className="skill-card-body">
-                            <div className="skill-card-name">
-                              {skillLabel(skill, t)}
-                            </div>
-                            <div className="skill-card-desc">{skillSummary(skill, t) || t('没有描述')}</div>
-                            {skill.requires.missing.length > 0 && (
-                              <div className="skill-card-meta missing">{t('缺少依赖')}</div>
-                            )}
-                          </div>
-                        </button>
-                      ))}
-                    </div>
+                    SKILL_GROUP_ORDER.filter((title) => visibleSkills.some((skill) => skillGroupTitle(skill) === title)).map((title) => (
+                      <section className="skills-group" key={title}>
+                        <h3 className="skills-group-title">{t(title)}</h3>
+                        <div className="skills-grid">
+                          {visibleSkills.filter((skill) => skillGroupTitle(skill) === title).map((skill) => (
+                            <button className="skill-card" key={skill.path} onClick={() => void openSkill(skill)}>
+                              <div className="skill-tile">
+                                <Sparkles size={16} />
+                              </div>
+                              <div className="skill-card-body">
+                                <div className="skill-card-name">{skillLabel(skill, t)}</div>
+                                <div className="skill-card-desc">{skillSummary(skill, t) || t('没有描述')}</div>
+                                {skill.requires.missing.length > 0 && (
+                                  <div className="skill-card-meta missing">{t('缺少依赖')}</div>
+                                )}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </section>
+                    ))
                   )
                 ) : visiblePackages.length === 0 ? (
                   <div className="skills-empty">{t('还没有安装插件')}</div>

@@ -103,14 +103,28 @@ function formatWhen(timestamp: number | null, timezone?: string): string {
   }
 }
 
+function describeCron(expression: string): string | null {
+  const parts = expression.trim().split(/\s+/)
+  if (parts.length < 5) return null
+  const [minute, hour, day, month, weekday] = parts
+  if (day !== '*' || month !== '*') return null
+  if (hour === '*' && /^\d+$/.test(minute) && weekday === '*') return `每小时的第 ${Number(minute)} 分钟`
+  if (!/^\d+$/.test(minute) || !/^\d+$/.test(hour)) return null
+  const time = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`
+  if (weekday === '*') return `每天 ${time}`
+  if (weekday === '1-5' || weekday === '1,2,3,4,5') return `工作日 ${time}`
+  if (weekday === '0,6' || weekday === '6,0') return `周末 ${time}`
+  return null
+}
+
 function cadenceText(cadence: ScheduleCadence, timezone?: string): string {
   if (cadence.type === 'once') return `一次 · ${formatWhen(cadence.at, timezone)}`
   if (cadence.type === 'hourly') return `每小时 :${String(cadence.minute).padStart(2, '0')}`
   if (cadence.type === 'daily') return `每天 ${cadence.time}`
   if (cadence.type === 'weekdays') return `工作日 ${cadence.time}`
   if (cadence.type === 'weekly') return `${WEEKDAYS[cadence.weekday] ?? '每周'} ${cadence.time}`
-  if (cadence.type === 'cron') return `cron · ${cadence.expression}`
-  return `文件变化 · ${baseName(cadence.path)}`
+  if (cadence.type === 'cron') return describeCron(cadence.expression) ?? '自定义时间'
+  return `文件有变化时 · ${baseName(cadence.path)}`
 }
 
 function statusLabel(status: ScheduledRunStatus | null, t: (text: string) => string): string {
@@ -328,8 +342,8 @@ export function SchedulesPage(): ReactNode {
     setRunMode(task?.runMode ?? 'new-session')
     setCatchUp(task?.catchUp ?? false)
     setNotifications(task?.notifications ?? true)
-    setAdvancedOpen(false)
     const value = task?.cadence
+    setAdvancedOpen(value?.type === 'cron' || value?.type === 'event')
     if (value) {
       setKind(value.type)
       if (value.type === 'once') setOnceAt(toZonedInput(value.at, task?.timezone || DEFAULT_TZ))
@@ -590,7 +604,7 @@ export function SchedulesPage(): ReactNode {
 
           {selected.lastStatus === 'interrupted' && <p className="install-warning">{t('任务运行时被中断，结果可能已经产生。请先核对实际结果，再决定是否重新运行或启用。')}</p>}
           <section className="detail-section">
-            <h2>{t('Prompt')}</h2>
+            <h2>{t('要做的事情')}</h2>
             <pre className="schedule-prompt">{selected.prompt}</pre>
           </section>
 
@@ -713,7 +727,7 @@ export function SchedulesPage(): ReactNode {
       <Modal
         open={createOpen}
         title={editing ? t('编辑定时任务') : t('新建定时任务')}
-        subtitle={t('任务会在后台启动一个独立的 pi 会话')}
+        subtitle={t('到时间后会在后台自动做这件事。')}
         onClose={() => (saving ? undefined : setCreateOpen(false))}
         width={680}
         footer={
@@ -729,19 +743,19 @@ export function SchedulesPage(): ReactNode {
       >
         <div className="schedule-form">
           <label className="schedule-field">
-            <span>{t('Prompt')}</span>
+            <span>{t('要做的事情')}</span>
             <textarea
               className="schedule-textarea"
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
               rows={5}
-              placeholder={t('每次运行时要执行的完整指令')}
+              placeholder={t('写下到时候要完成的事，例如：汇总昨天的订单并写成一段摘要')}
             />
           </label>
           <div className="schedule-field">
             <span>{t('频率')}</span>
             <div className="schedule-cadence">
-              {(['once', 'hourly', 'daily', 'weekdays', 'weekly', 'cron', 'event'] as CadenceKind[]).map((item) => (
+              {(['once', 'daily', 'weekdays', 'weekly', 'hourly'] as CadenceKind[]).map((item) => (
                 <button
                   key={item}
                   className={clsx('skills-filter', kind === item && 'active')}
@@ -755,11 +769,7 @@ export function SchedulesPage(): ReactNode {
                         ? t('每天')
                         : item === 'weekdays'
                           ? t('工作日')
-                          : item === 'weekly'
-                            ? t('每周')
-                            : item === 'cron'
-                              ? t('自定义 cron')
-                              : t('文件变化')}
+                          : t('每周')}
                 </button>
               ))}
             </div>
@@ -780,19 +790,7 @@ export function SchedulesPage(): ReactNode {
                     onChange={(event) => setMinute(Number(event.target.value))}
                   />
                 </label>
-              ) : kind === 'event' ? (
-                <p className="schedule-hint">{t('监听当前项目，800ms 内合并多次变化')}</p>
-              ) : kind === 'cron' ? (
-                <label className="schedule-cron">
-                  {t('表达式')}
-                  <input
-                    className="rename-input"
-                    value={cronExpression}
-                    onChange={(event) => setCronExpression(event.target.value)}
-                    placeholder="0 9 * * 1-5"
-                  />
-                </label>
-              ) : (
+              ) : kind === 'cron' || kind === 'event' ? null : (
                 <>
                   <label>
                     {t('时间')}
@@ -811,14 +809,10 @@ export function SchedulesPage(): ReactNode {
                 </>
               )}
             </div>
-            {kind === 'cron' && (
-              <p className={clsx('schedule-hint', cronError && 'missing')}>
-                {cronError || t('格式：分 时 日 月 周，例如 0 9 * * 1-5 表示工作日 09:00')}
-              </p>
-            )}
-            {kind === 'event' && (
-              <p className="schedule-hint">{t('目录内任意文件变化后触发，800ms 内合并多次变化')}</p>
-            )}
+            <p className="schedule-hint">
+              {t('将按这个时间运行：')}{cadence ? cadenceText(cadence, timezone) : '—'}
+              {preview[0] ? ` · ${t('下次')} ${formatWhen(preview[0], timezone)}` : ''}
+            </p>
             {noNext && !cronError && (
               <p className="schedule-hint missing">{t('未来 8 年没有匹配的运行时间')}</p>
             )}
@@ -831,6 +825,29 @@ export function SchedulesPage(): ReactNode {
           </button>
           {advancedOpen && (
             <div className="schedule-advanced">
+              <div className="schedule-adv-row">
+                <span>{t('自定义时间')}</span>
+                <button type="button" className={clsx('skills-filter', kind === 'cron' && 'active')} onClick={() => setKind('cron')}>{t('使用 cron 表达式')}</button>
+              </div>
+              {kind === 'cron' && (
+                <label className="schedule-cron">
+                  {t('表达式')}
+                  <input
+                    className="rename-input"
+                    value={cronExpression}
+                    onChange={(event) => setCronExpression(event.target.value)}
+                    placeholder="0 9 * * 1-5"
+                  />
+                  <p className={clsx('schedule-hint', cronError && 'missing')}>
+                    {cronError || describeCron(cronExpression) || t('例如 0 9 * * 1-5 表示每个工作日 09:00。下面会显示接下来的运行时间。')}
+                  </p>
+                </label>
+              )}
+              <div className="schedule-adv-row">
+                <span>{t('文件有变化时')}</span>
+                <button type="button" className={clsx('skills-filter', kind === 'event' && 'active')} onClick={() => setKind('event')}>{kind === 'event' ? t('已选择') : t('改用这个')}</button>
+              </div>
+              {kind === 'event' && <p className="schedule-hint">{t('当前文件夹里的文件有变化后触发，短时间内的多次变化会合并成一次。')}</p>}
               <label className="schedule-adv-row">
                 <span>{t('时区')}</span>
                 <select value={timezone} onChange={(event) => setTimezone(event.target.value)}>
@@ -874,7 +891,7 @@ export function SchedulesPage(): ReactNode {
             ))}
           </div>
           <p className="install-warning">
-            {t('定时任务会在无人确认的情况下读写当前项目、执行命令。只给可信的 prompt。')}
+            {t('到点后会自动执行，请只填写你信任的任务。')}
           </p>
         </div>
       </Modal>

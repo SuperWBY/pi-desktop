@@ -514,6 +514,7 @@ export function SettingsPage(): ReactNode {
   const [networkProxy, setNetworkProxy] = useState(state.settings.networkProxy ?? '')
   const [networkNoProxy, setNetworkNoProxy] = useState(state.settings.networkNoProxy ?? '')
   const [auditOpen, setAuditOpen] = useState(false)
+  const [networkAdvanced, setNetworkAdvanced] = useState(false)
   const [auditLines, setAuditLines] = useState<string[]>([])
 
   const refreshRouter = async (): Promise<void> => {
@@ -1021,13 +1022,6 @@ export function SettingsPage(): ReactNode {
     </>
   }
 
-  const openAddProvider = (): void => {
-    setEditingProvider(null)
-    setChoosingProvider(true)
-    setShowAdd(true)
-    requestAnimationFrame(() => contentRef.current?.querySelector('.provider-form')?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
-  }
-
   const renderModels = (): ReactNode => {
     const customEntries = Object.entries(customConfig?.providers ?? {})
     const text = modelSearch.trim().toLowerCase()
@@ -1044,14 +1038,11 @@ export function SettingsPage(): ReactNode {
           <div className="model-setup-empty">
             <div className="model-setup-empty-copy">
               <strong>{t('还没有可用模型')}</strong>
-              <p>{t('Pi 只显示已经配置好凭证的模型。添加一个服务商，或先在 pi 中完成登录，然后重新读取。')}</p>
+              <p>{t('用账号登录，或粘贴服务商给你的 API Key。密钥只保存在这台电脑上。')}</p>
             </div>
             <div className="model-setup-empty-actions">
-              <button className="settings-button primary" onClick={() => setOauthOpen(true)}>{t('使用账号登录')}</button>
-              <button className="settings-button" onClick={() => setAuthOpen(true)}>{t('使用 API Key')}</button>
-              <button className="settings-button" onClick={openAddProvider}>{t('自定义服务商')}</button>
-              <button className="settings-button" disabled={modelsBusy} onClick={() => void loadModels()}>
-                <RefreshCw size={12} />{t('重新读取')}</button>
+              <button className="settings-button primary" onClick={() => setOauthOpen(true)}>{t('用账号登录（推荐）')}</button>
+              <button className="settings-button" onClick={() => setAuthOpen(true)}>{t('粘贴 API Key')}</button>
             </div>
           </div>
         )}
@@ -1067,7 +1058,7 @@ export function SettingsPage(): ReactNode {
         </Row>
         <Row
           title={t("默认推理强度")}
-          desc={t("新会话启动时的 thinking level，可在底部选择器临时覆盖。")}
+          desc={t("新建对话时的思考深度，聊天时仍可以临时调整。")}
           query={query}
         >
           <Select
@@ -1127,8 +1118,8 @@ export function SettingsPage(): ReactNode {
           >{t("更新目录")}</button>
         </div>
         <p className="settings-note model-note">
-          {state.settings.language === 'en' ? 'From ' : '来自 '}<code>pi --list-models</code>：{rows.length} / {piModels?.length ?? 0}
-          {state.settings.language === 'en' ? ` models, ${providers.size} providers. Only models with credentials configured in pi are shown.` : ` 个模型，${providers.size} 个服务商。只包含已在 pi 中配置好凭证的模型。`}
+          {t('已保存登录或 API Key 的模型')}：{rows.length} / {piModels?.length ?? 0}
+          {state.settings.language === 'en' ? `, ${providers.size} providers.` : `，${providers.size} ${t('个服务商')}`}
         </p>
         {modelsMessage && <p className="settings-note model-error">{modelsMessage}</p>}
         <div className="model-list">
@@ -1163,7 +1154,7 @@ export function SettingsPage(): ReactNode {
       >
         <div className="custom-provider-list">
           {customEntries.length === 0 && (
-            <div className="model-empty">{t("还没有自定义服务商。pi 默认使用内置目录与登录凭证。")}</div>
+            <div className="model-empty">{t("还没有自定义服务商。需要对接自己的接口时再添加。")}</div>
           )}
           {customEntries.map(([id, provider]) => (
             <div className="custom-provider" key={id}>
@@ -1389,19 +1380,19 @@ export function SettingsPage(): ReactNode {
   terms={['sandbox', '沙箱', '网络', 'network', 'proxy', '域名', '隔离']}
 >
   <Row
-    title={t("启用沙箱")}
+    title={t("打开保护")}
     desc={sandbox?.available
-      ? t("限制 Pi 只能修改当前项目、只访问允许的网站。不会影响你电脑上的其他应用。")
+      ? t("打开后，只能修改当前文件夹里的文件，并且只能访问允许的网站。不会影响电脑上的其他应用。")
       : (sandbox?.reason ?? t("当前平台暂不支持沙箱。"))}
     query={query}
   >
     <Switch
-      label={t("启用沙箱")}
+      label={t("打开保护")}
       checked={state.settings.sandboxEnabled === true}
       onChange={(enabled) => void saveSandbox({ sandboxEnabled: enabled })}
     />
   </Row>
-  {state.settings.sandboxEnabled !== true && <p className="settings-note settings-inactive-note">{t('沙箱未开启。下面的文件和网络限制暂不生效，网络代理仍可单独使用。')}</p>}
+  {state.settings.sandboxEnabled === true && <>
   <Row
     title={t("文件写入范围")}
     desc={t("允许 Pi 修改当前项目，还是只能读取文件？无论哪种，Pi 都可以写会话记录和临时文件。")}
@@ -1440,12 +1431,16 @@ export function SettingsPage(): ReactNode {
     <input
       className="rename-input sandbox-domains"
       value={sandboxDomains}
-      placeholder="registry.npmjs.org, api.example.com"
+      placeholder={t('留空即可，多个网站用逗号分隔')}
       onChange={(event) => setSandboxDomains(event.target.value)}
       onBlur={() => void saveSandbox({ sandboxAllowedDomains: sandboxDomains.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean) })}
     />
   </Row>
+  </>}
+  {state.settings.sandboxEnabled !== true && <p className="settings-note settings-inactive-note">{t('现在没有额外限制。打开保护后，才能限制能改哪些文件、能访问哪些网站。')}</p>}
 </Block>
+<details className="settings-advanced" open={networkAdvanced || (query.trim() !== '' && matches(query, '代理', 'proxy', '网关', '网络代理'))} onToggle={(event) => setNetworkAdvanced(event.currentTarget.open)}>
+  <summary>{t('高级：网络代理')}</summary>
 <Block title={t("网络代理")} query={query} terms={['网络', '代理', '网关', 'proxy', 'no_proxy']}>
   <Row
     title={t("代理地址")}
@@ -1455,7 +1450,7 @@ export function SettingsPage(): ReactNode {
     <input
       className="rename-input sandbox-domains"
       value={networkProxy}
-      placeholder="http://127.0.0.1:7890"
+      placeholder={t('留空即可')}
       onChange={(event) => setNetworkProxy(event.target.value)}
       onBlur={() => void actions.updateSettings({ networkProxy: networkProxy.trim() || undefined })}
     />
@@ -1468,12 +1463,13 @@ export function SettingsPage(): ReactNode {
     <input
       className="rename-input sandbox-domains"
       value={networkNoProxy}
-      placeholder="localhost,127.0.0.1,.local"
+      placeholder={t('留空即可')}
       onChange={(event) => setNetworkNoProxy(event.target.value)}
       onBlur={() => void actions.updateSettings({ networkNoProxy: networkNoProxy.trim() || undefined })}
     />
   </Row>
 </Block>
+</details>
 <Block title={t("运行记录")} query={query} terms={['沙箱', '日志', '审计', 'audit']}>
   <Row
     title={t("沙箱运行记录")}
@@ -1520,23 +1516,23 @@ export function SettingsPage(): ReactNode {
       </div>
       <Block title={t('会话权限')} query={query} terms={['审批', '确认', '危险', '权限', '完全访问', '自动审核', 'tool approval', 'security']}>
         <Row
-          title={t('新会话的默认权限')}
-          desc={t('选择 Pi 在执行操作前是否询问你。修改后新建对话生效。')}
+          title={t('新对话的默认方式')}
+          desc={t('只影响之后新建的对话。正在进行的对话不会跟着改变。')}
           query={query}
         >
           <Select
-            label={t('新会话的默认权限')}
+            label={t('新对话的默认方式')}
             value={state.settings.toolApprovalMode ?? 'dangerous'}
             onChange={(value) => void actions.updateSettings({ toolApprovalMode: value === 'all' ? 'all' : 'dangerous' })}
             options={[
-              { value: 'dangerous', label: t('自动审核') },
-              { value: 'all', label: t('询问审批') }
+              { value: 'dangerous', label: t('通常直接做') },
+              { value: 'all', label: t('每次先问我') }
             ]}
           />
         </Row>
         <Row
           title={t('允许使用完全访问')}
-          desc={t('启用后，可以在对话菜单为单个会话选择完全访问。该会话的 Pi 沙箱和工具审批会关闭。')}
+          desc={t('打开后，可以让某一次对话不再逐次询问。那次对话可以修改电脑上的文件并联网。')}
           query={query}
         >
           <Switch

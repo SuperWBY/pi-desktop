@@ -16,7 +16,8 @@ import {
 import clsx from 'clsx'
 import type { SessionSearchMatch, SessionSummary, SessionTreeData, SessionTreeNode } from '@shared/types'
 import { useApp } from '../store'
-import { baseName, projectName, relativeTime, shortenPath, truncate } from '../lib/format'
+import { baseName, disambiguateProjectNames, projectName, relativeTime, shortenPath, truncate } from '../lib/format'
+import { isTemporaryWorkspace, pathsEqual } from '@shared/paths'
 import { mod } from '../lib/platform'
 import { PiLogo } from './PiLogo'
 import { ContextMenu, Modal, Popover, Spinner } from './ui'
@@ -162,26 +163,11 @@ export function Sidebar(): ReactNode {
   const [treeBusy, setTreeBusy] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ session: SessionSummary; x: number; y: number } | null>(null)
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => new Set())
-  const [skillCount, setSkillCount] = useState<number | null>(null)
   const [scheduleCount, setScheduleCount] = useState<number | null>(null)
   const [runningSchedules, setRunningSchedules] = useState<Set<string>>(new Set())
   const [scheduleUnread, setScheduleUnread] = useState(0)
   const [pendingRename, setPendingRename] = useState<{ path: string; name: string } | null>(null)
   const [, setTick] = useState(0)
-
-  // Skill count for the sidebar entry.
-  useEffect(() => {
-    let alive = true
-    window.pi
-      .countSkills(state.workspace ?? '')
-      .then((count) => {
-        if (alive) setSkillCount(count)
-      })
-      .catch(() => undefined)
-    return () => {
-      alive = false
-    }
-  }, [state.workspace])
 
   // Double-click opens rename only after the session finishes loading; the
   // composer focuses itself when status becomes ready and would blur the input.
@@ -263,12 +249,17 @@ export function Sidebar(): ReactNode {
   // a project falls through to "Recent conversations".
   const workspaces = useMemo(() => {
     const set = new Set(state.settings.workspaces)
-    // A scratch path may have been persisted by an older build; never render it
-    // as a project, and never remove a real project just because a scratch chat
-    // is active.
-    if (scratchPath) set.delete(scratchPath)
-    if (workspace && !isScratchWorkspace) set.add(workspace)
-    return Array.from(set)
+    // A scratch or OS temp path may have been persisted by an older build.
+    // Never render it as a project, and never remove a real project just
+    // because a temporary chat is active. /var and /private/var are one folder.
+    if (workspace && !isScratchWorkspace && !isTemporaryWorkspace(workspace, scratchPath)) set.add(workspace)
+    const unique: string[] = []
+    for (const path of set) {
+      if (isTemporaryWorkspace(path, scratchPath)) continue
+      if (unique.some((item) => pathsEqual(item, path))) continue
+      unique.push(path)
+    }
+    return unique
   }, [isScratchWorkspace, scratchPath, state.settings.workspaces, workspace])
 
   const matching = useMemo(
@@ -286,9 +277,33 @@ export function Sidebar(): ReactNode {
 
   // A session that belongs to a project lives only under that project; the
   // recent list is for conversations without a project.
-  const recent = useMemo(
-    () => matching.filter((session) => !workspaces.includes(session.cwd)),
-    [matching, workspaces]
+  const recent = useMemo(() => {
+    const listed = matching.filter((session) => !workspaces.some((path) => pathsEqual(session.cwd, path)))
+    const activeText = `${state.sessionName ?? ''} ${workspace ?? ''}`.toLowerCase()
+    if (
+      state.sessionPath &&
+      isTemporaryWorkspace(workspace, scratchPath) &&
+      (!queryText || activeText.includes(queryText)) &&
+      !listed.some((session) => session.path === state.sessionPath) &&
+      !matching.some((session) => session.path === state.sessionPath)
+    ) {
+      listed.unshift({
+        path: state.sessionPath,
+        id: state.sessionPath,
+        cwd: workspace || scratchPath || '',
+        name: state.sessionName || '未命名会话',
+        preview: '',
+        updatedAt: Date.now(),
+        createdAt: Date.now(),
+        messageCount: state.messages.length,
+        size: 0
+      })
+    }
+    return listed
+  }, [matching, queryText, scratchPath, state.messages.length, state.sessionName, state.sessionPath, workspace, workspaces])
+  const projectLabels = useMemo(
+    () => disambiguateProjectNames(workspaces, state.settings.workspaceNames),
+    [workspaces, state.settings.workspaceNames]
   )
 
   const renderSession = (session: SessionSummary, showProject: boolean): ReactNode => {
@@ -477,7 +492,6 @@ export function Sidebar(): ReactNode {
         <button className="skills-entry skills-page-entry" onClick={() => actions.openSkills(true)}>
           <Sparkles size={13} />
           <span>{t('技能与工具')}</span>
-          <span className="shortcut">{skillCount || ''}</span>
         </button>
         <button
           className="skills-entry schedules-entry"
@@ -556,13 +570,34 @@ export function Sidebar(): ReactNode {
           <div className="session-empty">{t('没有匹配的会话。')}</div>
         )}
         {workspaces.map((path) => {
-          const name = projectName(state.settings.workspaceNames, path)
-          const matches = matching.filter((session) => session.cwd === path)
+          const name = projectLabels.get(path) || projectName(state.settings.workspaceNames, path)
+          const matches = matching.filter((session) => pathsEqual(session.cwd, path))
+          const activeText = `${state.sessionName ?? ''} ${workspace ?? ''}`.toLowerCase()
+          if (
+            state.sessionPath &&
+            workspace &&
+            pathsEqual(workspace, path) &&
+            !isTemporaryWorkspace(workspace, scratchPath) &&
+            (!queryText || activeText.includes(queryText)) &&
+            !matches.some((session) => session.path === state.sessionPath)
+          ) {
+            matches.unshift({
+              path: state.sessionPath,
+              id: state.sessionPath,
+              cwd: path,
+              name: state.sessionName || t('未命名会话'),
+              preview: '',
+              updatedAt: Date.now(),
+              createdAt: Date.now(),
+              messageCount: state.messages.length,
+              size: 0
+            })
+          }
           if (queryText && matches.length === 0) return null
           const expanded = !collapsedProjects.has(path) || Boolean(queryText)
           return (
             <div className="project-tree" key={path}>
-              <div className={clsx('project-row', path === workspace && 'active')}>
+              <div className={clsx('project-row', workspace && pathsEqual(path, workspace) && !isTemporaryWorkspace(workspace, scratchPath) && 'active')}>
                 <button
                   className="project-row-main"
                   aria-expanded={expanded}
@@ -639,10 +674,14 @@ export function Sidebar(): ReactNode {
         <button
           className="footer-meta"
           onClick={() => actions.openDiagnostics(true)}
-          title={t("pi 运行状态与诊断")}
+          title={`${t('pi 运行状态与诊断')}${state.boot?.piVersion ? ` · ${state.boot.piVersion}` : ''}`}
         >
           <span className={clsx('status-dot', `is-${state.status}`)} />
-          <span>pi {state.boot?.piVersion ?? '—'}</span>
+          <span>{state.status === 'error' || (state.boot && !state.boot.piVersion)
+            ? t('需要检查')
+            : state.status === 'ready' || state.status === 'idle'
+              ? t('已就绪')
+              : t('正在准备')}</span>
         </button>
       </div>
 

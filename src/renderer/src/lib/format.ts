@@ -1,3 +1,5 @@
+import { isTemporaryWorkspace, looksLikeRawPath, pathsEqual } from '@shared/paths'
+
 export function relativeTime(timestamp: number, language: 'zh-CN' | 'en' = 'zh-CN'): string {
   const diff = Date.now() - timestamp
   const minutes = Math.floor(diff / 60_000)
@@ -51,8 +53,38 @@ export function baseName(path: string | null | undefined): string {
 }
 
 export function projectName(names: Record<string, string> | undefined, path: string | null | undefined): string {
-  const name = path ? names?.[path] : undefined
-  return typeof name === 'string' && name.trim() ? name : baseName(path)
+  if (!path) return ''
+  const direct = names?.[path]
+  if (typeof direct === 'string' && direct.trim()) return direct.trim()
+  if (names) {
+    for (const [key, value] of Object.entries(names)) {
+      if (typeof value === 'string' && value.trim() && pathsEqual(key, path)) return value.trim()
+    }
+  }
+  const base = baseName(path)
+  if (!base || looksLikeRawPath(base) || isTemporaryWorkspace(path)) return ''
+  return base
+}
+
+/** When two folders share a display name, add the parent folder so they can be told apart. */
+export function disambiguateProjectNames(
+  paths: string[],
+  names: Record<string, string> | undefined
+): Map<string, string> {
+  const labels = paths.map((path) => ({ path, label: projectName(names, path) || baseName(path) || path }))
+  const counts = new Map<string, number>()
+  for (const item of labels) counts.set(item.label, (counts.get(item.label) ?? 0) + 1)
+  const result = new Map<string, string>()
+  for (const item of labels) {
+    if ((counts.get(item.label) ?? 0) < 2) {
+      result.set(item.path, item.label)
+      continue
+    }
+    const parent = baseName(dirName(item.path))
+    const generic = !parent || parent === item.label || looksLikeRawPath(parent) || /^(users|home|documents|desktop|downloads|var|tmp|private)$/i.test(parent)
+    result.set(item.path, generic ? item.label : `${item.label} · ${parent}`)
+  }
+  return result
 }
 
 export function dirName(path: string): string {

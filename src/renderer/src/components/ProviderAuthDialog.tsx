@@ -4,16 +4,16 @@ import { useTranslation } from '../i18n'
 import { useApp } from '../store'
 import { Modal } from './ui'
 
-const PROVIDERS: { id: string; label: string }[] = [
-  { id: 'openai', label: 'OpenAI' },
-  { id: 'anthropic', label: 'Anthropic' },
-  { id: 'google', label: 'Google Gemini' },
-  { id: 'openrouter', label: 'OpenRouter' },
-  { id: 'deepseek', label: 'DeepSeek' },
-  { id: 'groq', label: 'Groq' },
-  { id: 'xai', label: 'xAI' },
-  { id: 'mistral', label: 'Mistral' },
-  { id: 'opencode-go', label: 'OpenCode Go' }
+const PROVIDERS: { id: string; label: string; help: string }[] = [
+  { id: 'openai', label: 'OpenAI', help: '在 platform.openai.com 的 API keys 页面创建。' },
+  { id: 'anthropic', label: 'Anthropic', help: '在 console.anthropic.com 的 API keys 页面创建。' },
+  { id: 'google', label: 'Google Gemini', help: '在 aistudio.google.com 的 API key 页面创建。' },
+  { id: 'openrouter', label: 'OpenRouter', help: '在 openrouter.ai 的 Keys 页面创建。' },
+  { id: 'deepseek', label: 'DeepSeek', help: '在 platform.deepseek.com 的 API keys 页面创建。' },
+  { id: 'groq', label: 'Groq', help: '在 console.groq.com 的 API keys 页面创建。' },
+  { id: 'xai', label: 'xAI', help: '在 console.x.ai 的 API keys 页面创建。' },
+  { id: 'mistral', label: 'Mistral', help: '在 console.mistral.ai 的 API keys 页面创建。' },
+  { id: 'opencode-go', label: 'OpenCode Go', help: '在 OpenCode 账号的 API keys 页面创建。' }
 ]
 
 export function ProviderAuthDialog({ open, onClose, onSaved }: {
@@ -88,10 +88,15 @@ export function ProviderAuthDialog({ open, onClose, onSaved }: {
             />
           </div>
         </label>
+        <p className="provider-auth-help">{t(PROVIDERS.find((item) => item.id === provider)?.help ?? '到服务商网站的 API keys 页面创建，然后粘贴到这里。')}</p>
         <div className="provider-auth-note">
           <ShieldCheck size={15} />
-          <span>{t('Key 会写入 pi 的 auth.json（权限 0600），不会显示在界面上，也不会发送到 Pi Desktop 的服务器。')}</span>
+          <span>{t('密钥只保存在这台电脑上，不会上传，界面里也不会再次显示。')}</span>
         </div>
+        <details className="provider-auth-advanced">
+          <summary>{t('技术详情')}</summary>
+          <p>{t('写入本机的凭证文件，只有当前用户可以读取。')}</p>
+        </details>
       </div>
     </Modal>
   )

@@ -29,6 +29,7 @@ import type {
   ToolRun
 } from '@shared/types'
 import type { PiResponse } from '@shared/types'
+import { isTemporaryWorkspace } from '@shared/paths'
 import { contentText } from './lib/tools'
 import { buildTurns, turnsToMarkdown } from './lib/turns'
 import { translate } from './i18n/dictionary'
@@ -1599,7 +1600,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   useEffect(() => {
     const workspace = state.workspace
     if (!workspace || state.scratchWorkspace || state.status !== 'ready') return
-    if (workspace === state.boot?.scratchPath) return
+    if (isTemporaryWorkspace(workspace, state.boot?.scratchPath)) return
     if (state.settings.workspaces.includes(workspace)) return
     void updateSettings({ workspaces: [...state.settings.workspaces, workspace] })
   }, [state.boot?.scratchPath, state.scratchWorkspace, state.settings.workspaces, state.status, state.workspace, updateSettings])

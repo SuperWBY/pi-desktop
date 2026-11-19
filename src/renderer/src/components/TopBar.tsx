@@ -3,7 +3,8 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Archive, PanelLeft, PanelRight } from 'lucide-react'
 import clsx from 'clsx'
 import { useApp } from '../store'
-import { projectName, truncate } from '../lib/format'
+import { projectName, shortenPath, truncate } from '../lib/format'
+import { isTemporaryWorkspace, looksLikeRawPath } from '@shared/paths'
 import { shortcutKeys, shiftMod } from '../lib/platform'
 import { contentText } from '../lib/tools'
 
@@ -13,12 +14,15 @@ export function TopBar(): ReactNode {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
 
+  const temporary = state.scratchWorkspace || isTemporaryWorkspace(state.workspace, state.boot?.scratchPath)
+  const place = temporary
+    ? t('临时对话')
+    : projectName(state.settings.workspaceNames, state.workspace) || t('No project')
+  const placeLabel = looksLikeRawPath(place) ? t('临时对话') : place
   const firstUser = state.messages.find((message) => message.role === 'user')
   const fallbackTitle = firstUser
     ? truncate(contentText((firstUser as { content?: unknown }).content), 56)
-    : state.scratchWorkspace
-      ? t('临时对话')
-      : projectName(state.settings.workspaceNames, state.workspace) || t('Session')
+    : placeLabel
   const title =
     state.sessionName ??
     (state.messages.length > 0
@@ -74,10 +78,11 @@ export function TopBar(): ReactNode {
             </button>
           )}
           <div className="topbar-sub">
-            <span className="topbar-path" title={state.workspace ?? ''}>
-              {state.scratchWorkspace
-                ? t('临时对话')
-                : projectName(state.settings.workspaceNames, state.workspace) || t('No project')}
+            <span
+              className="topbar-path"
+              title={temporary ? t('这次对话没有关联文件夹') : shortenPath(state.workspace, state.boot?.home) || placeLabel}
+            >
+              {placeLabel}
             </span>
           </div>
         </div>

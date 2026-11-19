@@ -13,7 +13,7 @@ import {
 import clsx from 'clsx'
 import type { ContentBlock, ToolCallBlock, ToolResultMessage, ToolRun } from '@shared/types'
 import { baseName, formatDuration } from '../lib/format'
-import { browserActionResultUnknown, computerUseOutcome, contentText, durationOf, editPairs, toolImages, toolMeta, toolPhrases } from '../lib/tools'
+import { browserActionResultUnknown, computerUseOutcome, contentText, durationOf, editPairs, readRangeLabel, toolImages, toolMeta, toolPhrases } from '../lib/tools'
 import { useElapsed } from '../lib/use-elapsed'
 import { Spinner } from './ui'
 import { CopyButton } from './Markdown'
@@ -119,7 +119,7 @@ export const ToolCard = memo(function ToolCard({
 }): ReactNode {
   const t = useTranslation()
   const args = run?.args && Object.keys(run.args).length ? run.args : (call.arguments ?? {})
-  const meta = toolMeta(call.name, args)
+  const meta = toolMeta(call.name, args, run?.resultDetails ?? result?.details)
   const phrases = toolPhrases(call.name)
   const status = run?.status === 'error' || result?.isError ? 'error' : run?.status ?? (result ? 'done' : 'running')
   const resultText = run?.resultText || contentText(result)
@@ -133,6 +133,12 @@ export const ToolCard = memo(function ToolCard({
 
   const Icon = ICONS[meta.kind]
   const path = typeof args.path === 'string' ? args.path : ''
+  const range = readRangeLabel(args)
+  const rangeText = range
+    ? range.end != null
+      ? t('第 {start}–{end} 行').replace('{start}', String(range.start)).replace('{end}', String(range.end))
+      : t('从第 {start} 行').replace('{start}', String(range.start))
+    : ''
   const pairs = meta.kind === 'edit' ? editPairs(args) : []
   const outcome = !running && status !== 'error' ? computerUseOutcome(call.name, run?.resultDetails ?? result?.details) : null
   const resultUnknown = browserActionResultUnknown(call.name, status === 'error', resultText)
@@ -158,8 +164,8 @@ export const ToolCard = memo(function ToolCard({
           <Icon size={12} />
         </span>
         <span className="tool-title">{t(verb)}</span>
-        <span className="tool-subtitle" title={meta.subtitle}>
-          {meta.subtitle}
+        <span className="tool-subtitle" title={meta.translateSubtitle ? t(meta.subtitle) : meta.subtitle}>
+          {meta.subtitle ? (meta.translateSubtitle ? t(meta.subtitle) : meta.subtitle) : ''}
         </span>
         <span className="tool-status">
           {outcome && !outcomeIsTitle && <span className="tool-outcome" title={t(outcome)}>{t(outcome)}</span>}
@@ -218,7 +224,7 @@ export const ToolCard = memo(function ToolCard({
             <div className="read-body">
               {path && (
                 <div className="file-head">
-                  <span className="file-path">{path}</span>
+                  <span className="file-path">{path}{rangeText ? ` · ${rangeText}` : ''}</span>
                   <span className="file-actions">
                     <CopyButton text={path} />
                     <FileActions path={path} />

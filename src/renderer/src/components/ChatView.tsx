@@ -430,6 +430,7 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
             <PiLogo size={32} />
           </div>
           <h1 className="empty-title">{t('想让 Pi 帮你做什么？')}</h1>
+          <p>{t('例如，比较两个网页、整理一份资料，或安排一件待办。')}</p>
         </div>
       </div>
     )

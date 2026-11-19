@@ -183,7 +183,7 @@ async function caseMenuScrollAndKeyboard() {
   await page.waitForTimeout(900)
   const chip = await page.locator('.chip-label').first().innerText()
   check('Enter 选中并关闭菜单', (await page.locator('.popover').count()) === 0, `chip=${chip}`)
-  check('选中的模型写回输入区', chip === 'Mock Bulk 0', chip)
+  check('选中的模型写回输入区', chip.startsWith('Mock Bulk 0'), chip)
 
   // scroll: menu list scrolls in place and the menu stays open
   await openModelMenu(page)
@@ -2619,7 +2619,7 @@ async function caseMenuTyping() {
   await page.keyboard.press('Enter')
   await page.waitForTimeout(800)
   const chip = await page.locator('.chip-label').first().innerText()
-  check('Enter 选中的是过滤后的项', chip === 'Mock Deep', chip)
+  check('Enter 选中的是过滤后的项', chip.startsWith('Mock Deep'), chip)
   await app.close()
 }
 

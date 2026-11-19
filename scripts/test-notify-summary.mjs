@@ -45,6 +45,11 @@ assert.equal(
   'Done for now.'
 )
 
+assert.equal(
+  cleanReplySummary('(wiki: KpJiwqF7XiwDArknjy4cQgcnAg)。下面是正文第一句。后面还有。'),
+  '下面是正文第一句。'
+)
+
 const long = '这是一句没有句号但非常非常非常非常非常非常非常非常非常非常非常非常长的摘要内容需要截断处理'
 const clipped = cleanReplySummary(long, 40)
 assert.ok([...clipped].length <= 41, clipped)

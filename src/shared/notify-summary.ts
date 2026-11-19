@@ -12,11 +12,16 @@ function scrubIds(text: string): string {
 
 /** First sentence: earliest of CJK closers or .!? followed by space/end (not file.ts / v1.2). */
 function firstSentence(text: string): string {
-  const cjk = text.match(/[。！？]/u)
-  const latin = text.match(/[.!?](?=\s|$)/u)
-  const ends = [cjk?.index, latin?.index].filter((index): index is number => typeof index === 'number')
-  if (!ends.length) return text
-  return text.slice(0, Math.min(...ends) + 1).trim()
+  // Parenthetical/citation stripping can leave a closer at the start — ignore it.
+  const body = text.replace(/^[。！？.!?]+/u, '').trim()
+  if (!body) return ''
+  const cjk = body.match(/[。！？]/u)
+  const latin = body.match(/[.!?](?=\s|$)/u)
+  const ends = [cjk?.index, latin?.index].filter(
+    (index): index is number => typeof index === 'number' && index > 0
+  )
+  if (!ends.length) return body
+  return body.slice(0, Math.min(...ends) + 1).trim()
 }
 
 /**

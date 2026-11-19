@@ -52,8 +52,12 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
   const [answer, setAnswer] = useState('')
   const entered = useRef(false)
   const providerRef = useRef(choice.id)
+  const tabRef = useRef(tab)
+  const keyRef = useRef(key)
   const keyCheck = useRef(0)
   providerRef.current = choice.id
+  tabRef.current = tab
+  keyRef.current = key
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -76,17 +80,25 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
   }
 
   useEffect(() => {
-    if (tab !== 'key' || key.trim().length < 12) return
+    if (tab !== 'key' || key.trim().length < 12) {
+      setChecking(false)
+      return
+    }
     const secret = key.trim()
     const provider = choice.id
     const model = choice.model
     const token = ++keyCheck.current
+    const stillCurrent = (): boolean =>
+      token === keyCheck.current &&
+      providerRef.current === provider &&
+      tabRef.current === 'key' &&
+      keyRef.current.trim() === secret
     setChecking(true)
     setError('')
     setStatus('idle')
     const timer = window.setTimeout(() => {
       void window.pi.validateApiKey(provider, secret).then(async (result) => {
-        if (token !== keyCheck.current || providerRef.current !== provider) return
+        if (!stillCurrent()) return
         setChecking(false)
         if (!result.ok) {
           setStatus('bad')
@@ -95,17 +107,19 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
         }
         setStatus('ok')
         try {
+          if (!stillCurrent()) return
           await window.pi.saveApiKey(provider, secret)
-          if (token !== keyCheck.current || providerRef.current !== provider) return
+          if (!stillCurrent()) return
           await enter(provider, model)
         } catch (reason) {
-          if (token !== keyCheck.current) return
+          if (!stillCurrent()) return
           entered.current = false
+          setChecking(false)
           setStatus('bad')
           setError(t(quietError(reason instanceof Error ? reason.message : String(reason))))
         }
       }).catch(() => {
-        if (token !== keyCheck.current) return
+        if (!stillCurrent()) return
         setChecking(false)
         setStatus('bad')
         setError(t('无法连接，请检查网络'))
@@ -114,6 +128,7 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
     return () => {
       window.clearTimeout(timer)
       keyCheck.current += 1
+      setChecking(false)
     }
   }, [key, choice, tab])
 

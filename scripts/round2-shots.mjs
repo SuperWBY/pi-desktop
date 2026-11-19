@@ -251,11 +251,13 @@ if (process.argv[2] === 'welcome') {
     { defaultProvider: 'mock', defaultModel: 'test' }
   )
   await page.waitForSelector('.model-chip', { timeout: 20000 })
+  await page.waitForSelector('.context-ring', { timeout: 20000 })
   await size(app, 1280, 860)
   await page.locator('.composer-input').click()
   await page.waitForTimeout(200)
   await shot(page, `composer-effort-chip-${theme}.png`)
   await page.locator('.composer').screenshot({ path: join(out, `composer-effort-chip-${theme}-crop.png`) })
+  await page.locator('.composer-right').screenshot({ path: join(out, `composer-context-ring-${theme}-crop.png`) })
   await page.locator('.model-chip').click()
   await page.waitForSelector('.thinking-effort')
   await page.waitForTimeout(250)

@@ -85,6 +85,8 @@ const EFFORT_OPTIONS = [
   }
 ]
 
+type EffortId = (typeof EFFORT_OPTIONS)[number]['id']
+
 function resolveEffortLevel(prefer: ThinkingLevel[], available: ThinkingLevel[]): ThinkingLevel | null {
   for (const level of prefer) {
     if (available.includes(level)) return level
@@ -92,8 +94,16 @@ function resolveEffortLevel(prefer: ThinkingLevel[], available: ThinkingLevel[])
   return null
 }
 
+function effortBucket(level: ThinkingLevel | undefined): EffortId | null {
+  if (!level || level === 'off') return null
+  for (const option of EFFORT_OPTIONS) {
+    if (option.prefer.includes(level)) return option.id
+  }
+  return null
+}
+
 function effortOptionsFor(available: ThinkingLevel[]): Array<{
-  id: 'fast' | 'balanced' | 'deep'
+  id: EffortId
   label: string
   hint: string
   level: ThinkingLevel | null
@@ -106,15 +116,10 @@ function effortOptionsFor(available: ThinkingLevel[]): Array<{
   }))
 }
 
-function effortLabelFor(level: ThinkingLevel | undefined, available: ThinkingLevel[]): string | null {
-  if (!level || level === 'off') return null
-  const options = effortOptionsFor(available)
-  const match = options.find((option) => option.level === level)
-  if (match) return match.label
-  if (level === 'minimal' || level === 'low') return '快速'
-  if (level === 'medium') return '均衡'
-  if (level === 'high' || level === 'xhigh' || level === 'max') return '深入'
-  return null
+function effortLabelFor(level: ThinkingLevel | undefined): string | null {
+  const bucket = effortBucket(level)
+  if (!bucket) return null
+  return EFFORT_OPTIONS.find((option) => option.id === bucket)?.label ?? null
 }
 
 function readImage(file: File): Promise<Attachment> {
@@ -224,7 +229,7 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
     close()
   }
 
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+  const onModelKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
     if (!flat.length) return
     if (event.key === 'ArrowDown') {
       event.preventDefault()
@@ -250,9 +255,10 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
   const effortOptions = effortOptionsFor(availableLevels)
   const showEffort = Boolean(current?.reasoning) && effortOptions.some((option) => option.level)
   const currentLevel = state.piState?.thinkingLevel
+  const currentBucket = effortBucket(currentLevel)
 
   return (
-    <div className="menu" onKeyDown={onKeyDown}>
+    <div className="menu">
       <div className="menu-search">
         <input
           autoFocus
@@ -266,6 +272,7 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
             setQuery(event.target.value)
             setHighlight(0)
           }}
+          onKeyDown={onModelKeyDown}
         />
       </div>
       <div className="menu-list" id="model-menu-list" role="listbox" ref={listRef}>
@@ -324,12 +331,17 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
         ))}
       </div>
       {showEffort ? (
-        <div className="thinking-effort" role="radiogroup" aria-label={t('思考程度')}>
+        <div
+          className="thinking-effort"
+          role="radiogroup"
+          aria-label={t('思考程度')}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
           <div className="menu-group-label">{t('思考程度')}</div>
           <div className="thinking-effort-options">
             {effortOptions.map((option) => {
               const enabled = Boolean(option.level)
-              const selected = enabled && option.level === currentLevel
+              const selected = enabled && currentBucket === option.id
               return (
                 <button
                   key={option.id}
@@ -341,6 +353,8 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
                   className={clsx('thinking-effort-option', selected && 'active', !enabled && 'is-disabled')}
                   onClick={() => {
                     if (!option.level) return
+                    // Keep the current mapped level (e.g. max) instead of collapsing to high.
+                    if (currentBucket === option.id) return
                     void actions.setThinking(option.level)
                   }}
                 >
@@ -1011,9 +1025,7 @@ export function Composer(): ReactNode {
               width={320}
               keyboardNav={false}
               trigger={(open, toggle, expanded) => {
-                const effort = model?.reasoning
-                  ? effortLabelFor(state.piState?.thinkingLevel, state.levels)
-                  : null
+                const effort = model?.reasoning ? effortLabelFor(state.piState?.thinkingLevel) : null
                 const label = model
                   ? effort
                     ? `${model.name} · ${t(effort)}`
@@ -1043,21 +1055,39 @@ export function Composer(): ReactNode {
             >
               {(close) => <ModelMenu close={close} />}
             </Popover>
-            {percent > 50 ? (
-              <div className="context-ring" title={`${t('上下文')} ${Math.round(percent)}%`}>
-                <svg viewBox="0 0 20 20" width="16" height="16">
-                  <circle cx="10" cy="10" r="7.5" className="ring-bg" />
-                  <circle
-                    cx="10"
-                    cy="10"
-                    r="7.5"
-                    className={clsx('ring-fg', percent > 80 && 'warning')}
-                    strokeDasharray={`${Math.min(percent, 100) * 0.471} 47.1`}
-                    transform="rotate(-90 10 10)"
-                  />
-                </svg>
-              </div>
-            ) : null}
+            {(() => {
+              const used = context?.tokens ?? 0
+              const windowSize = context?.contextWindow ?? model?.contextWindow ?? 0
+              const shown = Math.max(0, Math.min(100, Math.round(percent)))
+              const detail = windowSize
+                ? t('上下文 {percent}% · 已用 {used} / {total} tokens')
+                    .replace('{percent}', String(shown))
+                    .replace('{used}', formatTokens(used))
+                    .replace('{total}', formatTokens(windowSize))
+                : t('上下文 {percent}%').replace('{percent}', String(shown))
+              // Reuse the settings copy for 自动压缩上下文.
+              const tip = `${detail}\n${t('上下文接近上限时自动摘要历史，避免请求被截断。')}`
+              return (
+                <div
+                  className={clsx('context-ring', percent > 80 && 'is-warning')}
+                  title={tip}
+                  aria-label={tip.replace('\n', '。')}
+                >
+                  <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
+                    <circle cx="10" cy="10" r="7.5" className="ring-bg" />
+                    <circle
+                      cx="10"
+                      cy="10"
+                      r="7.5"
+                      className={clsx('ring-fg', percent > 80 && 'warning')}
+                      strokeDasharray={`${Math.min(percent, 100) * 0.471} 47.1`}
+                      transform="rotate(-90 10 10)"
+                    />
+                  </svg>
+                  <span className="context-ring-pct">{shown}%</span>
+                </div>
+              )
+            })()}
 
             <button
               className={clsx('send-button', streaming && 'stop')}

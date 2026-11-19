@@ -1868,15 +1868,30 @@ textarea {
 .context-ring {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
+  flex: none;
+  min-width: 3.6em;
   margin-right: 2px;
   font-size: 10.5px;
+  line-height: 1;
   color: var(--text-faint);
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+  user-select: none;
+}
+
+.context-ring.is-warning {
+  color: var(--red);
+}
+
+.context-ring-pct {
+  min-width: 2.4em;
 }
 
 .context-ring svg {
   display: block;
+  flex: none;
 }
 
 .ring-bg {
@@ -1887,10 +1902,10 @@ textarea {
 
 .ring-fg {
   fill: none;
-  stroke: var(--accent);
+  stroke: currentColor;
   stroke-width: 2.2;
   stroke-linecap: round;
-  transition: stroke-dasharray 0.3s ease;
+  transition: stroke-dasharray 0.3s ease, stroke 0.2s ease;
 }
 
 .ring-fg.warning {

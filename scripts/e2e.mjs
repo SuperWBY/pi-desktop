@@ -2420,13 +2420,18 @@ async function caseComposerLayout() {
     }
   })
   check('左侧是 + 号附件按钮', layout.plus && layout.leftChips === 0, JSON.stringify(layout))
+  const ringText = await page.locator('.context-ring').innerText()
+  const ringTitle = await page.locator('.context-ring').getAttribute('title')
   check(
-    '模型芯片合并思考程度文案，无独立推理条，低用量不显示上下文环',
+    '模型芯片合并思考程度文案，无独立推理条，始终显示上下文环百分比',
     layout.model >= 1 &&
       layout.reasoning === 0 &&
-      layout.ring === 0 &&
+      layout.ring === 1 &&
+      /^\d+%$/.test(ringText.trim()) &&
+      /上下文\s+\d+%/.test(ringTitle ?? '') &&
+      /自动摘要历史|接近上限/.test(ringTitle ?? '') &&
       /·\s*(快速|均衡|深入)/.test(layout.modelLabel),
-    JSON.stringify(layout)
+    JSON.stringify({ ...layout, ringText, ringTitle })
   )
   await page.locator('.model-chip').click()
   await page.waitForSelector('.thinking-effort')

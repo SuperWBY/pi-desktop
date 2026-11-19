@@ -439,7 +439,7 @@ async function main() {
     await page.waitForFunction(() => window.savedProvider?.entry.baseUrl === 'http://localhost:2222/v1')
     if (await page.evaluate(() => window.savedProvider.entry.models[0].id) !== 'test-model') throw Error('编辑服务商丢失原模型')
     await page.getByRole('button', { name: '默认模型', exact: true }).click()
-    await page.getByRole('menuitemradio', { name: '跟随 pi 配置' }).click()
+    await page.getByRole('menuitemradio', { name: '自动' }).click()
     await page.waitForFunction(() => window.savedPiSettings && window.savedPiSettings.defaultProvider === undefined && window.savedPiSettings.defaultModel === undefined)
     await page.locator('.settings-nav-item').filter({ hasText: '常规' }).click()
     await page.getByRole('button', { name: '界面语言', exact: true }).click()

@@ -77,7 +77,7 @@ const theme = process.argv[2] || 'dark'
   await page.locator('.connect-close').click()
 
   await openSettingsModels(page)
-  const oauthEntry = page.getByRole('button', { name: '用账号登录（推荐）' })
+  const oauthEntry = page.getByRole('button', { name: /用账号登录/ }).first()
   await oauthEntry.waitFor({ timeout: 10000 })
   await oauthEntry.click()
   await page.locator('.provider-oauth-dialog').waitFor({ timeout: 10000 })
@@ -116,7 +116,7 @@ const theme = process.argv[2] || 'dark'
     }
 
     await openSettingsModels(page)
-    await page.getByRole('button', { name: '用账号登录（推荐）' }).click()
+    await page.getByRole('button', { name: /用账号登录/ }).first().click()
     await page.getByText('当前版本暂不支持账号登录，请用 API Key').waitFor({ timeout: 10000 })
     await page.waitForTimeout(250)
     await shot(page, `oauth-dialog-unavailable-packaged-${theme}.png`)

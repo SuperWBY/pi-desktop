@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { PiDesktopApi } from '@shared/api'
-import { stripRemoteError } from '@shared/errors'
+import { mapErrnoMessage, stripRemoteError } from '@shared/errors'
 import type { BrowserBounds, BrowserState, CustomProviderEntry, PiRecord, PiSettings, Settings } from '@shared/types'
 
 function subscribe<T>(channel: string, callback: (value: T) => void): () => void {
@@ -13,7 +13,7 @@ function subscribe<T>(channel: string, callback: (value: T) => void): () => void
 function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   return ipcRenderer.invoke(channel, ...args).catch((error: unknown) => {
     const raw = error instanceof Error ? error.message : String(error ?? '')
-    const cleaned = stripRemoteError(raw) || '操作失败'
+    const cleaned = mapErrnoMessage(stripRemoteError(raw)) || '操作失败'
     throw new Error(cleaned)
   })
 }

@@ -44,17 +44,23 @@ check('pi-auth-helper.mjs is packaged', existsSync(helper), helper)
 check('pi-seed is packaged outside asar', existsSync(seed), seed)
 
 let authModule = ''
+let cliModule = ''
+let launcher = ''
 if (existsSync(seed)) {
   const versions = readdirSync(seed).filter((name) => /^\d+\.\d+\.\d+/.test(name))
   for (const version of versions) {
     const file = join(seed, version, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'index.js')
-    if (existsSync(file) && statSync(file).isFile()) {
-      authModule = file
-      break
-    }
+    const cli = join(seed, version, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'bundle', 'cli.js')
+    const pi = join(seed, version, process.platform === 'win32' ? 'pi.cmd' : 'pi')
+    if (existsSync(file) && statSync(file).isFile()) authModule = file
+    if (existsSync(cli) && statSync(cli).isFile()) cliModule = cli
+    if (existsSync(pi) && statSync(pi).isFile()) launcher = pi
+    if (authModule && cliModule && launcher) break
   }
 }
 check('pi-coding-agent auth module is packaged', Boolean(authModule), authModule || 'missing dist/index.js')
+check('pi-coding-agent cli.js is packaged', Boolean(cliModule), cliModule || 'missing dist/bundle/cli.js')
+check('pi seed launcher is packaged', Boolean(launcher), launcher || 'missing pi launcher')
 
 if (failures.length) {
   console.error(`\n${failures.length} pack auth check(s) failed.`)

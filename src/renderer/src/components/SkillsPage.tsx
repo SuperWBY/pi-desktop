@@ -85,12 +85,27 @@ function skillSummary(skill: SkillEntry, t: (text: string) => string): string {
   return skill.summary || (skillLabels[skill.name] ? t(skillLabels[skill.name][1]) : skill.description)
 }
 
+/** Set before openSkills(true) so the page mounts on the right tab (event alone races mount). */
+let pendingSkillsTab: Tab | null = null
+
+export function requestSkillsTab(tab: Tab): void {
+  pendingSkillsTab = tab
+}
+
+function takePendingSkillsTab(): Tab | null {
+  const tab = pendingSkillsTab
+  pendingSkillsTab = null
+  return tab
+}
+
 export function SkillsPage(): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
-  const [tab, setTab] = useState<Tab>('skills')
+  const [tab, setTab] = useState<Tab>(() => takePendingSkillsTab() ?? 'skills')
 
   useEffect(() => {
+    const pending = takePendingSkillsTab()
+    if (pending) setTab(pending)
     const onTab = (event: Event): void => {
       const detail = (event as CustomEvent<Tab>).detail
       if (detail === 'skills' || detail === 'plugins' || detail === 'connectors') setTab(detail)

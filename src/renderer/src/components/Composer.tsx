@@ -50,6 +50,7 @@ import { isTemporaryWorkspace } from '@shared/paths'
 import { useApp, type Attachment } from '../store'
 import { formatTokens, projectName } from '../lib/format'
 import { Modal, Popover, Spinner } from './ui'
+import { requestSkillsTab } from './SkillsPage'
 
 const PASTE_AS_FILE_CHARS = 2000
 const SLASH_MENU_MAX = 8
@@ -877,6 +878,17 @@ export function Composer(): ReactNode {
     setDragging(false)
   }, [])
 
+  const setDraggingFromBoundary = (event: DragEvent<HTMLDivElement>, entering: boolean): void => {
+    const related = event.relatedTarget as Node | null
+    if (related && event.currentTarget.contains(related)) return
+    if (entering) {
+      dragDepth.current = 1
+      setDragging(true)
+      return
+    }
+    clearDragging()
+  }
+
   const onDrop = (event: DragEvent<HTMLDivElement>): void => {
     event.preventDefault()
     clearDragging()
@@ -897,7 +909,7 @@ export function Composer(): ReactNode {
   // when the pointer is over a menu, modal or drawer sitting on top of it.
   const onWheel = (event: ReactWheelEvent<HTMLDivElement>): void => {
     const target = event.target as HTMLElement
-    if (target.closest('.popover, .context-menu, .modal-overlay, .drawer, .drawer-overlay')) return
+    if (target.closest('.popover, .context-menu, .modal-overlay, .drawer, .drawer-overlay, .slash-menu, .command-menu')) return
     const textarea = target.closest('textarea')
     if (textarea && textarea.scrollHeight > textarea.clientHeight) return
     const scroller = document.querySelector('.chat-scroll') as HTMLElement | null
@@ -915,18 +927,14 @@ export function Composer(): ReactNode {
       className={clsx('composer-wrap', dragging && 'dragging')}
       onDragEnter={(event) => {
         event.preventDefault()
-        dragDepth.current += 1
-        setDragging(true)
+        setDraggingFromBoundary(event, true)
       }}
       onDragOver={(event) => {
         event.preventDefault()
         if (!dragging) setDragging(true)
       }}
       onDragLeave={(event) => {
-        const next = event.relatedTarget as Node | null
-        if (next && event.currentTarget.contains(next)) return
-        dragDepth.current = Math.max(0, dragDepth.current - 1)
-        if (dragDepth.current === 0) setDragging(false)
+        setDraggingFromBoundary(event, false)
       }}
       onDrop={onDrop}
       onWheel={onWheel}
@@ -1080,6 +1088,7 @@ export function Composer(): ReactNode {
               role="listbox"
               aria-label={t('斜杠命令')}
               onMouseDown={(event) => event.preventDefault()}
+              onWheel={(event) => event.stopPropagation()}
             >
               {flatSlash.length === 0 ? (
                 <div className="slash-empty">{t('没有匹配的命令')}</div>
@@ -1192,6 +1201,7 @@ export function Composer(): ReactNode {
                     className="menu-item"
                     onClick={() => {
                       close()
+                      requestSkillsTab('skills')
                       actions.openSkills(true)
                       window.dispatchEvent(new CustomEvent('pi:skills-tab', { detail: 'skills' }))
                     }}
@@ -1204,6 +1214,7 @@ export function Composer(): ReactNode {
                     className="menu-item"
                     onClick={() => {
                       close()
+                      requestSkillsTab('connectors')
                       actions.openSkills(true)
                       window.dispatchEvent(new CustomEvent('pi:skills-tab', { detail: 'connectors' }))
                     }}

@@ -1,18 +1,13 @@
-import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { promisify } from 'node:util'
 import type {
   CustomModelEntry,
   CustomProviderEntry,
   ModelsConfig,
   PiModelRow
 } from '@shared/types'
-import { augmentedPath } from './pi-locate'
+import { execPi, piExecUserError } from './pi-exec'
 import { agentDir } from './pi-settings'
-
-const run = promisify(execFile)
 
 /** APIs pi can talk to, from docs/models-configuration.md. */
 export const PI_APIS = [
@@ -186,17 +181,15 @@ export function parseModelTable(text: string): PiModelRow[] {
 
 export async function listPiModels(piPath: string): Promise<{ models: PiModelRow[]; error?: string }> {
   try {
-    const { stdout } = await run(piPath, ['--list-models'], {
-      cwd: homedir(),
+    const { stdout } = await execPi(piPath, ['--list-models'], {
       timeout: 30_000,
-      maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, PATH: augmentedPath() }
+      maxBuffer: 8 * 1024 * 1024
     })
     return { models: parseModelTable(stdout) }
   } catch (error) {
     return {
       models: [],
-      error: error instanceof Error ? error.message : String(error)
+      error: piExecUserError(error)
     }
   }
 }
@@ -204,14 +197,12 @@ export async function listPiModels(piPath: string): Promise<{ models: PiModelRow
 /** `pi update --models` refreshes the model catalog pi caches from pi.dev. */
 export async function refreshModelCatalog(piPath: string): Promise<{ ok: boolean; output: string }> {
   try {
-    const { stdout, stderr } = await run(piPath, ['update', '--models'], {
-      cwd: homedir(),
+    const { stdout, stderr } = await execPi(piPath, ['update', '--models'], {
       timeout: 120_000,
-      maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, PATH: augmentedPath() }
+      maxBuffer: 8 * 1024 * 1024
     })
     return { ok: true, output: `${stdout}${stderr}`.trim() }
   } catch (error) {
-    return { ok: false, output: error instanceof Error ? error.message : String(error) }
+    return { ok: false, output: piExecUserError(error) }
   }
 }

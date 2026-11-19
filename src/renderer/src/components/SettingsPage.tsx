@@ -64,15 +64,12 @@ const SHORTCUTS: { keys: string; label: string }[] = [
   { keys: 'Esc', label: '停止运行 / 关闭面板' }
 ]
 
-const THINKING_LABELS: Record<ThinkingLevel, string> = {
-  off: '关闭',
-  minimal: '极低',
-  low: '低',
-  medium: '中',
-  high: '高',
-  xhigh: '极高',
-  max: '最大'
-}
+/** Match composer effort wording for the settings default. */
+const DEFAULT_THINKING_OPTIONS: { value: ThinkingLevel; label: string }[] = [
+  { value: 'low', label: '快速' },
+  { value: 'medium', label: '均衡' },
+  { value: 'high', label: '深入' }
+]
 
 const BUILTIN_TOOLS: { name: string; desc: string }[] = [
   { name: 'read', desc: '读取文件内容' },
@@ -1028,73 +1025,70 @@ export function SettingsPage(): ReactNode {
     const rows = (piModels ?? []).filter(
       (row) => !text || `${row.provider}/${row.id}`.toLowerCase().includes(text)
     )
-    const providers = new Set((piModels ?? []).map((row) => row.provider))
     const current = state.piState?.model
+    const hasModels = (piModels?.length ?? 0) > 0
+    const searching = Boolean(modelSearch.trim())
+    const listEmpty = piModels !== null && rows.length === 0
 
-    const emptySetup = piModels !== null && rows.length === 0 && customEntries.length === 0
+    const refreshModels = async (): Promise<void> => {
+      setModelsBusy(true)
+      try {
+        // One refresh action: pull catalog when possible, then re-read the list.
+        await window.pi.refreshModelCatalog().catch(() => undefined)
+        await loadModels()
+      } finally {
+        setModelsBusy(false)
+      }
+    }
+
     return (
       <>
-        {emptySetup && (
-          <div className="model-setup-empty">
-            <div className="model-setup-empty-copy">
-              <strong>{t('还没有可用模型')}</strong>
-              <p>{t('用账号登录，或粘贴服务商给你的 API Key。密钥只保存在这台电脑上。')}</p>
-            </div>
-            <div className="model-setup-empty-actions">
-              <button className="settings-button primary" onClick={() => setOauthOpen(true)}>{t('用账号登录（推荐）')}</button>
-              <button className="settings-button" onClick={() => setAuthOpen(true)}>{t('粘贴 API Key')}</button>
-            </div>
+        <div className="model-setup-empty">
+          <div className="model-setup-empty-copy">
+            <p>{t('密钥只保存在本机')}</p>
           </div>
-        )}
-        <Block title={t("新会话默认值")} query={query} terms={['默认模型', '推理强度', 'thinking']}>
+          <div className="model-setup-empty-actions">
+            <button className="settings-button primary" onClick={() => setOauthOpen(true)}>{t('用账号登录')}</button>
+            <button className="settings-button" onClick={() => setAuthOpen(true)}>{t('粘贴 API Key')}</button>
+          </div>
+        </div>
+        <Block title={t("新会话默认值")} query={query} terms={['默认模型', '思考程度', 'thinking']}>
         <Row
           title={t("默认模型")}
-          desc={t("新建会话时使用；当前会话仍可在输入框里随时切换。")}
           query={query}
         >
           <Select label={t("默认模型")} value={modelValue} onChange={(value) => void saveDefaultModel(value)}
-            options={[{ value: '', label: t('跟随 Pi 配置') }, ...modelGroups.flatMap(([provider, models]) => models.map((model) => ({ value: `${provider}\u0000${model.id}`, label: model.name, group: provider })))]}
+            options={[{ value: '', label: t('自动') }, ...modelGroups.flatMap(([provider, models]) => models.map((model) => ({ value: `${provider}\u0000${model.id}`, label: model.name, group: provider })))]}
           />
         </Row>
         <Row
-          title={t("默认推理强度")}
-          desc={t("新建对话时的思考深度，聊天时仍可以临时调整。")}
+          title={t("默认思考程度")}
           query={query}
         >
           <Select
-            label={t("默认推理强度")}
-            value={thinkingValue}
+            label={t("默认思考程度")}
+            value={
+              thinkingValue === 'minimal' || thinkingValue === 'low'
+                ? 'low'
+                : thinkingValue === 'medium'
+                  ? 'medium'
+                  : thinkingValue === 'high' || thinkingValue === 'xhigh' || thinkingValue === 'max'
+                    ? 'high'
+                    : ''
+            }
             onChange={(value) =>
               void actions.updatePiSettings({
                 defaultThinkingLevel: (value || undefined) as ThinkingLevel | undefined
               })
             }
-            options={[{ value: '', label: t('跟随 Pi 配置') }, ...(Object.keys(THINKING_LABELS) as ThinkingLevel[]).map((level) => ({ value: level, label: level === 'off' ? (state.settings.language === 'en' ? 'Off' : '关闭') : t(THINKING_LABELS[level]) }))]}
+            options={[{ value: '', label: t('自动') }, ...DEFAULT_THINKING_OPTIONS.map((option) => ({ value: option.value, label: t(option.label) }))]}
           />
-        </Row>
-      </Block>
-
-      <Block title={t("当前模型")} query={query} terms={['上下文', '模型信息', '窗口']}>
-        <Row
-          title={state.piState?.model?.name ?? t("未选择模型")}
-          desc={
-            state.piState?.model
-              ? `${state.piState.model.provider} · ${t('上下文')} ${Math.round(
-                  (state.piState.model.contextWindow ?? 0) / 1000
-                )}k · ${t('思维')} ${state.piState.model.reasoning ? t("支持") : t("不支持")}`
-              : t("打开一个会话后显示")
-          }
-          query={query}
-        >
-          {state.piState?.model && (
-            <span className="settings-pill">{state.piState.thinkingLevel}</span>
-          )}
         </Row>
       </Block>
 
       <details className="settings-advanced" open>
         <summary>{t("查看可用模型列表")}</summary>
-      <Block title={t("Pi 支持的模型")} query={query} terms={['模型列表', '目录', '刷新', '可用']}>
+      <Block title={t("可用模型")} query={query} terms={['模型列表', '目录', '刷新', '可用']}>
         <div className="model-catalog-head">
           <div className="settings-search model-search">
             <Search size={13} />
@@ -1109,19 +1103,23 @@ export function SettingsPage(): ReactNode {
               </button>
             )}
           </div>
-          <button className="settings-button" disabled={modelsBusy} onClick={() => void loadModels()}>
-            <RefreshCw size={12} />{t("重新读取")}</button>
-          <button
-            className="settings-button"
-            disabled={modelsBusy}
-            onClick={() => void refreshCatalog()}
-          >{t("更新目录")}</button>
+          <button className="settings-button" disabled={modelsBusy} onClick={() => void refreshModels()}>
+            <RefreshCw size={12} />{t("刷新")}</button>
         </div>
-        <p className="settings-note model-note">
-          {t('已保存登录或 API Key 的模型')}：{rows.length} / {piModels?.length ?? 0}
-          {state.settings.language === 'en' ? `, ${providers.size} providers.` : `，${providers.size} ${t('个服务商')}`}
-        </p>
-        {modelsMessage && <p className="settings-note model-error">{modelsMessage}</p>}
+        {hasModels && (
+          <p className="settings-note model-note">
+            {rows.length} / {piModels?.length ?? 0}
+            {state.settings.language === 'en' ? ' models' : ` ${t('个模型')}`}
+          </p>
+        )}
+        {modelsMessage && (
+          <div className="model-error-row">
+            <p className="settings-note model-error">{modelsMessage}</p>
+            <button className="settings-button" disabled={modelsBusy} onClick={() => void refreshModels()}>
+              {t('重试')}
+            </button>
+          </div>
+        )}
         <div className="model-list">
           {rows.map((row) => {
             const isCurrent = current?.provider === row.provider && current?.id === row.id
@@ -1140,8 +1138,15 @@ export function SettingsPage(): ReactNode {
               </div>
             )
           })}
-          {piModels && rows.length === 0 && (
+          {listEmpty && searching && (
             <div className="model-empty">{t("没有匹配的模型。")}</div>
+          )}
+          {listEmpty && !searching && (
+            <div className="model-empty model-empty-cta">
+              <div>{t('还没有可用模型')}</div>
+              <button className="settings-button primary" onClick={() => setOauthOpen(true)}>{t('用账号登录')}</button>
+              <button className="settings-button" onClick={() => setAuthOpen(true)}>{t('粘贴 API Key')}</button>
+            </div>
           )}
         </div>
       </Block>
@@ -1196,7 +1201,7 @@ export function SettingsPage(): ReactNode {
             <button className="settings-button primary" onClick={() => { setEditingProvider(null); setChoosingProvider(true); setShowAdd(true) }}>
               <Plus size={12} />{t("添加服务商 / 模型")}</button>
             <span className="setting-desc">
-              {state.settings.language === 'en' ? 'Writes to ' : '写入 '}<code>{customConfig?.file ?? '~/.pi/agent/models.json'}</code>{state.settings.language === 'en' ? ' in pi models.json format.' : '，格式即 pi 的 models.json'}
+              {state.settings.language === 'en' ? 'Writes to ' : '写入 '}<code>{customConfig?.file ?? '~/.pi/agent/models.json'}</code>{state.settings.language === 'en' ? ' in models.json format.' : '，格式即 models.json'}
             </span>
           </div>
         )}

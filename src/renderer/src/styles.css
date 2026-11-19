@@ -2631,8 +2631,15 @@ textarea {
   background: var(--panel-2);
 }
 
+.welcome-start {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
 .welcome h1 {
-  margin: 0 0 16px;
+  margin: 0 0 var(--sp-2);
   font-size: var(--fs-xl);
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -2640,7 +2647,7 @@ textarea {
 
 .welcome-link {
   display: inline-block;
-  margin-top: 12px;
+  margin-top: 0;
   color: var(--text-dim);
   font-size: var(--fs-sm);
 }
@@ -8287,9 +8294,14 @@ html[data-platform='win32'] .app.sidebar-collapsed .topbar {
 .connect-key { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 0 10px; min-height: 36px; border-radius: var(--r-md); background: var(--fill-1); }
 .connect-key input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text); outline: none; font-size: var(--fs-body); }
 .connect-key-state { color: var(--text-dim); }
-.connect-get, .connect-custom { margin-top: 8px; color: var(--text-dim); font-size: var(--fs-sm); }
+.connect-get, .connect-custom {
+  display: block;
+  margin-top: var(--sp-2);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
 .connect-get:hover, .connect-custom:hover { color: var(--text); }
-.connect-error { margin: 8px 0 0; color: var(--red); font-size: var(--fs-sm); }
+.connect-error { margin: var(--sp-2) 0 0; color: var(--red); font-size: var(--fs-sm); }
 .connect-custom-fields { display: grid; gap: 8px; margin-top: 10px; }
 .connect-custom-fields input { min-height: 32px; padding: 0 10px; border-radius: var(--r-md); border: 0; background: var(--fill-1); color: var(--text); }
 .connect-wait { margin: 10px 0 0; color: var(--text-dim); }

@@ -781,6 +781,10 @@ english.set('保护：不受限', 'Protection: unrestricted')
 english.set('默认设置', 'Defaults')
 english.set('这次不受限？', 'Unrestricted this time?')
 english.set('仅这次对话。', 'This conversation only.')
+english.set(
+  'Pi 可以不经确认运行命令、修改文件，仅这次对话。',
+  'Pi can run commands and edit files without asking, for this chat only.'
+)
 english.set('复制消息', 'Copy message')
 english.set('编辑', 'Edit')
 english.set('密钥无效（401）', 'Key rejected (401)')

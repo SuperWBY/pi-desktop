@@ -80,7 +80,8 @@ export async function validateApiKey(provider: string, key: string): Promise<Key
   const secret = key.trim()
   const id = provider.trim().toLowerCase()
   if (secret.length < 8) return { ok: false, error: '密钥太短' }
-  if (process.env.PI_DESKTOP_MOCK_AUTH === '1' || secret.startsWith('sk-test-')) return { ok: true }
+  // sk-test-* only when PI_DESKTOP_MOCK_AUTH=1 (e2e / headless) — never in the shipped app.
+  if (process.env.PI_DESKTOP_MOCK_AUTH === '1' && secret.startsWith('sk-test-')) return { ok: true }
   if (/invalid|401/i.test(secret) && secret.length < 80) return { ok: false, error: '密钥无效（401）' }
   const endpoint = KEY_ENDPOINTS[id]
   if (!endpoint) return { ok: true }

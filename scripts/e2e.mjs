@@ -93,6 +93,13 @@ function seedSession(sessionsDir, id, name, turns = 1, cwd = root) {
 }
 
 async function launch(dirs, scenario = 'default', extraEnv = {}) {
+  // Mock chats expect a connected model so the sidebar shows 已就绪 (not 先连接模型).
+  // Cases that exercise the welcome connect panel leave agent settings empty.
+  const agentSettings = join(dirs.agent, 'settings.json')
+  const piPath = extraEnv.PI_DESKTOP_PI_PATH ?? mockPi
+  if (piPath === mockPi && !existsSync(agentSettings)) {
+    writeFileSync(agentSettings, JSON.stringify({ defaultProvider: 'mock', defaultModel: 'test' }))
+  }
   const executablePath = process.env.PI_E2E_APP
   const app = await electron.launch({
     executablePath,
@@ -107,6 +114,7 @@ async function launch(dirs, scenario = 'default', extraEnv = {}) {
       MOCK_SCENARIO: scenario,
       PI_CHROME_BRIDGE_SECRET_FILE: join(dirs.base, 'chrome-bridge-secret.json'),
       PI_DESKTOP_SKIP_AUTO_INSTALL: '1',
+      PI_DESKTOP_MOCK_AUTH: '1',
       ...extraEnv
     }
   })
@@ -3132,7 +3140,7 @@ async function caseComputerUsePackagePath() {
   const { app, page } = await launch(dirs, 'default', { MOCK_LIST_SOURCE:source, MOCK_LIST_DELAY_MS:'1500', PERMISSION_HELPER_MARKER:marker, MOCK_COMPUTER_USE_ROOT:source })
   try {
     await page.keyboard.press('Meta+,')
-    await page.getByRole('button', {name:'Computer Use',exact:true}).click()
+    await page.getByRole('button', {name:'电脑操作',exact:true}).click()
     const start = Date.now()
     await page.getByRole('button', {name:'重新检测'}).waitFor({timeout:1000})
     check('权限检查时界面保持可操作', Date.now()-start < 1000)
@@ -3163,7 +3171,7 @@ async function caseComputerUsePermissionCompletion() {
   const {app,page} = await launch(dirs, 'default', {MOCK_LIST_SOURCE:source, MOCK_COMPUTER_USE_ROOT:source, PERMISSION_STATE_FILE:stateFile})
   try {
     await page.keyboard.press('Meta+,')
-    await page.getByRole('button', {name:'Computer Use',exact:true}).click()
+    await page.getByRole('button', {name:'电脑操作',exact:true}).click()
     const toggle = page.getByRole('switch', {name:'启用 Computer Use'})
     await toggle.click()
     await page.getByRole('button', {name:'打开辅助功能设置'}).waitFor({timeout:10000})

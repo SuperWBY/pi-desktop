@@ -17,6 +17,7 @@ import clsx from 'clsx'
 import type { SessionSearchMatch, SessionSummary, SessionTreeData, SessionTreeNode } from '@shared/types'
 import { useApp } from '../store'
 import { baseName, disambiguateProjectNames, projectName, relativeTime, shortenPath, truncate } from '../lib/format'
+import { sessionDisplayTitle } from '../lib/session-title'
 import { isTemporaryWorkspace, pathsEqual } from '@shared/paths'
 import { mod } from '../lib/platform'
 import { PiLogo } from './PiLogo'
@@ -291,7 +292,11 @@ export function Sidebar(): ReactNode {
         path: state.sessionPath,
         id: state.sessionPath,
         cwd: workspace || scratchPath || '',
-        name: state.sessionName || '未命名会话',
+        name: sessionDisplayTitle({
+          sessionName: state.sessionName,
+          messages: state.messages,
+          emptyLabel: t('未命名会话')
+        }),
         preview: '',
         updatedAt: Date.now(),
         createdAt: Date.now(),
@@ -300,7 +305,7 @@ export function Sidebar(): ReactNode {
       })
     }
     return listed
-  }, [matching, queryText, scratchPath, state.messages.length, state.sessionName, state.sessionPath, workspace, workspaces])
+  }, [matching, queryText, scratchPath, state.messages, state.sessionName, state.sessionPath, t, workspace, workspaces])
   const projectLabels = useMemo(
     () => disambiguateProjectNames(workspaces, state.settings.workspaceNames),
     [workspaces, state.settings.workspaceNames]
@@ -309,6 +314,15 @@ export function Sidebar(): ReactNode {
   const renderSession = (session: SessionSummary, showProject: boolean): ReactNode => {
     const active = state.sessionPath === session.path
     const running = active && state.streaming
+    const label = sessionDisplayTitle({
+      sessionName: session.name,
+      messages: active
+        ? state.messages
+        : session.preview
+          ? [{ role: 'user', content: session.preview }]
+          : [],
+      emptyLabel: t('未命名会话')
+    })
 
     if (renaming === session.path) {
       return (
@@ -356,14 +370,14 @@ export function Sidebar(): ReactNode {
             event.stopPropagation()
             setPendingRename({ path: session.path, name: session.name })
           }}
-          title={session.name}
+          title={label}
         >
           {running && (
             <span className="session-running" aria-label={t('执行中')}>
               <Spinner size={11} />
             </span>
           )}
-          <span className="session-title">{truncate(session.name, 52)}</span>
+          <span className="session-title">{truncate(label, 52)}</span>
           {showProject && (
             <span className="session-meta">{relativeTime(session.updatedAt, language)}</span>
           )}
@@ -585,7 +599,11 @@ export function Sidebar(): ReactNode {
               path: state.sessionPath,
               id: state.sessionPath,
               cwd: path,
-              name: state.sessionName || t('未命名会话'),
+              name: sessionDisplayTitle({
+                sessionName: state.sessionName,
+                messages: state.messages,
+                emptyLabel: t('未命名会话')
+              }),
               preview: '',
               updatedAt: Date.now(),
               createdAt: Date.now(),
@@ -677,18 +695,28 @@ export function Sidebar(): ReactNode {
           title={(() => {
             const version = state.boot?.piVersion
             const needsCheck = state.status === 'error' || state.status === 'exited' || Boolean(state.boot && !version)
-            const ready = !needsCheck && (state.status === 'ready' || state.status === 'idle')
+            const preparing = !needsCheck && state.status !== 'ready' && state.status !== 'idle'
+            const needsModel = Boolean(
+              version && !preparing && !state.piSettings?.defaultProvider && !state.piSettings?.defaultModel
+            )
+            const ready = !needsCheck && !preparing && !needsModel
+            if (needsModel) return t('先连接模型')
             return ready && version ? `${t('已就绪')} · ${version}` : needsCheck ? t('需要检查') : ready ? t('已就绪') : t('正在准备')
           })()}
         >
           {(() => {
             const version = state.boot?.piVersion
             const needsCheck = state.status === 'error' || state.status === 'exited' || Boolean(state.boot && !version)
-            const ready = !needsCheck && (state.status === 'ready' || state.status === 'idle')
+            const preparing = !needsCheck && state.status !== 'ready' && state.status !== 'idle'
+            const needsModel = Boolean(
+              version && !preparing && !state.piSettings?.defaultProvider && !state.piSettings?.defaultModel
+            )
+            const ready = !needsCheck && !preparing && !needsModel
+            const label = needsCheck ? t('需要检查') : preparing ? t('正在准备') : needsModel ? t('先连接模型') : ready ? t('已就绪') : t('正在准备')
             return (
               <>
-                <span className={clsx('status-dot', needsCheck ? 'is-error' : ready ? 'is-ready' : 'is-starting')} />
-                <span>{needsCheck ? t('需要检查') : ready ? t('已就绪') : t('正在准备')}</span>
+                <span className={clsx('status-dot', needsCheck || needsModel ? 'is-error' : ready ? 'is-ready' : 'is-starting')} />
+                <span>{label}</span>
               </>
             )
           })()}

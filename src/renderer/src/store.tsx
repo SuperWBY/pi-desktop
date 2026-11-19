@@ -34,6 +34,7 @@ import { contentText } from './lib/tools'
 import { buildTurns, turnsToMarkdown } from './lib/turns'
 import { translate } from './i18n/dictionary'
 import { desktopNotifyCopy } from '@shared/notify-summary'
+import { sessionDisplayTitle } from './lib/session-title'
 
 export type SendMode = 'steer' | 'followUp'
 export interface QueuedImage { type: 'image'; data: string; mimeType: string }
@@ -736,7 +737,10 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         status: 'exited',
         streaming: false,
-        error: `pi exited${action.status.code != null ? ` (code ${action.status.code})` : ''}`
+        error:
+          action.status.code != null
+            ? `Pi 意外停止了（代码 ${action.status.code}）`
+            : 'Pi 已停止'
       }
     }
 
@@ -1793,9 +1797,14 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         .join(' ')
         .trim()
     const kind = lastAssistant?.errorMessage ? 'error' : 'done'
+    const sessionTitle = sessionDisplayTitle({
+      sessionName: state.sessionName,
+      messages: state.messages,
+      emptyLabel: 'Pi'
+    })
     const payload = desktopNotifyCopy({
       kind,
-      sessionTitle: state.sessionName,
+      sessionTitle,
       replyText: text,
       language: state.settings.language
     })
@@ -1826,9 +1835,14 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     if (state.settings.notifyOnFinish === false) return
     if (typeof document !== 'undefined' && document.hasFocus()) return
     approvalNotified.current = request.id
+    const sessionTitle = sessionDisplayTitle({
+      sessionName: state.sessionName,
+      messages: state.messages,
+      emptyLabel: 'Pi'
+    })
     const payload = desktopNotifyCopy({
       kind: 'approval',
-      sessionTitle: state.sessionName,
+      sessionTitle,
       language: state.settings.language
     })
     void window.pi.notify({
@@ -1842,7 +1856,8 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     state.settings.language,
     state.sessionName,
     state.sessionPath,
-    state.workspace
+    state.workspace,
+    state.messages
   ])
 
   // Notification click focuses the app and opens the session that finished.

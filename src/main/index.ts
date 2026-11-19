@@ -259,6 +259,59 @@ function send(channel: string, payload: unknown): void {
   }
 }
 
+// Keep Notification instances alive until click/close so macOS delivers the click.
+const liveNotifications = new Set<Notification>()
+
+function showDesktopNotification(payload: {
+  title?: string
+  body?: string
+  cwd?: string | null
+  sessionPath?: string | null
+}): boolean {
+  if (!Notification.isSupported()) return false
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) return false
+  const notification = new Notification({
+    title: payload?.title?.trim() || 'Pi',
+    body: payload?.body ?? ''
+  })
+  liveNotifications.add(notification)
+  const release = (): void => {
+    liveNotifications.delete(notification)
+  }
+  notification.once('click', () => {
+    release()
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    if (payload?.sessionPath) {
+      mainWindow.webContents.send('notify:open-session', {
+        cwd: payload.cwd ?? null,
+        sessionPath: payload.sessionPath
+      })
+    }
+  })
+  notification.once('close', release)
+  notification.once('failed', release)
+  if (process.env.PI_DESKTOP_NOTIFY_LOG) {
+    try {
+      console.log(
+        '[notify:desktop]',
+        JSON.stringify({
+          title: payload?.title,
+          body: payload?.body,
+          cwd: payload?.cwd ?? null,
+          sessionPath: payload?.sessionPath ?? null
+        })
+      )
+    } catch {
+      /* ignore */
+    }
+  }
+  notification.show()
+  return true
+}
+
 const sessionUiRequests = new SessionUiRequests(
   (record) => send('pi:record', record),
   (owner, response) => (owner as PiProcess).write(response),
@@ -307,7 +360,21 @@ function wireProcess(process: PiProcess, key: string): void {
   let heldStderr = ''
   process.on('record', (record: PiRecord) => {
     if (sessionUiRequests.receive(process, record)) return
-    if (proc === process) send('pi:record', record)
+    if (proc === process) {
+      send('pi:record', record)
+      return
+    }
+    // Background session finished while another chat is active.
+    if (record.type === 'agent_settled') {
+      const settings = loadSettings()
+      if (settings.notifyOnFinish === false) return
+      showDesktopNotification({
+        title: 'Pi',
+        body: '有会话已完成',
+        cwd: process.cwd,
+        sessionPath: process.sessionPath ?? (key.startsWith('session:') ? key.slice('session:'.length) : null)
+      })
+    }
   })
   process.on('stderr', (chunk: string) => {
     const visible: string[] = []
@@ -448,7 +515,7 @@ async function doOpenSession(options: {
         const existingPath = stateResponse.data?.sessionFile ?? options.sessionPath ?? null
         const existingScratch = existing.cwd === scratchRoot
         if (existingPath) rememberActiveSession(existing.cwd, existingPath)
-        if (!existingScratch && !isTemporaryWorkspace(existing.cwd)) {
+        if (!existingScratch && !isTemporaryWorkspace(existing.cwd, scratchRoot)) {
           saveSettings({
             lastWorkspace: existing.cwd,
             workspaces: [...loadSettings().workspaces, existing.cwd]
@@ -557,7 +624,7 @@ async function doOpenSession(options: {
     if (sessionFile) rememberActiveSession(cwd, sessionFile)
 
     saveSettings(
-      scratch || isTemporaryWorkspace(cwd)
+      scratch || isTemporaryWorkspace(cwd, scratchRoot)
         ? {}
         : {
             lastWorkspace: cwd,
@@ -1094,43 +1161,7 @@ function registerIpc(): void {
     (
       _event,
       payload: { title?: string; body?: string; cwd?: string | null; sessionPath?: string | null }
-    ): boolean => {
-      if (!Notification.isSupported()) return false
-      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) return false
-      const notification = new Notification({
-        title: payload?.title?.trim() || 'Pi',
-        body: payload?.body ?? ''
-      })
-      if (process.env.PI_DESKTOP_NOTIFY_LOG) {
-        try {
-          console.log(
-            '[notify:desktop]',
-            JSON.stringify({
-              title: payload?.title,
-              body: payload?.body,
-              cwd: payload?.cwd ?? null,
-              sessionPath: payload?.sessionPath ?? null
-            })
-          )
-        } catch {
-          /* ignore */
-        }
-      }
-      notification.on('click', () => {
-        if (!mainWindow || mainWindow.isDestroyed()) return
-        if (mainWindow.isMinimized()) mainWindow.restore()
-        mainWindow.show()
-        mainWindow.focus()
-        if (payload?.sessionPath) {
-          mainWindow.webContents.send('notify:open-session', {
-            cwd: payload.cwd ?? null,
-            sessionPath: payload.sessionPath
-          })
-        }
-      })
-      notification.show()
-      return true
-    }
+    ): boolean => showDesktopNotification(payload ?? {})
   )
 
   ipcMain.handle(

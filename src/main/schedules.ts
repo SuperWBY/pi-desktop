@@ -788,7 +788,7 @@ export class ScheduleScheduler {
       child.on('close', (code) => {
         if (timedOut) finish('timeout', code, '运行超过 30 分钟，已终止')
         else if (code === 0) finish('success', code)
-        else finish('failed', code, `pi 退出码 ${code ?? 'unknown'}`)
+        else finish('failed', code, `Pi 意外停止了（代码 ${code ?? 'unknown'}）`)
       })
 
       timeout = setTimeout(() => {
@@ -852,7 +852,12 @@ export class ScheduleScheduler {
       title: ok ? `${task.name} 已完成` : `${task.name} ${status === 'timeout' ? '超时' : '失败'}`,
       body: ok ? '点击打开 Pi Desktop 查看本次运行' : '点击打开 Pi Desktop 查看日志'
     })
-    notification.on('click', () => {
+    ScheduleScheduler.liveNotifications.add(notification)
+    const release = (): void => {
+      ScheduleScheduler.liveNotifications.delete(notification)
+    }
+    notification.once('click', () => {
+      release()
       this.openTask(task.id)
       const window = BrowserWindow.getAllWindows()[0]
       if (!window) return
@@ -860,8 +865,12 @@ export class ScheduleScheduler {
       window.show()
       window.focus()
     })
+    notification.once('close', release)
+    notification.once('failed', release)
     notification.show()
   }
+
+  private static liveNotifications = new Set<Notification>()
 }
 
 export const scheduler = new ScheduleScheduler()

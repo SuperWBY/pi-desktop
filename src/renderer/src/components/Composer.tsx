@@ -948,13 +948,17 @@ export function Composer(): ReactNode {
               )
             })()}
             {fullAccessTarget === key && (
-              <Modal open title={t('这次不受限？')}
-                subtitle={t('仅这次对话。')}
+              <Modal
+                open
+                title={t('这次不受限？')}
                 onClose={() => setFullAccessTarget(null)}
                 footer={<>
                   <button type="button" className="button ghost" onClick={() => setFullAccessTarget(null)}>{t('取消')}</button>
                   <button type="button" className="button primary" onClick={() => void changePermission('full')}>{t('确认')}</button>
-                </>} children={null} />
+                </>}
+              >
+                <p>{t('Pi 可以不经确认运行命令、修改文件，仅这次对话。')}</p>
+              </Modal>
             )}
           </div>
 

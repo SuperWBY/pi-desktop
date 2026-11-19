@@ -136,7 +136,7 @@ export class PiProcess extends EventEmitter {
         if (options.desktopToolInfoFile) { try { unlinkSync(options.desktopToolInfoFile) } catch { /* already removed */ } }
         if (this.sandboxConfigPath) { try { unlinkSync(this.sandboxConfigPath) } catch { /* already removed */ } this.sandboxConfigPath = undefined }
         this.child = null
-        this.rejectPending(new Error(`pi exited (${signal ?? code ?? 'unknown'})`))
+        this.rejectPending(new Error(`Pi 已停止（${signal ?? code ?? 'unknown'}）`))
         this.emit('exit', { code, signal, intentional: this.stopping })
         this.stopping = false
       })

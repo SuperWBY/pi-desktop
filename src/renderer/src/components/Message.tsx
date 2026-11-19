@@ -131,11 +131,13 @@ function ThinkingBlock({
 function MessageActions({
   text,
   time,
-  align
+  align,
+  editable = false
 }: {
   text: string
   time?: string
   align: 'start' | 'end'
+  editable?: boolean
 }): ReactNode {
   const t = useTranslation()
   const { actions } = useApp()
@@ -157,9 +159,11 @@ function MessageActions({
       <button type="button" className="message-action" aria-label={t('复制消息')} title={t('复制消息')} onClick={() => void copy()}>
         {copied ? <Check size={14} /> : <Copy size={14} />}
       </button>
-      <button type="button" className="message-action" aria-label={t('编辑')} title={t('编辑')} onClick={() => actions.fillComposer(text)}>
-        <Pencil size={14} />
-      </button>
+      {editable ? (
+        <button type="button" className="message-action" aria-label={t('编辑')} title={t('编辑')} onClick={() => actions.fillComposer(text)}>
+          <Pencil size={14} />
+        </button>
+      ) : null}
       {copied ? <span className="message-copied" role="status">{t('已复制')}</span> : null}
     </div>
   )
@@ -200,7 +204,7 @@ export const UserMessageView = memo(function UserMessageView({
         )}
         {text && <div className="user-text">{text}</div>}
       </div>
-      {text ? <MessageActions text={text} time={optimistic ? t('sending…') : timeOfDay(message.timestamp)} align="end" /> : null}
+      {text ? <MessageActions text={text} time={optimistic ? t('sending…') : timeOfDay(message.timestamp)} align="end" editable /> : null}
     </div>
   )
 })

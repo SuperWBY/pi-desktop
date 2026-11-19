@@ -21,16 +21,12 @@ export function pathsEqual(a: string | null | undefined, b: string | null | unde
 }
 
 /**
- * OS temp directories and the app's scratch chat folder. These are not
- * projects a person chose, and their raw paths should never be shown.
+ * The app's own scratch chat folder — not every path under /tmp or
+ * /var/folders (a real project may live there in CI or local checkouts).
  */
 export function isTemporaryWorkspace(path: string | null | undefined, scratchPath?: string | null): boolean {
-  if (!path) return false
-  if (scratchPath && pathsEqual(path, scratchPath)) return true
-  const value = canonicalWorkspacePath(path)
-  if (value.startsWith('/var/folders/') || value.startsWith('/tmp/')) return true
-  if (value.includes('/appdata/local/temp/') || value.endsWith('/appdata/local/temp')) return true
-  return false
+  if (!path || !scratchPath) return false
+  return pathsEqual(path, scratchPath)
 }
 
 export function looksLikeRawPath(value: string): boolean {

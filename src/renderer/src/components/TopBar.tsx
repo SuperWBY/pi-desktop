@@ -3,10 +3,10 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Archive, PanelLeft, PanelRight } from 'lucide-react'
 import clsx from 'clsx'
 import { useApp } from '../store'
-import { projectName, shortenPath, truncate } from '../lib/format'
+import { projectName, shortenPath } from '../lib/format'
 import { isTemporaryWorkspace, looksLikeRawPath } from '@shared/paths'
 import { shortcutKeys, shiftMod } from '../lib/platform'
-import { contentText } from '../lib/tools'
+import { sessionDisplayTitle } from '../lib/session-title'
 
 export function TopBar(): ReactNode {
   const t = useTranslation()
@@ -19,17 +19,16 @@ export function TopBar(): ReactNode {
     ? t('临时对话')
     : projectName(state.settings.workspaceNames, state.workspace) || t('临时对话')
   const placeLabel = looksLikeRawPath(place) ? t('临时对话') : place
-  const firstUser = state.messages.find((message) => message.role === 'user')
-  const fallbackTitle = firstUser
-    ? truncate(contentText((firstUser as { content?: unknown }).content), 56)
-    : placeLabel
-  const title =
-    state.sessionName ??
-    (state.messages.length > 0
-      ? fallbackTitle
-      : state.workspace || state.scratchWorkspace
-        ? t('New session')
-        : 'Pi Desktop')
+  const title = sessionDisplayTitle({
+    sessionName: state.sessionName,
+    messages: state.messages,
+    emptyLabel:
+      state.messages.length > 0
+        ? placeLabel
+        : state.workspace || state.scratchWorkspace
+          ? t('New session')
+          : 'Pi Desktop'
+  })
   const percent = state.stats?.contextUsage?.percent ?? 0
 
   useEffect(() => {

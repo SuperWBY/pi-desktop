@@ -98,7 +98,7 @@ export function Welcome(): ReactNode {
         {!piMissing && connectOpen && <ConnectModelPanel onClose={() => setConnectOpen(false)} />}
 
         {!piMissing && !connectOpen && (
-          <>
+          <div className="welcome-start">
             <h1>{needsModel ? t('先连接模型') : t('可以开始了')}</h1>
             {needsModel ? (
               <button className="button primary" onClick={() => setConnectOpen(true)}>{t('连接模型')}</button>
@@ -106,7 +106,7 @@ export function Welcome(): ReactNode {
               <button className="button primary" onClick={() => void actions.newScratchSession()}>{t('开始聊天')}</button>
             )}
             <button type="button" className="welcome-link" onClick={() => actions.openAddProject(true)}>{t('选择文件夹')}</button>
-          </>
+          </div>
         )}
       </div>
     </div>

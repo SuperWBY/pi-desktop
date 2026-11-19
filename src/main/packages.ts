@@ -214,7 +214,11 @@ export function runPiPackageCommand(
     child.on('close', (code) => {
       const ok = code === 0
       onProgress({ phase: ok ? 'done' : 'error', code })
-      resolve({ ok, code, error: ok ? undefined : `pi exited with ${code ?? 'unknown'}` })
+      resolve({
+        ok,
+        code,
+        error: ok ? undefined : `Pi 意外停止了（代码 ${code ?? 'unknown'}）`
+      })
     })
   })
 }

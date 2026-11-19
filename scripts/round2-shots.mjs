@@ -264,6 +264,45 @@ if (process.argv[2] === 'welcome') {
   await shot(page, `composer-effort-menu-${theme}.png`)
   await page.locator('.popover').screenshot({ path: join(out, `composer-effort-menu-${theme}-crop.png`) })
   await app.close()
+} else if (process.argv[2] === 'menus') {
+  const theme = process.argv[3] || 'dark'
+  const d = dirs('menus-' + theme)
+  const { app, page } = await launch(
+    d,
+    { MOCK_TRANSCRIPT: '1' },
+    { theme, workspaces: [root], lastWorkspace: root },
+    { defaultProvider: 'mock', defaultModel: 'test' }
+  )
+  await page.waitForSelector('.composer-input', { timeout: 20000 })
+  await size(app, 1280, 860)
+  const input = page.locator('.composer-input')
+
+  await input.fill('/')
+  await page.waitForSelector('.slash-menu')
+  await page.waitForTimeout(200)
+  await shot(page, `slash-menu-open-${theme}.png`)
+  await page.locator('.slash-menu').screenshot({ path: join(out, `slash-menu-open-${theme}-crop.png`) })
+
+  await input.fill('/sch')
+  await page.waitForSelector('.slash-menu .slash-match')
+  await page.waitForTimeout(150)
+  await shot(page, `slash-menu-filter-${theme}.png`)
+  await page.locator('.slash-menu').screenshot({ path: join(out, `slash-menu-filter-${theme}-crop.png`) })
+
+  await input.fill('/zzzz-no-match')
+  await page.waitForSelector('.slash-empty')
+  await page.waitForTimeout(150)
+  await shot(page, `slash-menu-empty-${theme}.png`)
+  await page.locator('.slash-menu').screenshot({ path: join(out, `slash-menu-empty-${theme}-crop.png`) })
+
+  await page.keyboard.press('Escape')
+  await page.waitForSelector('.slash-menu', { state: 'detached' })
+  await page.locator('.add-attachment').click()
+  await page.waitForSelector('.composer-add-menu')
+  await page.waitForTimeout(200)
+  await shot(page, `composer-plus-menu-${theme}.png`)
+  await page.locator('.popover').screenshot({ path: join(out, `composer-plus-menu-${theme}-crop.png`) })
+  await app.close()
 } else {
-  console.log('usage: welcome|ready|chat|actions|stop|fixups|effort [dark|light]')
+  console.log('usage: welcome|ready|chat|actions|stop|fixups|effort|menus [dark|light]')
 }

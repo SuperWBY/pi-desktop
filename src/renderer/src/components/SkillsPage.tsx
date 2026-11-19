@@ -89,6 +89,15 @@ export function SkillsPage(): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
   const [tab, setTab] = useState<Tab>('skills')
+
+  useEffect(() => {
+    const onTab = (event: Event): void => {
+      const detail = (event as CustomEvent<Tab>).detail
+      if (detail === 'skills' || detail === 'plugins' || detail === 'connectors') setTab(detail)
+    }
+    window.addEventListener('pi:skills-tab', onTab)
+    return () => window.removeEventListener('pi:skills-tab', onTab)
+  }, [])
   const [skills, setSkills] = useState<SkillEntry[]>([])
   const [packages, setPackages] = useState<PackageEntry[]>([])
   const [loading, setLoading] = useState(true)

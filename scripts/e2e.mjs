@@ -2462,11 +2462,85 @@ async function caseComposerLayout() {
     JSON.stringify(column)
   )
 
+  await page.locator('.add-attachment').click()
+  await page.waitForSelector('.composer-add-menu')
+  const addItems = await page.locator('.composer-add-menu .menu-item').allTextContents()
+  check(
+    '+ 菜单最多四项且含附件/文件夹/技能/连接器',
+    addItems.length === 4 &&
+      addItems.some((text) => text.includes('添加文件或图片')) &&
+      addItems.some((text) => text.includes('选择文件夹')) &&
+      addItems.some((text) => text.includes('技能')) &&
+      addItems.some((text) => text.includes('连接器')),
+    JSON.stringify(addItems)
+  )
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('ArrowDown')
+  const focusedAdd = await page.evaluate(() => document.activeElement?.textContent?.trim() ?? '')
+  check('+ 菜单键盘可导航', focusedAdd.includes('技能') || focusedAdd.includes('选择文件夹'), focusedAdd)
+  await page.keyboard.press('Escape')
+  await page.waitForSelector('.composer-add-menu', { state: 'detached' })
+
   const chooser = page.waitForEvent('filechooser')
   await page.locator('.add-attachment').click()
+  await page.locator('.composer-add-menu .menu-item').filter({ hasText: '添加文件或图片' }).click()
   const file = await chooser
   await file.setFiles([])
   check('+ 号打开附件选择', Boolean(file), '')
+  await app.close()
+}
+
+async function caseSlashMenu() {
+  const dirs = freshDirs('slash-menu')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
+  )
+  const { app, page } = await launch(dirs, 'default', { MOCK_TRANSCRIPT: '1' })
+  await page.waitForSelector('.composer-input')
+  const input = page.locator('.composer-input')
+
+  await input.fill('/')
+  await page.waitForSelector('.slash-menu')
+  const schedule = page.locator('.slash-menu .command-item').filter({ hasText: '/schedule' })
+  check('/ 菜单列出 schedule', (await schedule.count()) === 1)
+  check('首项预选', await page.locator('.slash-menu .command-item.active').count() === 1)
+  const groups = await page.locator('.slash-menu .menu-group-label').allTextContents()
+  check('分组含常用', groups.some((label) => label.includes('常用')), JSON.stringify(groups))
+
+  const beforeNav = await page.locator('.slash-menu .command-item.active').innerText()
+  await page.keyboard.press('ArrowDown')
+  const afterDown = await page.locator('.slash-menu .command-item.active').innerText()
+  await page.keyboard.press('ArrowUp')
+  const afterUp = await page.locator('.slash-menu .command-item.active').innerText()
+  check(
+    '↑↓ 切换选中项',
+    afterDown !== beforeNav && afterUp === beforeNav,
+    JSON.stringify({ beforeNav, afterDown, afterUp })
+  )
+
+  await input.fill('/sch')
+  await page.waitForFunction(() => {
+    const active = document.querySelector('.slash-menu .command-item.active')
+    return Boolean(active?.textContent?.includes('/schedule') && active.querySelector('.slash-match'))
+  })
+  check('过滤高亮匹配', (await page.locator('.slash-menu .slash-match').count()) >= 1)
+  await page.keyboard.press('Enter')
+  await page.waitForFunction(() => document.querySelector('.composer-input')?.value.startsWith('/schedule '))
+  check('Enter 选中命令', (await input.inputValue()).startsWith('/schedule '))
+
+  await input.fill('/zzzz-no-match')
+  await page.waitForSelector('.slash-empty')
+  check('无匹配文案', (await page.locator('.slash-empty').innerText()).includes('没有匹配的命令'))
+  await page.keyboard.press('Escape')
+  await page.waitForSelector('.slash-menu', { state: 'detached' })
+  check('Esc 关闭无匹配菜单', (await input.inputValue()) === '')
+
+  await input.fill('/')
+  await page.waitForSelector('.slash-menu')
+  await page.mouse.click(16, 16)
+  await page.waitForSelector('.slash-menu', { state: 'detached' })
+  check('点击外部关闭 / 菜单', (await input.inputValue()) === '')
   await app.close()
 }
 
@@ -3725,6 +3799,7 @@ const CASES = [
   { tags: ['defaults', 'turns'], label: 'default: process visible', run: caseDefaultVisibility },
   { tags: ['rail', 'hover'], label: 'turn rail: slope + preview', run: caseTurnRailPreview },
   { tags: ['composer', 'composer-ui'], label: 'composer: plus + chip order', run: caseComposerLayout },
+  { tags: ['composer', 'slash-menu'], label: 'composer: slash menu keyboard + no-match', run: caseSlashMenu },
   { tags: ['package-inspection'], label: 'package permission preview', run: casePackageInspection },
   { tags: ['update-download'], label: 'update download entry', run: caseUpdateDownload },
   { tags: ['jev-settings'], label: 'Jev settings + key storage', run: caseJevSettings },

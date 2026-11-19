@@ -8,32 +8,88 @@ import {
   useState,
   type ChangeEvent,
   type ClipboardEvent,
+  type CSSProperties,
   type DragEvent,
   type KeyboardEvent,
   type ReactNode,
   type WheelEvent as ReactWheelEvent
 } from 'react'
+import { createPortal } from 'react-dom'
 import {
   ArrowUp,
+  Clock,
+  Cable,
   Eye,
   FileText,
+  FolderOpen,
   Check,
   ChevronDown,
   GripVertical,
   Image as ImageIcon,
+  Paperclip,
   Plus,
   Shield,
   ShieldCheck,
+  Sparkles,
   Square,
+  Terminal,
   TriangleAlert,
   X
 } from 'lucide-react'
 import clsx from 'clsx'
-import type { ModelInfo, ScheduleCadence, SessionPermission, SessionSecurity, ThinkingLevel } from '@shared/types'
+import type {
+  CommandInfo,
+  ModelInfo,
+  ScheduleCadence,
+  SessionPermission,
+  SessionSecurity,
+  ThinkingLevel
+} from '@shared/types'
 import { isTemporaryWorkspace } from '@shared/paths'
 import { useApp, type Attachment } from '../store'
 import { formatTokens, projectName } from '../lib/format'
 import { Modal, Popover, Spinner } from './ui'
+
+const PASTE_AS_FILE_CHARS = 2000
+const SLASH_MENU_MAX = 8
+
+const DESKTOP_COMMANDS: CommandInfo[] = [
+  { name: 'schedule', description: '创建定时任务', source: 'prompt' },
+  { name: 'compact', description: '压缩上下文', source: 'prompt' }
+]
+
+type SlashGroupId = 'common' | 'skills' | 'commands'
+
+function commandHint(command: CommandInfo): string {
+  const raw = (command.description ?? '').trim().replace(/\s+/g, ' ')
+  if (!raw) {
+    if (command.name === 'schedule') return '创建定时任务'
+    if (command.source === 'skill') return '运行技能'
+    return '斜杠命令'
+  }
+  return raw.length > 28 ? `${raw.slice(0, 27)}…` : raw
+}
+
+function commandGroup(command: CommandInfo): SlashGroupId {
+  if (command.name === 'schedule' || command.name === 'compact') return 'common'
+  if (command.source === 'skill') return 'skills'
+  return 'commands'
+}
+
+function highlightMatch(text: string, query: string): ReactNode {
+  if (!query) return text
+  const lower = text.toLowerCase()
+  const needle = query.toLowerCase()
+  const index = lower.indexOf(needle)
+  if (index < 0) return text
+  return (
+    <>
+      {text.slice(0, index)}
+      <mark className="slash-match">{text.slice(index, index + needle.length)}</mark>
+      {text.slice(index + needle.length)}
+    </>
+  )
+}
 
 type Protection = 'standard' | 'readonly' | 'full'
 
@@ -331,12 +387,7 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
         ))}
       </div>
       {showEffort ? (
-        <div
-          className="thinking-effort"
-          role="radiogroup"
-          aria-label={t('思考程度')}
-          onKeyDown={(event) => event.stopPropagation()}
-        >
+        <div className="thinking-effort" role="radiogroup" aria-label={t('思考程度')}>
           <div className="menu-group-label">{t('思考程度')}</div>
           <div className="thinking-effort-options">
             {effortOptions.map((option) => {
@@ -385,6 +436,7 @@ export function Composer(): ReactNode {
   const [dragOverQueue, setDragOverQueue] = useState<number | null>(null)
   const [dragging, setDragging] = useState(false)
   const [commandIndex, setCommandIndex] = useState(0)
+  const [slashMenuStyle, setSlashMenuStyle] = useState<CSSProperties>({})
   const [mention, setMention] = useState<{ query: string; start: number; end: number } | null>(null)
   const [mentionFiles, setMentionFiles] = useState<string[]>([])
   const [mentionIndex, setMentionIndex] = useState(0)
@@ -394,6 +446,9 @@ export function Composer(): ReactNode {
   const [atCap, setAtCap] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const slashMenuRef = useRef<HTMLDivElement>(null)
+  const composerShellRef = useRef<HTMLDivElement>(null)
+  const dragDepth = useRef(0)
   const focusedWhileStarting = useRef(false)
 
   const streaming = state.streaming
@@ -509,16 +564,94 @@ export function Composer(): ReactNode {
   }, [starting, ready, state.sessionPath, state.workspace, state.addProjectOpen, state.settingsOpen])
 
   const slashQuery = text.startsWith('/') && !text.includes(' ') ? text.slice(1) : null
+  const slashOpen = slashQuery !== null
+  const allCommands = useMemo(() => {
+    const merged = [...state.commands]
+    for (const command of [...DESKTOP_COMMANDS].reverse()) {
+      if (!merged.some((item) => item.name === command.name)) merged.unshift(command)
+    }
+    return merged
+  }, [state.commands])
   const commandMatches = useMemo(() => {
     if (slashQuery === null) return []
-    return state.commands
-      .filter((command) => command.name.toLowerCase().includes(slashQuery.toLowerCase()))
-      .slice(0, 8)
-  }, [slashQuery, state.commands])
+    const needle = slashQuery.toLowerCase()
+    return allCommands
+      .filter((command) => !needle || command.name.toLowerCase().includes(needle) || (command.description ?? '').toLowerCase().includes(needle))
+      .slice(0, SLASH_MENU_MAX)
+  }, [allCommands, slashQuery])
+  const slashGroups = useMemo(() => {
+    const labels: Record<SlashGroupId, string> = {
+      common: '常用',
+      skills: '技能',
+      commands: '命令'
+    }
+    const buckets: Record<SlashGroupId, CommandInfo[]> = { common: [], skills: [], commands: [] }
+    for (const command of commandMatches) buckets[commandGroup(command)].push(command)
+    return (['common', 'skills', 'commands'] as const)
+      .map((id) => ({ id, label: labels[id], items: buckets[id] }))
+      .filter((group) => group.items.length > 0)
+  }, [commandMatches])
+  const flatSlash = useMemo(() => slashGroups.flatMap((group) => group.items), [slashGroups])
 
   useEffect(() => {
     setCommandIndex(0)
-  }, [slashQuery])
+  }, [slashQuery, flatSlash.length])
+
+  useEffect(() => {
+    if (!slashOpen) return
+    const active = slashMenuRef.current?.querySelector('.command-item.active') as HTMLElement | null
+    active?.scrollIntoView({ block: 'nearest' })
+  }, [commandIndex, slashOpen, flatSlash])
+
+  useLayoutEffect(() => {
+    if (!slashOpen) return
+    const place = (): void => {
+      const shell = composerShellRef.current
+      const input = textareaRef.current
+      if (!shell || !input) return
+      const shellRect = shell.getBoundingClientRect()
+      const inputRect = input.getBoundingClientRect()
+      const width = Math.min(340, Math.max(240, inputRect.width))
+      const left = Math.min(Math.max(8, inputRect.left), window.innerWidth - width - 8)
+      const gap = 8
+      const maxHeight = Math.min(8 * 34 + 36, Math.max(120, shellRect.top - gap - 8))
+      setSlashMenuStyle({
+        left,
+        width,
+        bottom: window.innerHeight - shellRect.top + gap,
+        maxHeight
+      })
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [slashOpen, text, flatSlash.length])
+
+  useEffect(() => {
+    if (!slashOpen) return
+    const onPointer = (event: MouseEvent): void => {
+      const target = event.target as Node
+      if (slashMenuRef.current?.contains(target) || textareaRef.current?.contains(target)) return
+      setText((current) => (current.startsWith('/') && !current.includes(' ') ? '' : current))
+    }
+    document.addEventListener('mousedown', onPointer)
+    return () => document.removeEventListener('mousedown', onPointer)
+  }, [slashOpen])
+
+  const pickSlashCommand = useCallback((command: CommandInfo): void => {
+    setText(`/${command.name} `)
+    window.requestAnimationFrame(() => {
+      const input = textareaRef.current
+      if (!input) return
+      input.focus()
+      const caret = input.value.length
+      input.setSelectionRange(caret, caret)
+    })
+  }, [])
 
   const updateMention = useCallback((value: string, caret: number): void => {
     const before = value.slice(0, caret)
@@ -684,21 +817,26 @@ export function Composer(): ReactNode {
       }
     }
 
-    if (commandMatches.length > 0) {
+    if (slashOpen) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
-        setCommandIndex((index) => (index + 1) % commandMatches.length)
+        if (flatSlash.length) setCommandIndex((index) => (index + 1) % flatSlash.length)
         return
       }
       if (event.key === 'ArrowUp') {
         event.preventDefault()
-        setCommandIndex((index) => (index - 1 + commandMatches.length) % commandMatches.length)
+        if (flatSlash.length) setCommandIndex((index) => (index - 1 + flatSlash.length) % flatSlash.length)
         return
       }
-      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+      if ((event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) && flatSlash.length) {
         event.preventDefault()
-        const command = commandMatches[commandIndex]
-        if (command) setText(`/${command.name} `)
+        const command = flatSlash[commandIndex]
+        if (command) pickSlashCommand(command)
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setText('')
         return
       }
     }
@@ -722,14 +860,37 @@ export function Composer(): ReactNode {
     if (files.length) {
       event.preventDefault()
       void addFiles(files)
+      return
+    }
+    const pasted = event.clipboardData.getData('text/plain')
+    if (pasted && pasted.length > PASTE_AS_FILE_CHARS) {
+      event.preventDefault()
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+      const file = new File([pasted], `paste-${stamp}.txt`, { type: 'text/plain' })
+      void addFiles([file])
     }
   }
 
+  const clearDragging = useCallback((): void => {
+    dragDepth.current = 0
+    setDragging(false)
+  }, [])
+
   const onDrop = (event: DragEvent<HTMLDivElement>): void => {
     event.preventDefault()
-    setDragging(false)
+    clearDragging()
     if (event.dataTransfer.files.length) void addFiles(event.dataTransfer.files)
   }
+
+  useEffect(() => {
+    const end = (): void => clearDragging()
+    window.addEventListener('dragend', end)
+    window.addEventListener('drop', end)
+    return () => {
+      window.removeEventListener('dragend', end)
+      window.removeEventListener('drop', end)
+    }
+  }, [clearDragging])
 
   // Wheel over the composer should still move the conversation — but never
   // when the pointer is over a menu, modal or drawer sitting on top of it.
@@ -749,19 +910,28 @@ export function Composer(): ReactNode {
 
   return (
     <div
+      ref={composerShellRef}
       className={clsx('composer-wrap', dragging && 'dragging')}
-      onDragOver={(event) => {
+      onDragEnter={(event) => {
         event.preventDefault()
+        dragDepth.current += 1
         setDragging(true)
       }}
+      onDragOver={(event) => {
+        event.preventDefault()
+        if (!dragging) setDragging(true)
+      }}
       onDragLeave={(event) => {
-        if (event.currentTarget === event.target) setDragging(false)
+        const next = event.relatedTarget as Node | null
+        if (next && event.currentTarget.contains(next)) return
+        dragDepth.current = Math.max(0, dragDepth.current - 1)
+        if (dragDepth.current === 0) setDragging(false)
       }}
       onDrop={onDrop}
       onWheel={onWheel}
     >
       {dragging && (
-        <div className="drop-overlay">
+        <div className="drop-overlay" aria-hidden="true">
           <ImageIcon size={18} />
           <span>{t("松手添加文件或图片")}</span>
         </div>
@@ -900,26 +1070,56 @@ export function Composer(): ReactNode {
           </div>
         )}
 
-        {commandMatches.length > 0 && (
-          <div className="command-menu">
-            {commandMatches.map((command, index) => (
-              <button
-                key={command.name}
-                className={clsx('command-item', index === commandIndex && 'active')}
-                onMouseEnter={() => setCommandIndex(index)}
-                onClick={() => {
-                  setText(`/${command.name} `)
-                  textareaRef.current?.focus()
-                }}
-              >
-                <span className="command-name">/{command.name}</span>
-                {command.description && (
-                  <span className="command-desc">{command.description}</span>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
+        {slashOpen &&
+          createPortal(
+            <div
+              ref={slashMenuRef}
+              className="command-menu slash-menu"
+              style={slashMenuStyle}
+              role="listbox"
+              aria-label={t('斜杠命令')}
+              onMouseDown={(event) => event.preventDefault()}
+            >
+              {flatSlash.length === 0 ? (
+                <div className="slash-empty">{t('没有匹配的命令')}</div>
+              ) : (
+                slashGroups.map((group) => (
+                  <div className="slash-group" key={group.id}>
+                    <div className="menu-group-label">{t(group.label)}</div>
+                    {group.items.map((command) => {
+                      const index = flatSlash.indexOf(command)
+                      const Icon =
+                        command.name === 'schedule'
+                          ? Clock
+                          : command.source === 'skill'
+                            ? Sparkles
+                            : Terminal
+                      return (
+                        <button
+                          key={`${group.id}-${command.name}`}
+                          type="button"
+                          role="option"
+                          aria-selected={index === commandIndex}
+                          className={clsx('command-item', index === commandIndex && 'active')}
+                          onMouseEnter={() => setCommandIndex(index)}
+                          onClick={() => pickSlashCommand(command)}
+                        >
+                          <span className="command-icon" aria-hidden="true">
+                            <Icon size={14} />
+                          </span>
+                          <span className="command-copy">
+                            <span className="command-name">/{highlightMatch(command.name, slashQuery ?? '')}</span>
+                            <span className="command-desc">{t(commandHint(command))}</span>
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                ))
+              )}
+            </div>,
+            document.body
+          )}
 
         <textarea
           ref={textareaRef}
@@ -935,18 +1135,84 @@ export function Composer(): ReactNode {
           }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
+          onBlur={() => {
+            // Clicking a slash row uses mousedown preventDefault; genuine blur closes.
+            window.setTimeout(() => {
+              if (document.activeElement === textareaRef.current) return
+              if (slashMenuRef.current?.contains(document.activeElement)) return
+              setText((current) => (current.startsWith('/') && !current.includes(' ') ? '' : current))
+            }, 0)
+          }}
         />
 
         <div className="composer-bar">
           <div className="composer-left">
-            <button
-              className="icon-button add-attachment"
-              title={t("添加文件或图片")}
-              aria-label={t("添加文件或图片")}
-              onClick={() => fileRef.current?.click()}
+            <Popover
+              width={220}
+              align="left"
+              trigger={(open, toggle, expanded) => (
+                <button
+                  className={clsx('icon-button add-attachment', open && 'open')}
+                  title={t('添加')}
+                  aria-label={t('添加')}
+                  onClick={toggle}
+                  {...expanded}
+                >
+                  <Plus size={16} />
+                </button>
+              )}
             >
-              <Plus size={16} />
-            </button>
+              {(close) => (
+                <div className="menu composer-add-menu">
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      close()
+                      fileRef.current?.click()
+                    }}
+                  >
+                    <Paperclip size={14} />
+                    <span className="menu-item-title">{t('添加文件或图片')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      close()
+                      actions.openAddProject(true)
+                    }}
+                  >
+                    <FolderOpen size={14} />
+                    <span className="menu-item-title">{t('选择文件夹')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      close()
+                      actions.openSkills(true)
+                      window.dispatchEvent(new CustomEvent('pi:skills-tab', { detail: 'skills' }))
+                    }}
+                  >
+                    <Sparkles size={14} />
+                    <span className="menu-item-title">{t('技能')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      close()
+                      actions.openSkills(true)
+                      window.dispatchEvent(new CustomEvent('pi:skills-tab', { detail: 'connectors' }))
+                    }}
+                  >
+                    <Cable size={14} />
+                    <span className="menu-item-title">{t('连接器')}</span>
+                  </button>
+                </div>
+              )}
+            </Popover>
             <input
               ref={fileRef}
               type="file"

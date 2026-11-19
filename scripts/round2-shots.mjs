@@ -16,8 +16,9 @@ function dirs(name) {
   return d
 }
 
-async function launch(d, extra = {}, settings = {}) {
+async function launch(d, extra = {}, settings = {}, agentSettings = null) {
   writeFileSync(join(d.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', autoCheckUpdates: false, ...settings }))
+  if (agentSettings) writeFileSync(join(d.agent, 'settings.json'), JSON.stringify(agentSettings))
   const app = await electron.launch({
     args: ['.', `--user-data-dir=${d.userData}`],
     cwd: root,
@@ -72,7 +73,7 @@ if (process.argv[2] === 'welcome') {
   await page.waitForTimeout(1500)
   await size(app, 1280, 860)
   await shot(page, `welcome-ready-${theme}.png`)
-  const connect = page.getByRole('button', { name: '连接模型' })
+  const connect = page.getByRole('button', { name: '连接模型', exact: true })
   if (await connect.count()) {
     await connect.click()
     await page.waitForTimeout(500)
@@ -194,7 +195,12 @@ if (process.argv[2] === 'welcome') {
   }
   {
     const d = dirs('fixups-permission-' + theme)
-    const { app, page } = await launch(d, { MOCK_TRANSCRIPT: '1' }, { theme, workspaces: [root], lastWorkspace: root })
+    const { app, page } = await launch(
+      d,
+      { MOCK_TRANSCRIPT: '1' },
+      { theme, workspaces: [root], lastWorkspace: root },
+      { defaultProvider: 'mock', defaultModel: 'test' }
+    )
     await page.waitForSelector('.composer-input', { timeout: 20000 })
     await size(app, 1280, 860)
     await page.waitForFunction(() => document.querySelector('.approval-mode-chip:not([disabled])'), null, { timeout: 20000 })
@@ -209,7 +215,12 @@ if (process.argv[2] === 'welcome') {
   }
   {
     const d = dirs('fixups-actions-' + theme)
-    const { app, page } = await launch(d, { MOCK_TRANSCRIPT: '2' }, { theme, workspaces: [root], lastWorkspace: root })
+    const { app, page } = await launch(
+      d,
+      { MOCK_TRANSCRIPT: '2' },
+      { theme, workspaces: [root], lastWorkspace: root },
+      { defaultProvider: 'mock', defaultModel: 'test' }
+    )
     await page.waitForSelector('.composer-input', { timeout: 20000 })
     await size(app, 1280, 860)
     await page.locator('.composer-input').fill('检查助手消息操作只剩时间和复制')

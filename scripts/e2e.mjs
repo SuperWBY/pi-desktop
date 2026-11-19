@@ -2430,18 +2430,18 @@ async function caseComposerLayout() {
       /^\d+%$/.test(ringText.trim()) &&
       /上下文\s+\d+%/.test(ringTitle ?? '') &&
       /自动摘要历史|接近上限/.test(ringTitle ?? '') &&
-      /·\s*(快速|均衡|深入)/.test(layout.modelLabel),
+      /·\s*(低|中|高|极高)/.test(layout.modelLabel),
     JSON.stringify({ ...layout, ringText, ringTitle })
   )
   await page.locator('.model-chip').click()
   await page.waitForSelector('.thinking-effort')
   check(
-    '模型菜单含三段思考程度',
-    (await page.locator('.thinking-effort-option').count()) === 3
+    '模型菜单含标准思考程度段',
+    (await page.locator('.thinking-effort-option').count()) >= 3
   )
-  await page.locator('.thinking-effort-option').filter({ hasText: '深入' }).click()
-  await page.waitForFunction(() => (document.querySelector('.model-chip .chip-label')?.textContent ?? '').includes('深入'))
-  check('切换思考程度更新芯片文案', (await page.locator('.model-chip .chip-label').innerText()).includes('深入'))
+  await page.locator('.thinking-effort-option').filter({ hasText: /^高$/ }).click()
+  await page.waitForFunction(() => /·\s*高/.test(document.querySelector('.model-chip .chip-label')?.textContent ?? ''))
+  check('切换思考程度更新芯片文案', /·\s*高/.test(await page.locator('.model-chip .chip-label').innerText()))
   await page.keyboard.press('Escape')
 
   const column = await page.evaluate(() => {
@@ -3544,19 +3544,22 @@ async function caseOAuthUnavailableUi() {
   // Temporarily hide other seed versions that may include an auth module.
   const seedRootDir = join(root, 'build', 'pi-seed')
   const hidden = []
-  for (const name of readdirSync(seedRootDir)) {
-    if (name === '0.0.0-oauth-ui') continue
-    const from = join(seedRootDir, name)
-    const to = join(dirs.base, `hidden-seed-${name}`)
-    renameSync(from, to)
-    hidden.push({ from, to })
-  }
-  const { app, page } = await launch(dirs, 'default', {
-    PI_DESKTOP_PI_PATH: join(dirs.base, 'missing-pi'),
-    PATH: '/usr/bin:/bin',
-    SHELL: '/bin/sh'
-  })
+  let app
   try {
+    for (const name of readdirSync(seedRootDir)) {
+      if (name === '0.0.0-oauth-ui') continue
+      const from = join(seedRootDir, name)
+      const to = join(dirs.base, `hidden-seed-${name}`)
+      renameSync(from, to)
+      hidden.push({ from, to })
+    }
+    const launched = await launch(dirs, 'default', {
+      PI_DESKTOP_PI_PATH: join(dirs.base, 'missing-pi'),
+      PATH: '/usr/bin:/bin',
+      SHELL: '/bin/sh'
+    })
+    app = launched.app
+    const page = launched.page
     await page.getByRole('button', { name: '连接模型', exact: true }).click()
     await page.locator('.connect-model').waitFor()
     await page.getByRole('tab', { name: '用账号登录' }).click()
@@ -3572,7 +3575,7 @@ async function caseOAuthUnavailableUi() {
     })
     check('账号登录不可用时错误为中文短句', /暂不支持账号登录/.test(message) && !/Error invoking remote method/.test(message), message)
   } finally {
-    await app.close()
+    if (app) await app.close().catch(() => undefined)
     rmSync(seedDir, { recursive: true, force: true })
     for (const item of hidden) {
       if (existsSync(item.to)) renameSync(item.to, item.from)

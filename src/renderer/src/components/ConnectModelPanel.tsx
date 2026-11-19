@@ -48,7 +48,7 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
   const [customKey, setCustomKey] = useState('')
   const [customModel, setCustomModel] = useState('')
   const [providers, setProviders] = useState<{ id: string; name: string }[]>([])
-  const [accountStatus, setAccountStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle')
+  const [accountStatus, setAccountStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable' | 'error'>('idle')
   const [accountError, setAccountError] = useState('')
   const [running, setRunning] = useState(false)
   const [prompt, setPrompt] = useState<{ id: string; message: string; secret: boolean } | null>(null)
@@ -143,13 +143,21 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
       .then((list) => {
         const next = list.filter((item) => item.oauth).map((item) => ({ id: item.id, name: item.name }))
         setProviders(next)
+        setAccountError('')
         setAccountStatus(next.length ? 'ready' : 'unavailable')
       })
-      .catch(() => {
+      .catch((reason: unknown) => {
         setProviders([])
-        setAccountStatus('unavailable')
+        const message = quietError(reason instanceof Error ? reason.message : String(reason))
+        if (/暂不支持账号登录|内置 Pi runtime|认证模块/i.test(message)) {
+          setAccountError('')
+          setAccountStatus('unavailable')
+          return
+        }
+        setAccountError(t(message || '读取服务商失败，请重试'))
+        setAccountStatus('error')
       })
-  }, [tab])
+  }, [tab, t])
 
   useEffect(() => {
     return window.pi.onOAuthEvent((event) => {
@@ -270,6 +278,34 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
             <div className="connect-oauth-unavailable">
               <p>{t('当前版本暂不支持账号登录，请用 API Key')}</p>
               <button type="button" className="button primary" onClick={() => setTab('key')}>{t('使用 API Key')}</button>
+            </div>
+          ) : accountStatus === 'error' ? (
+            <div className="connect-oauth-unavailable">
+              <p>{accountError || t('读取服务商失败，请重试')}</p>
+              <button type="button" className="button" onClick={() => setTab('key')}>{t('使用 API Key')}</button>
+              <button
+                type="button"
+                className="button primary"
+                onClick={() => {
+                  setAccountStatus('loading')
+                  setAccountError('')
+                  void window.pi.listOAuthProviders()
+                    .then((list) => {
+                      const next = list.filter((item) => item.oauth).map((item) => ({ id: item.id, name: item.name }))
+                      setProviders(next)
+                      setAccountStatus(next.length ? 'ready' : 'unavailable')
+                    })
+                    .catch((reason: unknown) => {
+                      const message = quietError(reason instanceof Error ? reason.message : String(reason))
+                      if (/暂不支持账号登录|内置 Pi runtime|认证模块/i.test(message)) {
+                        setAccountStatus('unavailable')
+                        return
+                      }
+                      setAccountError(t(message || '读取服务商失败，请重试'))
+                      setAccountStatus('error')
+                    })
+                }}
+              >{t('重试')}</button>
             </div>
           ) : (
             <>

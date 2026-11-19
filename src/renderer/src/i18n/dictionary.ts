@@ -798,12 +798,7 @@ english.set(
   'Pi can run commands and edit files without asking, for this chat only.'
 )
 english.set('思考程度', 'Thinking effort')
-english.set('快速', 'Fast')
-english.set('均衡', 'Balanced')
-english.set('深入', 'Deep')
-english.set('简单问题、快速回复', 'Simple questions, quick replies')
-english.set('日常任务', 'Everyday work')
-english.set('复杂问题，更慢', 'Harder problems, slower')
+english.set('读取服务商失败，请重试', 'Could not load providers. Try again.')
 english.set('复制消息', 'Copy message')
 english.set('编辑', 'Edit')
 english.set('密钥无效（401）', 'Key rejected (401)')

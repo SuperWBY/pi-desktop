@@ -121,63 +121,40 @@ function saveDraft(key: string, draft: Draft): void {
   } catch { /* The in-memory draft still works when storage is unavailable. */ }
 }
 
-/** Three plain-language effort choices mapped onto whatever levels the model exposes. */
-const EFFORT_OPTIONS = [
-  {
-    id: 'fast' as const,
-    label: '快速',
-    hint: '简单问题、快速回复',
-    prefer: ['low', 'minimal'] as ThinkingLevel[]
-  },
-  {
-    id: 'balanced' as const,
-    label: '均衡',
-    hint: '日常任务',
-    prefer: ['medium'] as ThinkingLevel[]
-  },
-  {
-    id: 'deep' as const,
-    label: '深入',
-    hint: '复杂问题，更慢',
-    prefer: ['high', 'xhigh', 'max'] as ThinkingLevel[]
-  }
+/** Standard thinking levels — show only those the model supports. */
+const EFFORT_OPTIONS: { level: ThinkingLevel; label: string; aliases: ThinkingLevel[] }[] = [
+  { level: 'low', label: '低', aliases: ['minimal'] },
+  { level: 'medium', label: '中', aliases: [] },
+  { level: 'high', label: '高', aliases: [] },
+  { level: 'xhigh', label: '极高', aliases: ['max'] }
 ]
 
-type EffortId = (typeof EFFORT_OPTIONS)[number]['id']
-
-function resolveEffortLevel(prefer: ThinkingLevel[], available: ThinkingLevel[]): ThinkingLevel | null {
-  for (const level of prefer) {
+function resolveEffortLevel(option: (typeof EFFORT_OPTIONS)[number], available: ThinkingLevel[]): ThinkingLevel | null {
+  for (const level of [option.level, ...option.aliases]) {
     if (available.includes(level)) return level
   }
   return null
 }
 
-function effortBucket(level: ThinkingLevel | undefined): EffortId | null {
+function effortLabelFor(level: ThinkingLevel | undefined): string | null {
   if (!level || level === 'off') return null
   for (const option of EFFORT_OPTIONS) {
-    if (option.prefer.includes(level)) return option.id
+    if (option.level === level || option.aliases.includes(level)) return option.label
   }
   return null
 }
 
 function effortOptionsFor(available: ThinkingLevel[]): Array<{
-  id: EffortId
+  level: ThinkingLevel
   label: string
-  hint: string
-  level: ThinkingLevel | null
+  value: ThinkingLevel
 }> {
-  return EFFORT_OPTIONS.map((option) => ({
-    id: option.id,
-    label: option.label,
-    hint: option.hint,
-    level: resolveEffortLevel(option.prefer, available)
-  }))
-}
-
-function effortLabelFor(level: ThinkingLevel | undefined): string | null {
-  const bucket = effortBucket(level)
-  if (!bucket) return null
-  return EFFORT_OPTIONS.find((option) => option.id === bucket)?.label ?? null
+  const options: Array<{ level: ThinkingLevel; label: string; value: ThinkingLevel }> = []
+  for (const option of EFFORT_OPTIONS) {
+    const value = resolveEffortLevel(option, available)
+    if (value) options.push({ level: option.level, label: option.label, value })
+  }
+  return options
 }
 
 function readImage(file: File): Promise<Attachment> {
@@ -311,9 +288,9 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
   let index = -1
   const availableLevels = state.levels.length ? state.levels : (['off'] as ThinkingLevel[])
   const effortOptions = effortOptionsFor(availableLevels)
-  const showEffort = Boolean(current?.reasoning) && effortOptions.some((option) => option.level)
+  const showEffort = Boolean(current?.reasoning) && effortOptions.length > 0
   const currentLevel = state.piState?.thinkingLevel
-  const currentBucket = effortBucket(currentLevel)
+  const currentLabel = effortLabelFor(currentLevel)
 
   return (
     <div className="menu">
@@ -391,28 +368,23 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
       {showEffort ? (
         <div className="thinking-effort" role="radiogroup" aria-label={t('思考程度')}>
           <div className="menu-group-label">{t('思考程度')}</div>
-          <div className="thinking-effort-options">
+          <div className="thinking-effort-options" style={{ ['--effort-count' as string]: String(effortOptions.length) }}>
             {effortOptions.map((option) => {
-              const enabled = Boolean(option.level)
-              const selected = enabled && currentBucket === option.id
+              const selected = currentLabel === option.label
               return (
                 <button
-                  key={option.id}
+                  key={option.level}
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  aria-disabled={!enabled}
-                  disabled={!enabled}
-                  className={clsx('thinking-effort-option', selected && 'active', !enabled && 'is-disabled')}
+                  title={t(option.label)}
+                  className={clsx('thinking-effort-option', selected && 'active')}
                   onClick={() => {
-                    if (!option.level) return
-                    // Keep the current mapped level (e.g. max) instead of collapsing to high.
-                    if (currentBucket === option.id) return
-                    void actions.setThinking(option.level)
+                    if (selected) return
+                    void actions.setThinking(option.value)
                   }}
                 >
-                  <span className="thinking-effort-title">{t(option.label)}</span>
-                  <span className="thinking-effort-hint">{t(option.hint)}</span>
+                  {t(option.label)}
                 </button>
               )
             })}

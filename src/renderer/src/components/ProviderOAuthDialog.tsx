@@ -8,7 +8,11 @@ import { Modal } from './ui'
 
 type Provider = { id: string; name: string; oauth: boolean; apiKey: boolean }
 type Prompt = { id: string; prompt: { type: 'text' | 'secret' | 'select' | 'manual_code'; message: string; placeholder?: string; options?: { id: string; label: string; description?: string }[] } }
-type Phase = 'loading' | 'ready' | 'unavailable' | 'running'
+type Phase = 'loading' | 'ready' | 'unavailable' | 'error' | 'running'
+
+function isUnavailableMessage(message: string): boolean {
+  return /暂不支持账号登录|内置 Pi runtime|认证模块|OAUTH_UNAVAILABLE/i.test(message)
+}
 
 export function ProviderOAuthDialog({ open, onClose, onSaved, onUseApiKey }: {
   open: boolean
@@ -50,14 +54,19 @@ export function ProviderOAuthDialog({ open, onClose, onSaved, onUseApiKey }: {
         return
       }
       setProviders(oauth)
-      setProvider((current) => (oauth.some((item) => item.id === current) ? current : ''))
+      setProvider((current) => (oauth.some((item) => item.id === current) ? current : oauth[0]?.id ?? ''))
       setPhase('ready')
     }).catch((reason: unknown) => {
       setProviders([])
       setProvider('')
-      setPhase('unavailable')
-      const message = userFacingError(reason, t('当前版本暂不支持账号登录，请用 API Key'))
-      if (!/暂不支持账号登录|内置 Pi runtime|认证模块/.test(message)) setError(message)
+      const message = userFacingError(reason, t('读取服务商失败，请重试'))
+      if (isUnavailableMessage(message)) {
+        setPhase('unavailable')
+        setError('')
+        return
+      }
+      setPhase('error')
+      setError(message)
     })
   }, [open, t])
 
@@ -145,6 +154,36 @@ export function ProviderOAuthDialog({ open, onClose, onSaved, onUseApiKey }: {
             <button className="button ghost" onClick={onClose}>{t('关闭')}</button>
             <button className="button primary" onClick={useApiKey}>{t('使用 API Key')}</button>
           </>
+        ) : phase === 'error' ? (
+          <>
+            <button className="button ghost" onClick={onClose}>{t('关闭')}</button>
+            <button className="button" onClick={useApiKey}>{t('使用 API Key')}</button>
+            <button className="button primary" onClick={() => {
+              setPhase('loading')
+              setError('')
+              window.pi.listOAuthProviders().then((next) => {
+                const oauth = next.filter((item) => item.oauth)
+                if (!oauth.length) {
+                  setProviders([])
+                  setProvider('')
+                  setPhase('unavailable')
+                  return
+                }
+                setProviders(oauth)
+                setProvider(oauth[0]?.id ?? '')
+                setPhase('ready')
+              }).catch((reason: unknown) => {
+                const message = userFacingError(reason, t('读取服务商失败，请重试'))
+                if (isUnavailableMessage(message)) {
+                  setPhase('unavailable')
+                  setError('')
+                  return
+                }
+                setPhase('error')
+                setError(message)
+              })
+            }}>{t('重试')}</button>
+          </>
         ) : (
           <>
             <button className="button ghost" onClick={() => (running ? cancel() : onClose())}>{running ? t('取消登录') : t('关闭')}</button>
@@ -160,6 +199,8 @@ export function ProviderOAuthDialog({ open, onClose, onSaved, onUseApiKey }: {
           <p className="settings-note"><Loader2 size={14} className="spin" /> {t('正在读取服务商…')}</p>
         ) : phase === 'unavailable' ? (
           <p className="provider-oauth-unavailable" role="status">{t('当前版本暂不支持账号登录，请用 API Key')}</p>
+        ) : phase === 'error' ? (
+          <p className="provider-oauth-unavailable" role="alert">{error || t('读取服务商失败，请重试')}</p>
         ) : !running ? (
           <div className="provider-oauth-providers" role="listbox" aria-label={t('服务商')}>
             {providers.map((item) => (
@@ -213,8 +254,8 @@ export function ProviderOAuthDialog({ open, onClose, onSaved, onUseApiKey }: {
             )}
           </div>
         )}
-        {error && <p className="desktop-permissions-error" role="alert">{error}</p>}
-        {phase !== 'unavailable' && phase !== 'loading' && (
+        {error && phase !== 'error' && <p className="desktop-permissions-error" role="alert">{error}</p>}
+        {phase !== 'unavailable' && phase !== 'loading' && phase !== 'error' && (
           <div className="provider-oauth-note"><ShieldCheck size={15} /><span>{t('授权在浏览器中完成，Pi Desktop 不会读取你的密码。')}</span></div>
         )}
       </div>

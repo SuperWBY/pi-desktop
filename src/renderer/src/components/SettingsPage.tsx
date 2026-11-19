@@ -64,11 +64,12 @@ const SHORTCUTS: { keys: string; label: string }[] = [
   { keys: 'Esc', label: '停止运行 / 关闭面板' }
 ]
 
-/** Match composer effort wording for the settings default. */
+/** Same 低/中/高/极高 wording as the composer thinking control. */
 const DEFAULT_THINKING_OPTIONS: { value: ThinkingLevel; label: string }[] = [
-  { value: 'low', label: '快速' },
-  { value: 'medium', label: '均衡' },
-  { value: 'high', label: '深入' }
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+  { value: 'xhigh', label: '极高' }
 ]
 
 const BUILTIN_TOOLS: { name: string; desc: string }[] = [
@@ -1072,9 +1073,11 @@ export function SettingsPage(): ReactNode {
                 ? 'low'
                 : thinkingValue === 'medium'
                   ? 'medium'
-                  : thinkingValue === 'high' || thinkingValue === 'xhigh' || thinkingValue === 'max'
+                  : thinkingValue === 'high'
                     ? 'high'
-                    : ''
+                    : thinkingValue === 'xhigh' || thinkingValue === 'max'
+                      ? 'xhigh'
+                      : ''
             }
             onChange={(value) =>
               void actions.updatePiSettings({

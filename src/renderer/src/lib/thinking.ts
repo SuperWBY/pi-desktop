@@ -1,14 +1,17 @@
 import type { ThinkingLevel } from '@shared/types'
 
-/** Plain wording for every known thinking level (composer + Settings). */
-export const THINKING_LABELS: Record<ThinkingLevel, string> = {
-  off: '关',
-  minimal: '最低',
-  low: '低',
-  medium: '中',
-  high: '高',
-  xhigh: '极高',
-  max: '最高'
+type Lang = 'zh-CN' | 'en'
+
+/** Standard plain labels for known thinking ids (composer + Settings). */
+const KNOWN_LABELS: Record<string, { zh: string; en: string }> = {
+  off: { zh: '关闭', en: 'Off' },
+  none: { zh: '关闭', en: 'Off' },
+  minimal: { zh: '最低', en: 'Minimal' },
+  low: { zh: '低', en: 'Low' },
+  medium: { zh: '中', en: 'Medium' },
+  high: { zh: '高', en: 'High' },
+  xhigh: { zh: '极高', en: 'Extra high' },
+  max: { zh: '最高', en: 'Max' }
 }
 
 /** Full catalog for Settings › 默认思考程度 (plus 「自动」 in the UI). */
@@ -22,18 +25,28 @@ export const ALL_THINKING_LEVELS: ThinkingLevel[] = [
   'max'
 ]
 
-export function thinkingLabel(level: ThinkingLevel | undefined | null): string | null {
-  if (!level) return null
-  return THINKING_LABELS[level] ?? null
+/**
+ * Map a level id to UI copy. Known ids use plain wording; unknown ids keep the
+ * raw id. Language-aware so 「关闭」 does not collide with the Close button.
+ */
+export function thinkingLabel(
+  level: string | undefined | null,
+  language: Lang = 'zh-CN'
+): string | null {
+  if (level == null || level === '') return null
+  const known = KNOWN_LABELS[level]
+  if (known) return language === 'en' ? known.en : known.zh
+  return level
 }
 
-/** Show the model's reported levels in the order pi/provider returned them. */
+/** Show the model's reported levels in the order pi/metadata returned them. */
 export function thinkingOptionsFor(
-  levels: ThinkingLevel[]
+  levels: readonly string[],
+  language: Lang = 'zh-CN'
 ): Array<{ value: ThinkingLevel; label: string }> {
   return levels.map((level) => ({
-    value: level,
-    label: THINKING_LABELS[level] ?? level
+    value: level as ThinkingLevel,
+    label: thinkingLabel(level, language) ?? level
   }))
 }
 
@@ -43,13 +56,14 @@ export function thinkingOptionsFor(
  * sensible fallback from the new list.
  */
 export function resolveThinkingAfterModelChange(
-  levels: ThinkingLevel[],
-  previous: ThinkingLevel | undefined | null,
-  reported: ThinkingLevel | undefined | null
+  levels: readonly string[],
+  previous: string | undefined | null,
+  reported: string | undefined | null
 ): ThinkingLevel | null {
   if (!levels.length) return null
-  if (previous && levels.includes(previous)) return previous
-  if (reported && levels.includes(reported)) return reported
+  if (previous && levels.includes(previous)) return previous as ThinkingLevel
+  if (reported && levels.includes(reported)) return reported as ThinkingLevel
   if (levels.includes('medium')) return 'medium'
-  return levels.find((level) => level !== 'off') ?? levels[0] ?? null
+  const firstOn = levels.find((level) => level !== 'off' && level !== 'none')
+  return (firstOn ?? levels[0] ?? null) as ThinkingLevel | null
 }

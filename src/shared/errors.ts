@@ -6,20 +6,21 @@ export function stripRemoteError(message: string): string {
     .trim()
 }
 
-/** Map raw errno / spawn text to a short Chinese line. */
+/** Map spawn errno text to a short Chinese line (leave other IPC errors alone). */
 export function mapErrnoMessage(message: string): string {
   const text = message.trim()
   if (!text) return ''
-  if (/^(spawn\s+)?EINVAL\b/i.test(text) || /\bspawn\s+EINVAL\b/i.test(text)) {
+  // Only rewrite process-spawn failures — bare ENOENT/EACCES from file I/O stay as-is.
+  if (/\bspawn\s+EINVAL\b/i.test(text)) {
     return '无法启动内置运行时，请重试或改用 API Key'
   }
-  if (/^(spawn\s+)?ENOENT\b/i.test(text) || /\bspawn\s+ENOENT\b/i.test(text)) {
+  if (/\bspawn\s+ENOENT\b/i.test(text)) {
     return '找不到所需程序，请重试'
   }
-  if (/^(spawn\s+)?EACCES\b/i.test(text) || /permission denied/i.test(text)) {
+  if (/\bspawn\s+EACCES\b/i.test(text)) {
     return '没有权限执行该操作'
   }
-  if (/^spawn\s+[A-Z]+\b/.test(text)) {
+  if (/\bspawn\s+[A-Z]+\b/.test(text)) {
     return '操作失败，请重试'
   }
   return text

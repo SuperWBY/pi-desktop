@@ -101,14 +101,19 @@ function takePendingSkillsTab(): Tab | null {
 export function SkillsPage(): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
-  const [tab, setTab] = useState<Tab>(() => takePendingSkillsTab() ?? 'skills')
+  // Do not consume pending in useState — Strict Mode can double-invoke and drop connectors.
+  const [tab, setTab] = useState<Tab>('skills')
 
   useEffect(() => {
     const pending = takePendingSkillsTab()
     if (pending) setTab(pending)
     const onTab = (event: Event): void => {
       const detail = (event as CustomEvent<Tab>).detail
-      if (detail === 'skills' || detail === 'plugins' || detail === 'connectors') setTab(detail)
+      if (detail === 'skills' || detail === 'plugins' || detail === 'connectors') {
+        // Consume leftover pending so a later sidebar reopen does not restore it.
+        pendingSkillsTab = null
+        setTab(detail)
+      }
     }
     window.addEventListener('pi:skills-tab', onTab)
     return () => window.removeEventListener('pi:skills-tab', onTab)

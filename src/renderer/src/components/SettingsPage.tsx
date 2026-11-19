@@ -41,7 +41,7 @@ import type {
 import { useApp } from '../store'
 import { formatCost, formatTokens, shortenPath } from '../lib/format'
 import { shortcutKeys } from '../lib/platform'
-import { ALL_THINKING_LEVELS, THINKING_LABELS } from '../lib/thinking'
+import { ALL_THINKING_LEVELS, thinkingOptionsFor } from '../lib/thinking'
 import { Modal, Popover } from './ui'
 import { ChromeImportDialog } from './ChromeImportDialog'
 import { ChromeBridgeDialog } from './ChromeBridgeDialog'
@@ -1070,9 +1070,14 @@ export function SettingsPage(): ReactNode {
             }
             options={[
               { value: '', label: t('自动') },
-              ...ALL_THINKING_LEVELS.map((level) => ({
-                value: level,
-                label: t(THINKING_LABELS[level])
+              ...thinkingOptionsFor(
+                thinkingValue && !ALL_THINKING_LEVELS.includes(thinkingValue as ThinkingLevel)
+                  ? [thinkingValue, ...ALL_THINKING_LEVELS]
+                  : ALL_THINKING_LEVELS,
+                state.settings.language ?? 'zh-CN'
+              ).map((option) => ({
+                value: option.value,
+                label: option.label
               }))
             ]}
           />

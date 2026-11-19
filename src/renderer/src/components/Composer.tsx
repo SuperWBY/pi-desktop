@@ -251,8 +251,9 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
   }
 
   let index = -1
-  // Levels come from the current model (get_available_thinking_levels), in provider order.
-  const effortOptions = thinkingOptionsFor(state.levels)
+  const language = state.settings.language ?? 'zh-CN'
+  // Levels come from the current model's metadata (get_available_thinking_levels), in order.
+  const effortOptions = thinkingOptionsFor(state.levels, language)
   const showEffort = Boolean(current?.reasoning) && effortOptions.length > 0
   const currentLevel = state.piState?.thinkingLevel
 
@@ -341,14 +342,14 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  title={t(option.label)}
+                  title={option.label}
                   className={clsx('thinking-effort-option', selected && 'active')}
                   onClick={() => {
                     if (selected) return
                     void actions.setThinking(option.value)
                   }}
                 >
-                  {t(option.label)}
+                  {option.label}
                 </button>
               )
             })}
@@ -1239,10 +1240,13 @@ export function Composer(): ReactNode {
               width={320}
               keyboardNav={false}
               trigger={(open, toggle, expanded) => {
-                const effort = model?.reasoning ? thinkingLabel(state.piState?.thinkingLevel) : null
+                const language = state.settings.language ?? 'zh-CN'
+                const effort = model?.reasoning
+                  ? thinkingLabel(state.piState?.thinkingLevel, language)
+                  : null
                 const label = model
                   ? effort
-                    ? `${model.name} · ${t(effort)}`
+                    ? `${model.name} · ${effort}`
                     : model.name
                   : 'Model'
                 return (
@@ -1254,7 +1258,7 @@ export function Composer(): ReactNode {
                       streaming
                         ? t("本轮结束后可切换模型")
                         : model
-                          ? `${model.provider}/${model.id}${effort ? ` · ${t(effort)}` : ''}`
+                          ? `${model.provider}/${model.id}${effort ? ` · ${effort}` : ''}`
                           : t("选择模型")
                     }
                     aria-label={model ? `${t('选择模型')}，${label}` : t("选择模型")}

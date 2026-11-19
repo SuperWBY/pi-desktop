@@ -53,13 +53,13 @@ export function TerminalTab(): ReactNode {
         <button className="work-icon" onClick={() => actions.clearBash()} title={t('清空')}>
           <Trash2 size={11} />
         </button>
-        <label className="work-check" title={t('默认不写进上下文，需要 pi 看到时再打开')}>
+        <label className="work-check" title={t('默认不写进上下文，需要 Pi 看到时再打开')}>
           <input
             type="checkbox"
             checked={!excluded}
             onChange={(event) => setExcluded(!event.target.checked)}
           />
-          {t('同步给 pi')}
+          {t('同步给 Pi')}
         </label>
       </div>
 

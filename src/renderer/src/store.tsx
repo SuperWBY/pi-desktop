@@ -33,6 +33,7 @@ import { isTemporaryWorkspace } from '@shared/paths'
 import { contentText } from './lib/tools'
 import { buildTurns, turnsToMarkdown } from './lib/turns'
 import { translate } from './i18n/dictionary'
+import { desktopNotifyCopy } from '@shared/notify-summary'
 
 export type SendMode = 'steer' | 'followUp'
 export interface QueuedImage { type: 'image'; data: string; mimeType: string }
@@ -1191,7 +1192,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     if (!current.workspace || current.streaming) return
     const response = await safeCommand<{ cancelled?: boolean }>({ type: 'clone' }, 60_000)
     if (!response?.success || response.data?.cancelled) {
-      notify('error', '复制会话失败', response?.error ?? 'pi 没有创建新会话。')
+      notify('error', '复制会话失败', response?.error ?? 'Pi 没有创建新会话。')
       return
     }
     const result = await adoptBranchedSession()
@@ -1298,7 +1299,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       if (!response) {
         if (current.streaming) dispatch({ type: 'QUEUE_REMOVE', kind, value: queuedValue })
         if (optimistic) dispatch({ type: 'REMOVE_OPTIMISTIC' })
-        notify('error', '消息未发送', translate(current.settings.language ?? 'zh-CN', 'pi 没有响应。'))
+        notify('error', '消息未发送', translate(current.settings.language ?? 'zh-CN', 'Pi 没有响应。'))
         return false
       }
       if (!response.success) {
@@ -1333,7 +1334,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         15_000
       )
       if (!cleared?.success) {
-        notify('error', '无法引导', cleared?.error ?? 'pi 没有响应。')
+        notify('error', '无法引导', cleared?.error ?? 'Pi 没有响应。')
         return false
       }
       const steering = [...current.queue.steering]
@@ -1357,7 +1358,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
           120_000
         )
         dispatch({ type: 'QUEUE_SET', steering, followUp: [guided, ...followUp] })
-        notify('error', '无法引导', response?.error ?? 'pi 没有响应。')
+        notify('error', '无法引导', response?.error ?? 'Pi 没有响应。')
         return false
       }
       for (const item of followUp) {
@@ -1791,11 +1792,68 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         .map((block) => block.text ?? '')
         .join(' ')
         .trim()
-    void window.pi.notify({
-      title: lastAssistant?.errorMessage ? 'pi 出错了' : 'pi 完成了',
-      body: text ? text.slice(0, 140) : '本轮已结束'
+    const kind = lastAssistant?.errorMessage ? 'error' : 'done'
+    const payload = desktopNotifyCopy({
+      kind,
+      sessionTitle: state.sessionName,
+      replyText: text,
+      language: state.settings.language
     })
-  }, [state.streaming, state.messages, state.settings.notifyOnFinish])
+    void window.pi.notify({
+      ...payload,
+      cwd: state.workspace,
+      sessionPath: state.sessionPath
+    })
+  }, [
+    state.streaming,
+    state.messages,
+    state.settings.notifyOnFinish,
+    state.settings.language,
+    state.sessionName,
+    state.sessionPath,
+    state.workspace
+  ])
+
+  // Approval prompts while the window is in the background get a short status notice.
+  const approvalNotified = useRef<string | null>(null)
+  useEffect(() => {
+    const request = state.uiRequests[0]
+    if (!request?.id) {
+      approvalNotified.current = null
+      return
+    }
+    if (approvalNotified.current === request.id) return
+    if (state.settings.notifyOnFinish === false) return
+    if (typeof document !== 'undefined' && document.hasFocus()) return
+    approvalNotified.current = request.id
+    const payload = desktopNotifyCopy({
+      kind: 'approval',
+      sessionTitle: state.sessionName,
+      language: state.settings.language
+    })
+    void window.pi.notify({
+      ...payload,
+      cwd: state.workspace,
+      sessionPath: state.sessionPath
+    })
+  }, [
+    state.uiRequests,
+    state.settings.notifyOnFinish,
+    state.settings.language,
+    state.sessionName,
+    state.sessionPath,
+    state.workspace
+  ])
+
+  // Notification click focuses the app and opens the session that finished.
+  useEffect(() => {
+    return window.pi.onNotifyOpen((payload) => {
+      const cwd = payload.cwd ?? stateRef.current.workspace
+      const path = payload.sessionPath
+      if (!path) return
+      void openSession(cwd ?? '', path)
+    })
+  }, [openSession])
 
   // Batch high-frequency streaming records to one render per frame.
   useEffect(() => {

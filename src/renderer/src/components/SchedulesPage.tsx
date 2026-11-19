@@ -661,7 +661,7 @@ export function SchedulesPage(): ReactNode {
                 <Plus size={13} /> {t('新建任务')}
               </button>
               <p className="schedule-empty-hint">
-                {t('也可以直接在对话里说「5 分钟后…」，pi 会创建定时任务')}
+                {t('也可以直接在对话里说「5 分钟后…」，Pi 会创建定时任务')}
               </p>
             </div>
           ) : (

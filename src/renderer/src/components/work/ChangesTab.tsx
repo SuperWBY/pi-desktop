@@ -325,7 +325,7 @@ export function ChangesTab(): ReactNode {
       )}
       {mode === 'workspace' && !git?.ok && (
         <p className="work-hint">
-          {t('提示：工作区模式需要项目是 git 仓库；本会话模式只看 pi 的改动。')}
+          {t('提示：工作区模式需要项目是 git 仓库；本会话模式只看 Pi 的改动。')}
         </p>
       )}
       {mode === 'session' && visible.length > 0 && (

@@ -26,7 +26,7 @@ function turnMarkdown(turn: Turn): string {
         .join(' · ')}${turn.stats.files.length ? ` · ${turn.stats.files.length} 个文件` : ''}`
     )
   }
-  if (turn.finalText) lines.push(`### pi\n\n${turn.finalText}`)
+  if (turn.finalText) lines.push(`### Pi\n\n${turn.finalText}`)
   return lines.join('\n\n')
 }
 

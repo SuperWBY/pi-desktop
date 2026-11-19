@@ -138,7 +138,9 @@ async function main() {
           ? [{ path: `${dir}/nested.txt`, name: 'nested.txt', isDir: false, size: 8 }]
           : [{ path: `${dir}/example.txt`, name: 'example.txt', isDir: false, size: 8 }, { path: `${dir}/nested`, name: 'nested', isDir: true, size: 0 }],
         readText: async () => ({ ok: true, content: '示例文件', truncated: false }),
-        openPath: async (value) => { window.openedPath = value; return true }, notify: async () => true
+        openPath: async (value) => { window.openedPath = value; return true },
+        notify: async (payload) => { window.lastNotify = payload; return true },
+        onNotifyOpen: (callback) => { window.emitNotifyOpen = callback; return () => {} }
       }
     })
     const errors = []
@@ -282,7 +284,22 @@ async function main() {
     await page.locator('.composer-input').fill('')
     // Background session switching is handled by the Electron main process;
     // this single-process renderer stub cannot verify that the old task survives.
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => false })
+      window.lastNotify = null
+    })
     await page.evaluate(() => window.emitRecord({ type: 'agent_settled' }))
+    await page.waitForFunction(() => {
+      const payload = window.lastNotify
+      return payload && typeof payload.title === 'string' && String(payload.body || '').startsWith('已完成')
+    })
+    {
+      const payload = await page.evaluate(() => window.lastNotify)
+      if (payload.title === 'pi 完成了' || /wiki:|[A-Za-z0-9_-]{16,}/.test(payload.body || '')) {
+        throw new Error(`通知仍像旧的原始回复: ${JSON.stringify(payload)}`)
+      }
+      if (!payload.sessionPath) throw new Error('通知缺少 sessionPath，点击无法打开会话')
+    }
     await page.waitForTimeout(100)
     await page.evaluate(() => { window.mockStreaming = true })
     await page.getByRole('button', { name: '在 beta 中新建对话' }).click()

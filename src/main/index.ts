@@ -439,6 +439,7 @@ async function doOpenSession(options: {
     if (existing?.alive) {
       proc = existing
       sessionUiRequests.activate(existing)
+      ;(existing as PiProcess & { flushStderr?: () => void }).flushStderr?.()
       try {
         const stateResponse = await existing.send<{ sessionFile?: string | null }>(
           { type: 'get_state' },
@@ -576,7 +577,7 @@ async function doOpenSession(options: {
     stopProcess(process)
     sessionUiRequests.drop(process)
     const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, error: english ? `Pi is not ready: ${message}` : `pi 没有就绪：${message}` }
+    return { ok: false, error: english ? `Pi is not ready: ${message}` : `Pi 没有就绪：${message}` }
   }
 }
 
@@ -830,7 +831,7 @@ function registerIpc(): void {
         return { type: 'response', command: String(command.type), success: false, error: 'Session permissions are changing.' }
       }
       if (!process) {
-        return { type: 'response', command: String(command.type), success: false, error: 'pi 没有在运行' }
+        return { type: 'response', command: String(command.type), success: false, error: 'Pi 没有在运行' }
       }
       try {
         const result = await process.send<PiState>(command, timeoutMs ?? commandTimeout(String(command.type)))
@@ -1087,20 +1088,44 @@ function registerIpc(): void {
   })
 
   // Desktop notification, only when the window is not in front: a focused
-  // window already shows the result.
+  // window already shows the result. Click focuses the app and opens that session.
   ipcMain.handle(
     'notify:desktop',
-    (_event, payload: { title?: string; body?: string }): boolean => {
+    (
+      _event,
+      payload: { title?: string; body?: string; cwd?: string | null; sessionPath?: string | null }
+    ): boolean => {
       if (!Notification.isSupported()) return false
       if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) return false
       const notification = new Notification({
-        title: payload?.title ?? 'Pi Desktop',
+        title: payload?.title?.trim() || 'Pi',
         body: payload?.body ?? ''
       })
+      if (process.env.PI_DESKTOP_NOTIFY_LOG) {
+        try {
+          console.log(
+            '[notify:desktop]',
+            JSON.stringify({
+              title: payload?.title,
+              body: payload?.body,
+              cwd: payload?.cwd ?? null,
+              sessionPath: payload?.sessionPath ?? null
+            })
+          )
+        } catch {
+          /* ignore */
+        }
+      }
       notification.on('click', () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.show()
-          mainWindow.focus()
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.show()
+        mainWindow.focus()
+        if (payload?.sessionPath) {
+          mainWindow.webContents.send('notify:open-session', {
+            cwd: payload.cwd ?? null,
+            sessionPath: payload.sessionPath
+          })
         }
       })
       notification.show()
@@ -1237,7 +1262,7 @@ function buildMenu(): void {
       role: 'help',
       submenu: [
         {
-          label: english ? 'Pi documentation' : 'pi 文档',
+          label: english ? 'Pi documentation' : 'Pi 文档',
           click: () => shell.openExternal('https://pi.dev')
         }
       ]

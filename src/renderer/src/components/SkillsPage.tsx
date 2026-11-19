@@ -908,7 +908,7 @@ export function SkillsPage(): ReactNode {
           </>
         }
       >
-        <p className="modal-text">{t('插件会从 pi 设置中移除，技能目录与项目文件不受影响。')}</p>
+        <p className="modal-text">{t('插件会从 Pi 设置中移除，技能目录与项目文件不受影响。')}</p>
       </Modal>
     </div>
   )

@@ -94,6 +94,7 @@ const api: PiDesktopApi = {
   showItem: (path: string) => ipcRenderer.invoke('shell:show-item', path),
   openPath: (path: string) => ipcRenderer.invoke('shell:open-path', path),
   notify: (payload) => ipcRenderer.invoke('notify:desktop', payload),
+  onNotifyOpen: (callback) => subscribe('notify:open-session', callback),
   pickSavePath: (options) => ipcRenderer.invoke('dialog:pick-save', options),
   writeTextFile: (path: string, content: string) =>
     ipcRenderer.invoke('fs:write-text', path, content),

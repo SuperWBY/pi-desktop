@@ -118,7 +118,13 @@ export interface PiDesktopApi {
   chromeImport(profileId: string, domains: string[]): Promise<ChromeImportResult>
   showItem(path: string): Promise<void>
   openPath(path: string): Promise<boolean>
-  notify(payload: { title?: string; body?: string }): Promise<boolean>
+  notify(payload: {
+    title?: string
+    body?: string
+    cwd?: string | null
+    sessionPath?: string | null
+  }): Promise<boolean>
+  onNotifyOpen(callback: (payload: { cwd?: string | null; sessionPath?: string | null }) => void): () => void
   pickSavePath(options?: {
     defaultName?: string
     filters?: { name: string; extensions: string[] }[]

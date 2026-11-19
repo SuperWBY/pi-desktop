@@ -40,7 +40,7 @@ export function UiRequestDialog(): ReactNode {
       }) : []
   const browserLabels = browserFields.map((field) => field.label)
   const structuredBrowserAction = browserFields.length >= 4 && browserFields.length <= 7 && request.message?.split('\n').length === browserFields.length && ['操作', '目标', '浏览器', '页面'].every((label, index) => browserLabels[index] === label) && browserLabels.slice(4).every((label, index, rest) => ['输入内容', '输入预览', '按键', '已选文件', '提示'].includes(label) && rest.indexOf(label) === index)
-  const title = permissionGuide ? t('开启桌面操作权限') : desktopAction ? t('确认桌面操作') : browserAction ? t('确认网页操作') : fileSelection ? t('选择上传文件') : fileSelectionCancel ? t('取消文件选择') : String(request.title ?? request.message ?? t('pi needs your input'))
+  const title = permissionGuide ? t('开启桌面操作权限') : desktopAction ? t('确认桌面操作') : browserAction ? t('确认网页操作') : fileSelection ? t('选择上传文件') : fileSelectionCancel ? t('取消文件选择') : String(request.title ?? request.message ?? t('Pi needs your input'))
   const subtitle =
     typeof request.message === 'string' && request.message !== title ? request.message : undefined
 

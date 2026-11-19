@@ -767,7 +767,7 @@ export function Sidebar(): ReactNode {
         <p className="modal-text">
           {state.settings.language === 'en' ? 'The session will be moved to ' : '会话记录会被移到 '}
           <code>{shortenPath(state.boot?.sessionsRoot)}/.trash</code>
-          {state.settings.language === 'en' ? '. You can undo this from the notification within 24 hours. Files changed by pi are not affected.' : '，24 小时内可在提示条里「撤销」。pi 在磁盘上改过的文件不受影响。'}
+          {state.settings.language === 'en' ? '. You can undo this from the notification within 24 hours. Files changed by Pi are not affected.' : '，24 小时内可在提示条里「撤销」。Pi 在磁盘上改过的文件不受影响。'}
         </p>
       </Modal>
       <Modal

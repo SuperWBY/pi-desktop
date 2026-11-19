@@ -68,7 +68,7 @@ export function Diagnostics(): ReactNode {
         <header className="drawer-head">
           <div>
             <h2>{t("诊断")}</h2>
-            <p>{t("pi 的运行状态与最后 60 行 stderr")}</p>
+            <p>{t("Pi 的运行状态与最后 60 行 stderr")}</p>
           </div>
           <button
             className="icon-button"

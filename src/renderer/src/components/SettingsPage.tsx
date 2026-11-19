@@ -761,7 +761,7 @@ export function SettingsPage(): ReactNode {
       setShowAdd(false)
       setDraft(EMPTY_DRAFT)
       setEditingProvider(null)
-      actions.notify('success', t('已写入 models.json'), state.settings.language === 'en' ? `${next.file} · Restart the session to load changes.` : `${next.file} · 重启会话后 pi 才会加载。`)
+      actions.notify('success', t('已写入 models.json'), state.settings.language === 'en' ? `${next.file} · Restart the session to load changes.` : `${next.file} · 重启会话后 Pi 才会加载。`)
       if (!state.streaming) await actions.restartSession()
       await loadModels()
     } catch (error) {
@@ -1053,7 +1053,7 @@ export function SettingsPage(): ReactNode {
           query={query}
         >
           <Select label={t("默认模型")} value={modelValue} onChange={(value) => void saveDefaultModel(value)}
-            options={[{ value: '', label: t('跟随 pi 配置') }, ...modelGroups.flatMap(([provider, models]) => models.map((model) => ({ value: `${provider}\u0000${model.id}`, label: model.name, group: provider })))]}
+            options={[{ value: '', label: t('跟随 Pi 配置') }, ...modelGroups.flatMap(([provider, models]) => models.map((model) => ({ value: `${provider}\u0000${model.id}`, label: model.name, group: provider })))]}
           />
         </Row>
         <Row
@@ -1069,7 +1069,7 @@ export function SettingsPage(): ReactNode {
                 defaultThinkingLevel: (value || undefined) as ThinkingLevel | undefined
               })
             }
-            options={[{ value: '', label: t('跟随 pi 配置') }, ...(Object.keys(THINKING_LABELS) as ThinkingLevel[]).map((level) => ({ value: level, label: level === 'off' ? (state.settings.language === 'en' ? 'Off' : '关闭') : t(THINKING_LABELS[level]) }))]}
+            options={[{ value: '', label: t('跟随 Pi 配置') }, ...(Object.keys(THINKING_LABELS) as ThinkingLevel[]).map((level) => ({ value: level, label: level === 'off' ? (state.settings.language === 'en' ? 'Off' : '关闭') : t(THINKING_LABELS[level]) }))]}
           />
         </Row>
       </Block>
@@ -1094,7 +1094,7 @@ export function SettingsPage(): ReactNode {
 
       <details className="settings-advanced" open>
         <summary>{t("查看可用模型列表")}</summary>
-      <Block title={t("pi 支持的模型")} query={query} terms={['模型列表', '目录', '刷新', '可用']}>
+      <Block title={t("Pi 支持的模型")} query={query} terms={['模型列表', '目录', '刷新', '可用']}>
         <div className="model-catalog-head">
           <div className="settings-search model-search">
             <Search size={13} />
@@ -1345,7 +1345,7 @@ export function SettingsPage(): ReactNode {
                   setDraft(EMPTY_DRAFT)
                 }}
               >{t("取消")}</button>
-              <span className="setting-desc">{state.streaming ? (state.settings.language === 'en' ? 'Restart the session after the current run finishes to load changes.' : '当前任务结束后，重启会话以加载修改。') : t("保存后会重启当前会话，让 pi 重新加载模型。")}</span>
+              <span className="setting-desc">{state.streaming ? (state.settings.language === 'en' ? 'Restart the session after the current run finishes to load changes.' : '当前任务结束后，重启会话以加载修改。') : t("保存后会重启当前会话，让 Pi 重新加载模型。")}</span>
             </div>
             </>}
           </div>
@@ -1646,7 +1646,7 @@ export function SettingsPage(): ReactNode {
       <p className="settings-note">
         {toolsExplicit
           ? t("已自定义工具列表，重启会话后按新列表加载。")
-          : t("当前使用 pi 默认工具集；修改后会写入 pi 设置，重启会话生效。")}
+          : t("当前使用 Pi 默认工具集；修改后会写入 Pi 设置，重启会话生效。")}
       </p>
 
       </details>
@@ -1886,7 +1886,7 @@ export function SettingsPage(): ReactNode {
 
       <Block title={t("配置文件")} query={query} terms={['settings.json', '设置文件', 'agent']}>
         <Row
-          title={t("pi 设置文件")}
+          title={t("Pi 设置文件")}
           desc={shortenPath(state.boot?.piSettingsFile, state.boot?.home)}
           query={query}
         >
@@ -1941,7 +1941,7 @@ export function SettingsPage(): ReactNode {
       </Block>
 
       <Block title={t("链接")} query={query} terms={['pi.dev', '官网', '文档']}>
-        <Row title={t("pi 官网与文档")} desc={t("协议、模型与扩展的完整说明。")} query={query}>
+        <Row title={t("Pi 官网与文档")} desc={t("协议、模型与扩展的完整说明。")} query={query}>
           <button
             className="settings-link"
             onClick={() => actions.openExternal('https://pi.dev')}

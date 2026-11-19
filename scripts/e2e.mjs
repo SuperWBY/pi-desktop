@@ -825,9 +825,19 @@ async function casePolish() {
   const opened = await page.evaluate(() => window.pi.openPath('/Users/qm/Desktop/pi-desktop/package.json'))
   check('shell:open-path 可用', opened === true, String(opened))
 
-  // notification IPC answers even when focused (false = suppressed)
-  const notified = await page.evaluate(() => window.pi.notify({ title: 't', body: 'b' }))
+  // notification IPC answers even when focused (false = suppressed).
+  // Payload shape: session title + short status line (never raw reply dump).
+  const notified = await page.evaluate(() =>
+    window.pi.notify({
+      title: 'AI产研周会',
+      body: '已完成 · 我已经把这份文档完整读了一遍。',
+      cwd: '/tmp',
+      sessionPath: '/tmp/session.jsonl'
+    })
+  )
   check('notify IPC 可用（返回布尔）', typeof notified === 'boolean', String(notified))
+  const hasNotifyOpen = await page.evaluate(() => typeof window.pi.onNotifyOpen === 'function')
+  check('notify 点击可打开会话（onNotifyOpen）', hasNotifyOpen)
 
   // diff: open the edit card and toggle full-file context
   await page.locator('.turn').last().locator('.tool-card:has(.kind-edit) .tool-head').first().click()

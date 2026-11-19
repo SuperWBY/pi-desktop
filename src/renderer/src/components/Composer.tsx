@@ -44,13 +44,6 @@ function protectionOf(security: SessionSecurity | null): Protection | null {
   return 'standard'
 }
 
-function reasoningBars(level: string): number {
-  if (level === 'medium') return 2
-  if (level === 'high') return 3
-  if (level === 'xhigh' || level === 'max') return 4
-  return 1
-}
-
 type Draft = { text: string; attachments: Attachment[] }
 const drafts = new Map<string, Draft>()
 const draftStorageKey = (key: string): string => `pi.composer.draft.${key}`
@@ -70,14 +63,58 @@ function saveDraft(key: string, draft: Draft): void {
   } catch { /* The in-memory draft still works when storage is unavailable. */ }
 }
 
-const THINKING_LABELS: Record<ThinkingLevel, string> = {
-  off: 'Off',
-  minimal: 'Minimal',
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  xhigh: 'Extra high',
-  max: 'Max'
+/** Three plain-language effort choices mapped onto whatever levels the model exposes. */
+const EFFORT_OPTIONS = [
+  {
+    id: 'fast' as const,
+    label: '快速',
+    hint: '简单问题、快速回复',
+    prefer: ['low', 'minimal'] as ThinkingLevel[]
+  },
+  {
+    id: 'balanced' as const,
+    label: '均衡',
+    hint: '日常任务',
+    prefer: ['medium'] as ThinkingLevel[]
+  },
+  {
+    id: 'deep' as const,
+    label: '深入',
+    hint: '复杂问题，更慢',
+    prefer: ['high', 'xhigh', 'max'] as ThinkingLevel[]
+  }
+]
+
+function resolveEffortLevel(prefer: ThinkingLevel[], available: ThinkingLevel[]): ThinkingLevel | null {
+  for (const level of prefer) {
+    if (available.includes(level)) return level
+  }
+  return null
+}
+
+function effortOptionsFor(available: ThinkingLevel[]): Array<{
+  id: 'fast' | 'balanced' | 'deep'
+  label: string
+  hint: string
+  level: ThinkingLevel | null
+}> {
+  return EFFORT_OPTIONS.map((option) => ({
+    id: option.id,
+    label: option.label,
+    hint: option.hint,
+    level: resolveEffortLevel(option.prefer, available)
+  }))
+}
+
+function effortLabelFor(level: ThinkingLevel | undefined, available: ThinkingLevel[]): string | null {
+  if (!level || level === 'off') return null
+  const options = effortOptionsFor(available)
+  const match = options.find((option) => option.level === level)
+  if (match) return match.label
+  if (level === 'minimal' || level === 'low') return '快速'
+  if (level === 'medium') return '均衡'
+  if (level === 'high' || level === 'xhigh' || level === 'max') return '深入'
+  return null
 }
 
 function readImage(file: File): Promise<Attachment> {
@@ -209,6 +246,10 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
   }
 
   let index = -1
+  const availableLevels = state.levels.length ? state.levels : (['off'] as ThinkingLevel[])
+  const effortOptions = effortOptionsFor(availableLevels)
+  const showEffort = Boolean(current?.reasoning) && effortOptions.some((option) => option.level)
+  const currentLevel = state.piState?.thinkingLevel
 
   return (
     <div className="menu" onKeyDown={onKeyDown}>
@@ -282,32 +323,35 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
           </div>
         ))}
       </div>
-    </div>
-  )
-}
-
-function ThinkingMenu({ close }: { close: () => void }): ReactNode {
-  const t = useTranslation()
-  const { state, actions } = useApp()
-  const levels = state.levels.length ? state.levels : (['off'] as ThinkingLevel[])
-  return (
-    <div className="menu">
-      <div className="menu-group">
-        <div className="menu-group-label">{t("Reasoning effort")}</div>
-        {levels.map((level) => (
-          <button
-            key={level}
-            className={clsx('menu-item', state.piState?.thinkingLevel === level && 'active')}
-            onClick={() => {
-              void actions.setThinking(level)
-              close()
-            }}
-          >
-            <span className="menu-item-title">{t(THINKING_LABELS[level] ?? level)}</span>
-            {state.piState?.thinkingLevel === level && <Check size={14} />}
-          </button>
-        ))}
-      </div>
+      {showEffort ? (
+        <div className="thinking-effort" role="radiogroup" aria-label={t('思考程度')}>
+          <div className="menu-group-label">{t('思考程度')}</div>
+          <div className="thinking-effort-options">
+            {effortOptions.map((option) => {
+              const enabled = Boolean(option.level)
+              const selected = enabled && option.level === currentLevel
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  aria-disabled={!enabled}
+                  disabled={!enabled}
+                  className={clsx('thinking-effort-option', selected && 'active', !enabled && 'is-disabled')}
+                  onClick={() => {
+                    if (!option.level) return
+                    void actions.setThinking(option.level)
+                  }}
+                >
+                  <span className="thinking-effort-title">{t(option.label)}</span>
+                  <span className="thinking-effort-hint">{t(option.hint)}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -966,52 +1010,38 @@ export function Composer(): ReactNode {
             <Popover
               width={320}
               keyboardNav={false}
-              trigger={(open, toggle, expanded) => (
-                <button
-                  className={clsx('chip', open && 'open')}
-                  onClick={toggle}
-                  disabled={streaming || !ready}
-                  title={
-                    streaming
-                      ? t("本轮结束后可切换模型")
-                      : model
-                        ? `${model.provider}/${model.id}`
-                        : t("选择模型")
-                  }
-                  aria-label={t("选择模型")}
-                  {...expanded}
-                >
-                  <span className="chip-dot" />
-                  <span className="chip-label">{model ? model.name : 'Model'}</span>
-                  <ChevronDown size={12} />
-                </button>
-              )}
-            >
-              {(close) => <ModelMenu close={close} />}
-            </Popover>
-
-            <Popover
-              width={220}
               trigger={(open, toggle, expanded) => {
-                const level = state.piState?.thinkingLevel ?? 'off'
-                const bars = reasoningBars(level)
+                const effort = model?.reasoning
+                  ? effortLabelFor(state.piState?.thinkingLevel, state.levels)
+                  : null
+                const label = model
+                  ? effort
+                    ? `${model.name} · ${t(effort)}`
+                    : model.name
+                  : 'Model'
                 return (
                   <button
-                    className={clsx('reasoning-button', open && 'open')}
+                    className={clsx('chip model-chip', open && 'open')}
                     onClick={toggle}
                     disabled={streaming || !ready}
-                    title={`${t('推理强度')} · ${t(THINKING_LABELS[level] ?? 'Off')}`}
-                    aria-label={t('推理强度')}
+                    title={
+                      streaming
+                        ? t("本轮结束后可切换模型")
+                        : model
+                          ? `${model.provider}/${model.id}${effort ? ` · ${t(effort)}` : ''}`
+                          : t("选择模型")
+                    }
+                    aria-label={model ? `${t('选择模型')}，${label}` : t("选择模型")}
                     {...expanded}
                   >
-                    <span className="reasoning-bars" aria-hidden="true">
-                      {[1, 2, 3, 4].map((bar) => <i key={bar} className={bar <= bars ? 'on' : undefined} style={{ height: 4 + bar * 2 }} />)}
-                    </span>
+                    <span className="chip-dot" />
+                    <span className="chip-label">{label}</span>
+                    <ChevronDown size={12} />
                   </button>
                 )
               }}
             >
-              {(close) => <ThinkingMenu close={close} />}
+              {(close) => <ModelMenu close={close} />}
             </Popover>
             {percent > 50 ? (
               <div className="context-ring" title={`${t('上下文')} ${Math.round(percent)}%`}>

@@ -135,7 +135,7 @@ async function launch(dirs, scenario = 'default', extraEnv = {}) {
 }
 
 async function openModelMenu(page) {
-  await page.locator('.chip').first().click()
+  await page.locator('.model-chip, .composer-right .chip').first().click()
   await page.waitForSelector('.popover .menu-list')
 }
 
@@ -2409,20 +2409,35 @@ async function caseComposerLayout() {
     const left = document.querySelector('.composer-left')
     const right = document.querySelector('.composer-right')
     const chips = [...right.querySelectorAll('.chip')]
+    const modelLabel = right.querySelector('.model-chip .chip-label')?.textContent ?? ''
     return {
       plus: Boolean(left.querySelector('.add-attachment')),
       leftChips: left.querySelectorAll('.chip').length,
       model: chips.length,
       reasoning: right.querySelectorAll('.reasoning-button').length,
-      ring: right.querySelectorAll('.context-ring').length
+      ring: right.querySelectorAll('.context-ring').length,
+      modelLabel
     }
   })
   check('左侧是 + 号附件按钮', layout.plus && layout.leftChips === 0, JSON.stringify(layout))
   check(
-    '模型可见，推理是图标，低用量不显示上下文环',
-    layout.model >= 1 && layout.reasoning === 1 && layout.ring === 0,
+    '模型芯片合并思考程度文案，无独立推理条，低用量不显示上下文环',
+    layout.model >= 1 &&
+      layout.reasoning === 0 &&
+      layout.ring === 0 &&
+      /·\s*(快速|均衡|深入)/.test(layout.modelLabel),
     JSON.stringify(layout)
   )
+  await page.locator('.model-chip').click()
+  await page.waitForSelector('.thinking-effort')
+  check(
+    '模型菜单含三段思考程度',
+    (await page.locator('.thinking-effort-option').count()) === 3
+  )
+  await page.locator('.thinking-effort-option').filter({ hasText: '深入' }).click()
+  await page.waitForFunction(() => (document.querySelector('.model-chip .chip-label')?.textContent ?? '').includes('深入'))
+  check('切换思考程度更新芯片文案', (await page.locator('.model-chip .chip-label').innerText()).includes('深入'))
+  await page.keyboard.press('Escape')
 
   const column = await page.evaluate(() => {
     const rect = (selector) => document.querySelector(selector)?.getBoundingClientRect()
@@ -2571,15 +2586,14 @@ async function caseWheelIsolation() {
   check('在模型列表上滚动不会带动对话区', chatAfter === chatBefore, `${chatBefore} → ${chatAfter}`)
   check('滚动落在模型列表本身', listAfter > 100, `listScrollTop=${listAfter}`)
 
-  // Reasoning control is icon-only and has no scroll container: wheel must not move the chat either.
+  // Thinking segment lives in the same popover; wheel over it must not move the chat.
   await page.keyboard.press('Escape')
-  await page.locator('.reasoning-button').click()
-  await page.waitForSelector('.popover')
-  await page.locator('.popover').hover()
+  await openModelMenu(page)
+  await page.locator('.thinking-effort').hover()
   await page.mouse.wheel(0, 400)
   await page.waitForTimeout(300)
   const chatAfter2 = await page.evaluate(() => document.querySelector('.chat-scroll').scrollTop)
-  check('在推理强度菜单上滚动也不会带动对话区', chatAfter2 === chatBefore, `${chatBefore} → ${chatAfter2}`)
+  check('在思考程度区域滚动也不会带动对话区', chatAfter2 === chatBefore, `${chatBefore} → ${chatAfter2}`)
   await app.close()
 }
 

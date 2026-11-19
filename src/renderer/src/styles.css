@@ -1729,13 +1729,75 @@ textarea {
 }
 
 .composer-right .chip {
-  max-width: 180px;
+  max-width: 240px;
 }
 
 .composer-right .chip-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.thinking-effort {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.thinking-effort-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-1);
+}
+
+.thinking-effort-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 52px;
+  padding: 8px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.thinking-effort-option:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--hover);
+}
+
+.thinking-effort-option.active {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 70%, var(--panel-2));
+}
+
+.thinking-effort-option:disabled,
+.thinking-effort-option.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.thinking-effort-option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.thinking-effort-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.thinking-effort-hint {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--text-faint);
 }
 
 .add-attachment {
@@ -8235,18 +8297,6 @@ html[data-platform='win32'] .app.sidebar-collapsed .topbar {
   .composer,.approval-mode-chip,.work-icon,.session-main { transition:background-color 140ms ease-out,border-color 140ms ease-out,box-shadow 140ms ease-out; }
 }
 
-.reasoning-button {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--r-md);
-  color: var(--text-dim);
-}
-.reasoning-button:hover, .reasoning-button.open { background: var(--hover); color: var(--text); }
-.reasoning-bars { display: flex; align-items: flex-end; gap: 2px; height: 14px; }
-.reasoning-bars i { width: 2px; border-radius: 1px; background: currentColor; opacity: 0.28; }
-.reasoning-bars i.on { opacity: 1; }
 .composer.at-cap .composer-input {
   -webkit-mask-image: linear-gradient(180deg, transparent, #000 18px);
   mask-image: linear-gradient(180deg, transparent, #000 18px);

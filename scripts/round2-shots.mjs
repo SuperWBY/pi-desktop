@@ -241,6 +241,27 @@ if (process.argv[2] === 'welcome') {
     await shot(page, `message-actions-user-${theme}.png`)
     await app.close()
   }
+} else if (process.argv[2] === 'effort') {
+  const theme = process.argv[3] || 'dark'
+  const d = dirs('effort-' + theme)
+  const { app, page } = await launch(
+    d,
+    { MOCK_TRANSCRIPT: '1' },
+    { theme, workspaces: [root], lastWorkspace: root },
+    { defaultProvider: 'mock', defaultModel: 'test' }
+  )
+  await page.waitForSelector('.model-chip', { timeout: 20000 })
+  await size(app, 1280, 860)
+  await page.locator('.composer-input').click()
+  await page.waitForTimeout(200)
+  await shot(page, `composer-effort-chip-${theme}.png`)
+  await page.locator('.composer').screenshot({ path: join(out, `composer-effort-chip-${theme}-crop.png`) })
+  await page.locator('.model-chip').click()
+  await page.waitForSelector('.thinking-effort')
+  await page.waitForTimeout(250)
+  await shot(page, `composer-effort-menu-${theme}.png`)
+  await page.locator('.popover').screenshot({ path: join(out, `composer-effort-menu-${theme}-crop.png`) })
+  await app.close()
 } else {
-  console.log('usage: welcome|ready|chat|actions|stop|fixups [dark|light]')
+  console.log('usage: welcome|ready|chat|actions|stop|fixups|effort [dark|light]')
 }

@@ -394,7 +394,7 @@ func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
         }
     }
     let windowId = pid != 0 ? findWindowId(pid: pid, title: windowTitle, bounds: windowBounds) : nil
-    let captureMode = windowBounds != nil ? "region" : (windowId != nil ? "window" : "display")
+    let captureMode = windowId != nil ? "window" : "unavailable"
     var elements: [Element] = []
     if pid != 0 && AXIsProcessTrusted() {
         var seen = Set<String>()
@@ -402,16 +402,10 @@ func captureContext(_ appName: String?, screenshotPath: String?) -> Snapshot {
             collect(root, depth: 0, maxDepth: 8, maxElements: 250, into: &elements, seen: &seen)
         }
     }
-    if let screenshotPath {
+    if let screenshotPath, let windowId {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        if let windowBounds {
-            process.arguments = ["-x", "-R\(Int(windowBounds.x)),\(Int(windowBounds.y)),\(Int(windowBounds.width)),\(Int(windowBounds.height))", screenshotPath]
-        } else if let windowId {
-            process.arguments = ["-x", "-l\(windowId)", screenshotPath]
-        } else {
-            process.arguments = ["-x", screenshotPath]
-        }
+        process.arguments = ["-x", "-o", "-l\(windowId)", screenshotPath]
         try? process.run()
         process.waitUntilExit()
         let resizeTarget = windowBounds.map { CGSize(width: $0.width, height: $0.height) } ?? screenSize()
@@ -501,28 +495,101 @@ func keyCode(_ key: String) -> CGKeyCode? {
     return map[key.lowercased()]
 }
 
-func press(key: String, modifiers: String) {
+func keyboardTarget() -> pid_t? {
+    guard let name = argument("--target-app") else { return nil }
+    guard !name.isEmpty, let target = runningApplication(name), target.isActive,
+          let id = Int(argument("--target-window") ?? ""), id > 0,
+          captureContext(name, screenshotPath: nil).windowId == id else {
+        emit(["ok": false, "code": "PI_COORDINATE_GUARD", "reason": "window_changed"], code: 73)
+    }
+    return target.processIdentifier
+}
+
+func press(key: String, modifiers: String, pid: pid_t? = nil) {
     guard let code = keyCode(key) else { fail("Unknown key: \(key)") }
     let eventFlags = flags(from: modifiers)
     let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)
     let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)
     down?.flags = eventFlags
     up?.flags = eventFlags
-    down?.post(tap: .cghidEventTap)
-    up?.post(tap: .cghidEventTap)
+    if let pid {
+        down?.postToPid(pid)
+        up?.postToPid(pid)
+    } else {
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
+    }
 }
 
-func typeText(_ text: String) {
+func typeText(_ text: String, pid: pid_t?) {
     let pasteboard = NSPasteboard.general
-    let previous = pasteboard.string(forType: .string)
-    pasteboard.clearContents()
-    pasteboard.setString(text, forType: .string)
-    press(key: "v", modifiers: "command")
-    usleep(80_000)
-    if let previous {
-        pasteboard.clearContents()
-        pasteboard.setString(previous, forType: .string)
+    let initialChangeCount = pasteboard.changeCount
+    var previous: [NSPasteboardItem] = []
+    for item in pasteboard.pasteboardItems ?? [] {
+        let copy = NSPasteboardItem()
+        for type in item.types {
+            guard let data = item.data(forType: type), copy.setData(data, forType: type) else {
+                fail("Cannot safely preserve the clipboard. Text was not entered.")
+            }
+        }
+        previous.append(copy)
     }
+    guard pasteboard.changeCount == initialChangeCount else {
+        fail("Clipboard changed while preparing text. Text was not entered.")
+    }
+    let clearedChangeCount = pasteboard.clearContents()
+    guard pasteboard.setString(text, forType: .string) else {
+        if pasteboard.changeCount == clearedChangeCount && !previous.isEmpty { _ = pasteboard.writeObjects(previous) }
+        fail("Could not prepare text for pasting.")
+    }
+    let temporaryChangeCount = pasteboard.changeCount
+    press(key: "v", modifiers: "command", pid: pid)
+    usleep(80_000)
+    // Never deliberately replace content copied by the user while pasting.
+    if pasteboard.changeCount == temporaryChangeCount {
+        pasteboard.clearContents()
+        if !previous.isEmpty && !pasteboard.writeObjects(previous) {
+            fail("Text may have been entered, but the previous clipboard could not be restored.")
+        }
+    }
+}
+
+func windowIsTopmostAtPoint(_ windows: [[String: Any]], expectedID: Int, x: Double, y: Double) -> Bool {
+    for info in windows {
+        guard (info[kCGWindowLayer as String] as? Int) == 0,
+              (info[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+              let raw = info[kCGWindowBounds as String] as? [String: Any],
+              let left = raw["X"] as? Double, let top = raw["Y"] as? Double,
+              let width = raw["Width"] as? Double, let height = raw["Height"] as? Double,
+              width > 0, height > 0 else { continue }
+        if x >= left && y >= top && x < left + width && y < top + height {
+            return (info[kCGWindowNumber as String] as? Int) == expectedID
+        }
+    }
+    return false
+}
+
+func validateCoordinateWindow(x: Double, y: Double) {
+    guard let encoded = argument("--expected-window") else { return }
+    guard let data = encoded.data(using: .utf8),
+          let expected = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          let app = expected["app"] as? String, !app.isEmpty,
+          let expectedID = expected["windowId"] as? Int, expectedID > 0,
+          let expectedBounds = expected["bounds"] as? [String: Any] else { emit(["ok": false, "code": "PI_COORDINATE_GUARD", "reason": "window_changed"], code: 73) }
+    let current = captureContext(app, screenshotPath: nil)
+    guard let bounds = current.windowBounds else { emit(["ok": false, "code": "PI_COORDINATE_GUARD", "reason": "window_changed"], code: 73) }
+    let actualBounds: [String: Any] = ["x": bounds.x, "y": bounds.y, "width": bounds.width, "height": bounds.height]
+    guard current.windowId == expectedID,
+          (current.bundleId as Any? ?? NSNull()) as? NSObject == (expected["bundleId"] as? NSObject ?? NSNull()),
+          NSDictionary(dictionary: actualBounds).isEqual(to: expectedBounds) else { emit(["ok": false, "code": "PI_COORDINATE_GUARD", "reason": "window_changed"], code: 73) }
+    guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
+          windowIsTopmostAtPoint(windows, expectedID: expectedID, x: x, y: y) else { emit(["ok": false, "code": "PI_COORDINATE_GUARD", "reason": "target_obscured"], code: 73) }
+    guard let target = runningApplication(app) else { emit(["ok": false, "code": "PI_COORDINATE_GUARD", "reason": "window_changed"], code: 73) }
+    var hit: AXUIElement?
+    let hitStatus = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(x), Float(y), &hit)
+    var hitPID: pid_t = 0
+    guard hitStatus == .success, let hit, AXUIElementGetPid(hit, &hitPID) == .success,
+          hitPID == target.processIdentifier else { emit(["ok": false, "code": "PI_COORDINATE_GUARD", "reason": "target_obscured"], code: 73) }
 }
 
 func scroll(x: Double, y: Double, delta: Int32) {
@@ -582,6 +649,11 @@ case "check":
         "accessibility": AXIsProcessTrusted(),
         "screenRecording": CGPreflightScreenCaptureAccess()
     ])
+case "request-accessibility":
+    let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+    emit(["ok": true, "accessibility": AXIsProcessTrustedWithOptions(options)])
+case "request-screen":
+    emit(["ok": true, "screenRecording": CGRequestScreenCaptureAccess()])
 case "apps":
     emit(["ok": true, "apps": listApps()])
 case "ax-debug":
@@ -599,8 +671,16 @@ case "ax-action":
     guard let app = argument("--app"), let elementId = argument("--id"), let action = argument("--action") else {
         fail("Missing --app, --id or --action")
     }
-    _ = captureContext(app, screenshotPath: nil)
+    let current = captureContext(app, screenshotPath: nil)
     guard let element = axRefs[elementId] else { fail("Accessibility element not found: \(elementId)") }
+    if let expectedText = argument("--expected") {
+        guard let data = expectedText.data(using: .utf8),
+              let expected = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let target = current.elements.first(where: { $0.id == elementId }) else { fail("Invalid or missing observed target. Observe again.") }
+        let bounds: Any = target.bounds.map { ["x": $0.x, "y": $0.y, "width": $0.width, "height": $0.height] } ?? NSNull()
+        let actual: [String: Any] = ["role": target.role, "title": target.title as Any? ?? NSNull(), "description": target.description as Any? ?? NSNull(), "identifier": target.identifier as Any? ?? NSNull(), "enabled": target.enabled, "secure": target.secure, "bounds": bounds, "windowId": current.windowId as Any? ?? NSNull(), "bundleId": current.bundleId as Any? ?? NSNull()]
+        guard NSDictionary(dictionary: actual).isEqual(to: expected), target.enabled, !target.secure else { fail("Desktop target or window changed. Observe again.") }
+    }
     switch action {
     case "press":
         let error = AXUIElementPerformAction(element, kAXPressAction as CFString)
@@ -627,20 +707,22 @@ case "observe":
     emit(["ok": true, "snapshot": try! JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot))])
 case "click":
     guard let x = Double(argument("--x") ?? ""), let y = Double(argument("--y") ?? "") else { fail("Missing coordinates") }
+    validateCoordinateWindow(x: x, y: y)
     let button = argument("--button") == "right" ? CGMouseButton.right : CGMouseButton.left
     let count = Int(argument("--count") ?? "1") ?? 1
     click(x: x, y: y, button: button, count: count)
     emit(["ok": true])
 case "type":
     guard let text = argument("--text") else { fail("Missing text") }
-    typeText(text)
+    typeText(text, pid: keyboardTarget())
     emit(["ok": true])
 case "key":
     guard let key = argument("--key") else { fail("Missing key") }
-    press(key: key, modifiers: argument("--modifiers") ?? "")
+    press(key: key, modifiers: argument("--modifiers") ?? "", pid: keyboardTarget())
     emit(["ok": true])
 case "scroll":
     guard let x = Double(argument("--x") ?? ""), let y = Double(argument("--y") ?? "") else { fail("Missing coordinates") }
+    validateCoordinateWindow(x: x, y: y)
     let delta = Int32(argument("--delta") ?? "0") ?? 0
     scroll(x: x, y: y, delta: delta)
     emit(["ok": true])

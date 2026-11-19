@@ -1,0 +1,23 @@
+{
+  "recordedAt": "2026-11-06T17:45:48.297Z",
+  "application": "/Applications/Pi Desktop.app",
+  "scenario": "local backoffice report download using macOS save dialog",
+  "initiator": "Codex Computer Use operated the installed Pi Desktop UI; no Pi model or Pi tool was invoked",
+  "destination": "isolated temporary directory",
+  "saved": {
+    "bytes": 120,
+    "sha256": "885485ac2fa13b52984d4b4e8a8eda16f2bcda4a5c9242925db50be3aca68efa",
+    "matchesFixture": true,
+    "bridgeState": "completed",
+    "bridgeBytes": 120
+  },
+  "cancelled": {
+    "bridgeState": "cancelled",
+    "bridgePathPresent": false
+  },
+  "limitations": [
+    "does not validate autonomous Pi execution",
+    "does not validate daily Chrome or CDP",
+    "download list is not proof of which action triggered an event"
+  ]
+}

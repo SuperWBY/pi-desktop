@@ -46,8 +46,13 @@ export function shortenPath(path: string | null | undefined, home?: string): str
 
 export function baseName(path: string | null | undefined): string {
   if (!path) return ''
-  const parts = path.split('/')
+  const parts = path.split(/^(?:[A-Za-z]:\\|\\\\)/.test(path) ? /[\\/]/ : '/')
   return parts[parts.length - 1] || path
+}
+
+export function projectName(names: Record<string, string> | undefined, path: string | null | undefined): string {
+  const name = path ? names?.[path] : undefined
+  return typeof name === 'string' && name.trim() ? name : baseName(path)
 }
 
 export function dirName(path: string): string {

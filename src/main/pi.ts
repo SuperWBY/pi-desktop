@@ -1,12 +1,15 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import type { PiRecord, PiResponse } from '@shared/types'
+import type { PiRecord, PiResponse, SessionSecurity } from '@shared/types'
 import { augmentedPath } from './pi-locate'
+import { quoteWindowsPiPaths } from './pi-launch'
+import { unlinkSync } from 'node:fs'
 
 interface Pending {
   resolve: (value: PiResponse) => void
   reject: (error: Error) => void
   timer: ReturnType<typeof setTimeout>
+  command: string
 }
 
 export interface PiStartOptions {
@@ -15,6 +18,12 @@ export interface PiStartOptions {
   sessionPath?: string | null
   name?: string
   appendSystemPrompt?: string
+  additionalArgs?: string[]
+  desktopSettingsFile?: string
+  desktopToolInfoFile?: string
+  security: SessionSecurity
+  extraEnv?: Record<string, string>
+  sandbox?: { configPath: string; cliPath: string; nodePath: string }
 }
 
 /**
@@ -27,10 +36,22 @@ export class PiProcess extends EventEmitter {
   private buffer = ''
   private pending = new Map<string, Pending>()
   private sequence = 0
+  private sandboxConfigPath?: string
   private stopping = false
 
   cwd = ''
   startedAt = 0
+  desktopToolInfoFile?: string
+  security: SessionSecurity = { permission: 'review', mode: 'dangerous', sandboxed: false }
+  sessionPath: string | null = null
+
+  get hasPendingWork(): boolean {
+    return [...this.pending.values()].some(({ command }) => !command.startsWith('get_'))
+  }
+
+  get sandboxed(): boolean {
+    return Boolean(this.sandboxConfigPath)
+  }
 
   get alive(): boolean {
     return Boolean(this.child && this.child.exitCode === null && !this.child.killed)
@@ -40,26 +61,46 @@ export class PiProcess extends EventEmitter {
     if (this.child) throw new Error('Pi process already started')
 
     const args = ['--mode', 'rpc']
+    if (options.additionalArgs) args.push(...options.additionalArgs)
     if (options.sessionPath) args.push('--session', options.sessionPath)
     if (options.name) args.push('--name', options.name)
     if (options.appendSystemPrompt) args.push('--append-system-prompt', options.appendSystemPrompt)
 
     this.cwd = options.cwd
+    this.security = options.security
     this.stopping = false
+    this.sandboxConfigPath = options.sandbox?.configPath
+    const executable = options.sandbox
+      ? options.sandbox.nodePath
+      : process.platform === 'win32' ? `"${options.piPath}"` : options.piPath
+    const launchArgs = options.sandbox
+      ? [
+          options.sandbox.cliPath,
+          '--settings', options.sandbox.configPath,
+          '/usr/bin/env', '-u', 'ELECTRON_RUN_AS_NODE',
+          options.piPath,
+          ...args
+        ]
+      : process.platform === 'win32' ? quoteWindowsPiPaths(args) : args
 
     return new Promise<void>((resolve, reject) => {
       let settled = false
       let child: ChildProcessWithoutNullStreams
       try {
         child = spawn(
-          process.platform === 'win32' ? `"${options.piPath}"` : options.piPath,
-          args,
+          executable,
+          launchArgs,
           {
             cwd: options.cwd,
             env: {
               ...process.env,
               PATH: augmentedPath(),
-              ...(options.sessionPath ? { PI_DESKTOP_SESSION_PATH: options.sessionPath } : {})
+              ...(options.desktopSettingsFile ? { PI_DESKTOP_SETTINGS_FILE: options.desktopSettingsFile } : {}),
+              ...(options.desktopToolInfoFile ? { PI_DESKTOP_TOOL_INFO_FILE: options.desktopToolInfoFile } : {}),
+              ...(options.sessionPath ? { PI_DESKTOP_SESSION_PATH: options.sessionPath } : {}),
+              PI_DESKTOP_TOOL_APPROVAL: options.security.mode,
+              ...(options.extraEnv ?? {}),
+              ...(options.sandbox ? { PI_DESKTOP_SANDBOX: '1', SRT_DEBUG: '1' } : {})
             },
             stdio: ['pipe', 'pipe', 'pipe'],
             shell: process.platform === 'win32'
@@ -92,6 +133,8 @@ export class PiProcess extends EventEmitter {
       child.stderr.on('data', (chunk: string) => this.emit('stderr', chunk))
 
       child.on('exit', (code, signal) => {
+        if (options.desktopToolInfoFile) { try { unlinkSync(options.desktopToolInfoFile) } catch { /* already removed */ } }
+        if (this.sandboxConfigPath) { try { unlinkSync(this.sandboxConfigPath) } catch { /* already removed */ } this.sandboxConfigPath = undefined }
         this.child = null
         this.rejectPending(new Error(`pi exited (${signal ?? code ?? 'unknown'})`))
         this.emit('exit', { code, signal, intentional: this.stopping })
@@ -119,7 +162,8 @@ export class PiProcess extends EventEmitter {
       this.pending.set(id, {
         resolve: (value) => resolve(value as PiResponse<T>),
         reject,
-        timer
+        timer,
+        command: String(command.type)
       })
 
       try {

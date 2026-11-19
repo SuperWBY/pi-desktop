@@ -13,7 +13,7 @@ import { baseName, shortenPath } from '../../lib/format'
 
 export function ChangesTab(): ReactNode {
   const t = useTranslation()
-  const { state } = useApp()
+  const { state, actions } = useApp()
   const [mode, setMode] = useState<'session' | 'workspace'>('session')
   const [git, setGit] = useState<GitStatus | null>(null)
   const [loading, setLoading] = useState(false)
@@ -21,6 +21,9 @@ export function ChangesTab(): ReactNode {
   const [patch, setPatch] = useState<string>('')
   const [hideTests, setHideTests] = useState(false)
   const [fullDiff, setFullDiff] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [commitMessage, setCommitMessage] = useState('')
+  const [committing, setCommitting] = useState(false)
 
   const turns = useMemo(
     () => buildTurns(state.messages, state.toolRuns, {}, -1),
@@ -50,7 +53,9 @@ export function ChangesTab(): ReactNode {
     if (!state.workspace) return
     setLoading(true)
     try {
-      setGit(await window.pi.gitStatus(state.workspace))
+      const next = await window.pi.gitStatus(state.workspace)
+      setGit(next)
+      setSelected(new Set(next.files.map((file) => file.relative)))
     } finally {
       setLoading(false)
     }
@@ -99,6 +104,32 @@ export function ChangesTab(): ReactNode {
     }
   }
 
+  const commit = async (): Promise<void> => {
+    if (!state.workspace || !commitMessage.trim() || selected.size === 0 || committing) return
+    setCommitting(true)
+    try {
+      const result = await window.pi.gitCommit(state.workspace, commitMessage.trim(), Array.from(selected))
+      if (result.ok) {
+        actions.notify('success', t('已提交'), result.output.split('\n')[0] || commitMessage.trim())
+        setCommitMessage('')
+        await loadGit()
+      } else {
+        actions.notify('error', t('提交失败'), result.error || result.output)
+      }
+    } finally {
+      setCommitting(false)
+    }
+  }
+
+  const toggleSelected = (path: string): void => {
+    setSelected((current) => {
+      const next = new Set(current)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+
   return (
     <div className="work-tab">
       <div className="work-toolbar">
@@ -120,6 +151,16 @@ export function ChangesTab(): ReactNode {
           <button className="work-icon" onClick={() => void loadGit()} title={t('刷新')}>
             <RefreshCw size={12} className={clsx(loading && 'spin')} />
           </button>
+        )}
+        {mode === 'workspace' && files.length > 0 && (
+          <label className="work-check">
+            <input
+              type="checkbox"
+              checked={selected.size === files.length}
+              onChange={(event) => setSelected(event.target.checked ? new Set(files.map((file) => file.relative)) : new Set())}
+            />
+            {t('全选')}
+          </label>
         )}
         <label className="work-check" title={t('折叠测试文件')}>
           <input type="checkbox" checked={hideTests} onChange={(e) => setHideTests(e.target.checked)} />
@@ -154,16 +195,27 @@ export function ChangesTab(): ReactNode {
           const expanded = openFile === file.path
           return (
             <div className="work-file" key={file.path} data-work-file={file.path}>
-              <button className="work-file-head" onClick={() => void openPatch(file)}>
-                {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                <span className="work-file-name" title={file.relative}>
-                  {baseName(file.relative)}
-                </span>
-                <span className="work-file-dir">{shortenPath(file.relative.replace(/\/[^/]+$/, ''))}</span>
-                <span className="work-diff-stat small">
-                  {file.unmeasuredWrite ? <span>{state.settings.language === 'en' ? 'Counts unknown' : '行数未知'}</span> : <><span className="plus">+{file.additions}</span><span className="minus">−{file.deletions}</span></>}
-                </span>
-              </button>
+              <div className="work-file-head-row">
+                {mode === 'workspace' && (
+                  <input
+                    className="work-file-check"
+                    type="checkbox"
+                    checked={selected.has(file.relative)}
+                    onChange={() => toggleSelected(file.relative)}
+                    aria-label={`${t('选择')} ${file.relative}`}
+                  />
+                )}
+                <button className="work-file-head" onClick={() => void openPatch(file)}>
+                  {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <span className="work-file-name" title={file.relative}>
+                    {baseName(file.relative)}
+                  </span>
+                  <span className="work-file-dir">{shortenPath(file.relative.replace(/\/[^/]+$/, ''))}</span>
+                  <span className="work-diff-stat small">
+                    {file.unmeasuredWrite ? <span>{state.settings.language === 'en' ? 'Counts unknown' : '行数未知'}</span> : <><span className="plus">+{file.additions}</span><span className="minus">−{file.deletions}</span></>}
+                  </span>
+                </button>
+              </div>
               {expanded && (
                 <div className="work-file-body">
                   {mode === 'workspace' ? (
@@ -252,6 +304,25 @@ export function ChangesTab(): ReactNode {
         })}
       </div>
 
+      {mode === 'workspace' && git?.ok && files.length > 0 && (
+        <div className="git-commit-bar">
+          <input
+            value={commitMessage}
+            onChange={(event) => setCommitMessage(event.target.value)}
+            placeholder={t('提交说明…')}
+            maxLength={5000}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                void commit()
+              }
+            }}
+          />
+          <button className="button primary" disabled={!commitMessage.trim() || selected.size === 0 || committing} onClick={() => void commit()}>
+            {committing ? t('提交中…') : `${t('提交')} ${selected.size}`}
+          </button>
+        </div>
+      )}
       {mode === 'workspace' && !git?.ok && (
         <p className="work-hint">
           {t('提示：工作区模式需要项目是 git 仓库；本会话模式只看 pi 的改动。')}

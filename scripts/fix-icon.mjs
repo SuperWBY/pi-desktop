@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
+import { signMacApp } from './mac-signing.mjs'
 
 const appPath = 'release/Pi Desktop-darwin-arm64/Pi Desktop.app'
 const resources = join(appPath, 'Contents/Resources')
@@ -13,5 +14,6 @@ if (!existsSync(appPath)) {
 
 copyFileSync('build/icon.icns', join(resources, 'icon.icns'))
 execFileSync('plutil', ['-replace', 'CFBundleIconFile', '-string', 'icon.icns', plist])
+signMacApp(appPath)
 execFileSync('touch', [appPath])
 console.log('Applied app icon to', appPath)

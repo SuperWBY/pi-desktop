@@ -1,0 +1,23 @@
+import computerUse from __COMPUTER_USE_MODULE__
+import { BrowserActionJournal } from __JOURNAL_MODULE__
+import { existsSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+export default function(pi:any) {
+ pi.registerCommand('pi-occlusion-rejection',{description:'Test safe rejection when an isolated native window is obscured',handler:async(_:any,ctx:any)=>{
+  try {
+   const tools:Record<string,any>={}; computerUse({registerTool:(tool:any)=>tools[tool.name]=tool,on:()=>{}} as any)
+   const before=await tools.computer_use_observe.execute('obs',{app:'dev.pi.desktop.cua-fixture',includeScreenshot:false},undefined,undefined,ctx)
+   const match=before.content[0].text.match(/AXButton ax “Pi Fixture Start”[^\n]*? @ (-?\d+),(-?\d+) (\d+)×(\d+)/)
+   if(!match) throw Error('Cannot find test button coordinates')
+   const x=Number(match[1])+Number(match[3])/2,y=Number(match[2])+Number(match[4])/2
+   const result=await tools.computer_use_act.execute('act',{snapshotId:before.details.snapshotId,type:'click',x,y},undefined,undefined,ctx)
+   const journal=new BrowserActionJournal(join(homedir(),'.pi','computer-use','desktop-actions.sqlite'))
+   const pending=journal.pending('desktop');journal.close()
+   const wrote=existsSync(join(process.cwd(),'fixture-evidence.txt'))
+   await writeFile(join(process.cwd(),'occlusion-result.json'),JSON.stringify({rejected:result.details?.rejected===true,reason:result.details?.reason??null,pending:!!pending,clickOccurred:wrote}))
+   ctx.ui.notify('遮挡窗口后的动作检查完成','info')
+  }catch(error){await writeFile(join(process.cwd(),'occlusion-result.json'),JSON.stringify({error:String(error)}));ctx.ui.notify('遮挡窗口测试失败','error')}
+ }})
+}

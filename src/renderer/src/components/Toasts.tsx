@@ -17,7 +17,7 @@ function Toast({ notice }: { notice: Notice }): ReactNode {
   const Icon = ICONS[notice.level]
 
   useEffect(() => {
-    const timer = setTimeout(() => actions.dismissNotice(notice.id), 5200)
+    const timer = setTimeout(() => actions.dismissNotice(notice.id), notice.action ? 15000 : 5200)
     return () => clearTimeout(timer)
   }, [actions, notice.id])
 

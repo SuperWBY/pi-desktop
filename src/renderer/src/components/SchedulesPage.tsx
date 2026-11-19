@@ -120,7 +120,7 @@ function statusLabel(status: ScheduledRunStatus | null, t: (text: string) => str
     success: t('成功'),
     failed: t('失败'),
     timeout: t('超时'),
-    interrupted: t('已中断'),
+    interrupted: t('中断 · 待核对'),
     missed: t('已错过'),
     skipped: t('已跳过')
   }
@@ -177,7 +177,7 @@ export function SchedulesPage(): ReactNode {
   const [timezone, setTimezone] = useState(DEFAULT_TZ)
   const [tzError, setTzError] = useState<string | null>(null)
   const [runMode, setRunMode] = useState<'new-session' | 'continue-session'>('new-session')
-  const [catchUp, setCatchUp] = useState(true)
+  const [catchUp, setCatchUp] = useState(false)
   const [notifications, setNotifications] = useState(true)
   const [preview, setPreview] = useState<number[]>([])
   const [noNext, setNoNext] = useState(false)
@@ -326,7 +326,7 @@ export function SchedulesPage(): ReactNode {
     setPrompt(task?.prompt ?? '')
     setTimezone(task?.timezone || DEFAULT_TZ)
     setRunMode(task?.runMode ?? 'new-session')
-    setCatchUp(task?.catchUp ?? true)
+    setCatchUp(task?.catchUp ?? false)
     setNotifications(task?.notifications ?? true)
     setAdvancedOpen(false)
     const value = task?.cadence
@@ -588,6 +588,7 @@ export function SchedulesPage(): ReactNode {
             </dl>
           </section>
 
+          {selected.lastStatus === 'interrupted' && <p className="install-warning">{t('任务运行时被中断，结果可能已经产生。请先核对实际结果，再决定是否重新运行或启用。')}</p>}
           <section className="detail-section">
             <h2>{t('Prompt')}</h2>
             <pre className="schedule-prompt">{selected.prompt}</pre>
@@ -849,18 +850,6 @@ export function SchedulesPage(): ReactNode {
                 </select>
               </label>
               <div className="schedule-adv-row">
-                <span>{t('错过补跑')}</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={catchUp}
-                  className={clsx('switch', catchUp && 'on')}
-                  onClick={() => setCatchUp((value) => !value)}
-                >
-                  <span className="switch-knob" />
-                </button>
-              </div>
-              <div className="schedule-adv-row">
                 <span>{t('完成通知')}</span>
                 <button
                   type="button"
@@ -874,6 +863,10 @@ export function SchedulesPage(): ReactNode {
               </div>
             </div>
           )}
+          <div className="schedule-adv-row">
+            <span>{t('错过时间后补跑')}<small className="schedule-catchup-note">{t('只补跑尚未开始的任务；运行中断后会暂停并等待核对。')}</small></span>
+            <button type="button" role="switch" aria-label={t('错过时间后补跑')} aria-checked={catchUp} className={clsx('switch', catchUp && 'on')} onClick={() => setCatchUp((value) => !value)}><span className="switch-knob" /></button>
+          </div>
           <div className="schedule-preview">
             <span>{t('接下来')}</span>
             {preview.length === 0 ? <span>—</span> : preview.map((timestamp) => (

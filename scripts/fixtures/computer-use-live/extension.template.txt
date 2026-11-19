@@ -1,0 +1,21 @@
+import computerUse from __COMPUTER_USE_MODULE__;
+import { writeFile, readFile } from 'node:fs/promises';
+export default function(pi) {
+ pi.registerCommand('pi-cua-local-fixture', { description:'Run local Computer Use verification', handler: async (_args,ctx) => {
+  const records={}; const proxy={registerTool:t=>records[t.name]=t, on:()=>{}};
+  try {
+   computerUse(proxy);
+   const before=await records.computer_use_observe.execute('fixture-observe',{app:'dev.pi.desktop.cua-fixture',includeScreenshot:false},undefined,undefined,ctx);
+   const text=before.content[0].text; const found=text.match(/^(e[0-9]+) AXButton ax “Pi Fixture Start”/m);
+   if(!found) throw Error('Fixture button not found in observed AX candidates. '+text.slice(0,500));
+   const outcome=await records.computer_use_act.execute('fixture-act',{snapshotId:before.details.snapshotId,type:'click',elementId:found[1]},undefined,undefined,ctx);
+   if(outcome.details?.cancelled) throw Error('User cancelled test action');
+   const evidence=await readFile(__EVIDENCE_PATH__,'utf8');
+   const after=await records.computer_use_observe.execute('fixture-after',{app:'dev.pi.desktop.cua-fixture',includeScreenshot:false},undefined,undefined,ctx);
+   const clickCount=evidence.split('\n').filter(line=>line==='completed').length;
+   const verified=clickCount===1 && after.content[0].text.includes('Pi Fixture Done');
+   await writeFile(__RESULT_PATH__,JSON.stringify({ok:verified,before:found[1],clickCount,afterContainsDone:after.content[0].text.includes('Pi Fixture Done'),verification:outcome.details?.verification??null}));
+   ctx.ui.notify(verified?'本地 Computer Use 验证成功':'本地验证未通过', verified?'info':'error');
+  } catch(error) { await writeFile(__RESULT_PATH__,JSON.stringify({ok:false,error:String(error)})); ctx.ui.notify('本地验证失败：'+String(error),'error'); }
+ }});
+}

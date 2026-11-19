@@ -1,20 +1,30 @@
+import { chromePairingPath, prepareChromePairing } from '../../extensions/computer-use/src/chrome-bridge-pairing'
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   Menu,
+  nativeImage,
   Notification,
   powerMonitor,
+  screen,
   shell,
   type MenuItemConstructorOptions
 } from 'electron'
-import { execFileSync } from 'node:child_process'
-import { createServer } from 'node:http'
+import { execFile, execFileSync, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
+import { randomUUID } from 'node:crypto'
+import { checkChromeBridge } from './chrome-bridge-check'
+import { createDesktopPermissionService } from './desktop-permission-service'
+import { SessionUiRequests } from './session-ui-requests'
+import { InterruptedUiJournal } from './interrupted-ui-journal'
 import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -22,35 +32,46 @@ import {
   writeFileSync
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import type {
+  AddProjectResult,
   Bootstrap,
   CustomProviderEntry,
   ModelsConfig,
   PiModelRow,
   OpenSessionResult,
   PiRecord,
+  PiState,
   PiSettings,
+  SessionPermission,
+  SessionSecurity,
   Settings
 } from '@shared/types'
 import { PiProcess } from './pi'
+import { prepareComputerUseRuntime } from './computer-use-runtime'
+import { findExistingComputerUse } from './existing-computer-use'
 import {
-  browserBack,
-  browserBounds,
-  browserClose,
-  browserForward,
-  browserNavigate,
-  browserOpen,
-  browserReload,
-  browserSetVisible,
-  browserStop,
+  browserPreview, panelPage, revealPage, setPanelBounds, setPanelVisible,
   initBrowser
 } from './browser'
 import { importChromeCookies, listChromeProfiles, previewChromeProfile } from './chrome-import'
-import { startBrowserBridge, stopBrowserBridge } from './browser-bridge'
-import { locatePi, piVersion } from './pi-locate'
-import { deleteSession, listSessions, restoreSession, sessionExists, sessionsRoot } from './sessions'
-import { loadSettings, saveSettings } from './settings'
+import { browserBridgePath, startBrowserBridge, stopBrowserBridge } from './browser-bridge'
+import { augmentedPath, piVersion } from './pi-locate'
+import { resolvePiPath } from './pi-runtime'
+import { projectTrustStatus, setProjectTrust } from './project-trust'
+import { checkForUpdate, downloadUpdate, openReleasePage } from './update'
+import { listAuthProviders, removeAuthProvider, saveApiKey } from './auth-store'
+import { cancelOAuth, listOAuthProviders, respondOAuth, startOAuth } from './pi-auth'
+import { deleteSession, listSessions, restoreSession, searchSessions, sessionExists, sessionsRoot } from './sessions'
+import { listWorkspaceFiles } from './workspace-files'
+import { inspectPackage } from './package-inspect'
+import { createSandbox, sandboxStatus } from './sandbox'
+import { proxyEnv } from './network-env'
+import { appendSandboxAudit, readSandboxAudit } from './sandbox-audit'
+import { searchPackageCatalog } from './package-catalog'
+import { browserRouterStatus, startCdpBrowser } from './browser-router-status'
+import { loadSettings, saveSettings, settingsFile } from './settings'
+import { jevEnv, jevStatus, saveJevSettings } from './jev-store'
 import { validateCron } from './schedule-cadence'
 import { ensureScheduleCli, scheduleGuidance } from './schedule-bridge'
 import {
@@ -67,17 +88,163 @@ import {
   saveProvider
 } from './models'
 import { countSkills, listConnectors, listSkills, readSkillFile } from './skills'
-import { listPackages, runPiPackageCommand } from './packages'
+import { listMcpConnectors, removeMcpConnector, saveMcpConnector, testMcpConnector } from './mcp-connectors'
+import type { McpConnectorInput } from '@shared/types'
+import { listPackages, listPackagesAsync, runPiPackageCommand } from './packages'
 import { scheduler } from './schedules'
 import { listSessionNotices } from './session-notices'
 import { rememberActiveSession } from './active-sessions'
 import { usageSummary } from './usage'
 
+// The bundled Pi seed uses Electron's embedded Node; child processes inherit
+// this so the launcher can find the exact app executable.
+process.env.PI_DESKTOP_ELECTRON ||= process.execPath
+
 let mainWindow: BrowserWindow | null = null
 let proc: PiProcess | null = null
+let changingSessionPermission = false
 const processes = new Map<string, PiProcess>()
 let sessionCounter = 0
+let permissionGuideWindow: BrowserWindow | null = null
+type PiInstallResult = { ok: boolean; piPath?: string; piVersion?: string | null; output?: string; error?: string }
+let piInstallTask: Promise<PiInstallResult> | null = null
+
+/**
+ * First-run installation of the official Pi runtime. The app intentionally
+ * does not ship a private copy: pi manages its own signed releases, models and
+ * credentials, and users expect `pi update` to keep working afterwards.
+ */
+function installPiRuntime(): Promise<PiInstallResult> {
+  if (piInstallTask) return piInstallTask
+  const windows = process.platform === 'win32'
+  const task = new Promise<PiInstallResult>((resolve) => {
+    const emit = (stage: string, message: string): void => send('pi:install-progress', { stage, message })
+    emit('starting', '正在连接 pi.dev…')
+    const child = windows
+      ? spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', 'irm https://pi.dev/install.ps1 | iex'], {
+          cwd: homedir(),
+          env: { ...process.env, PATH: augmentedPath(), CI: '1' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true
+        })
+      : spawn('/bin/sh', ['-lc', 'curl -fsSL https://pi.dev/install.sh | sh'], {
+          cwd: homedir(),
+          env: { ...process.env, PATH: augmentedPath(), CI: '1' },
+          stdio: ['ignore', 'pipe', 'pipe']
+        })
+    let output = ''
+    const append = (chunk: Buffer): void => {
+      output = (output + chunk.toString()).slice(-12_000)
+    }
+    child.stdout.on('data', (chunk: Buffer) => { append(chunk); emit('installing', '正在安装 Pi 运行时…') })
+    child.stderr.on('data', (chunk: Buffer) => { append(chunk); emit('installing', '正在安装 Pi 运行时…') })
+    let settled = false
+    const finish = (result: PiInstallResult): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM')
+      setTimeout(() => child.kill('SIGKILL'), 2000)
+      finish({ ok: false, error: 'Pi installation timed out. Check your network and try again.', output })
+    }, 300_000)
+    child.on('error', (error) => finish({ ok: false, error: error.message, output }))
+    child.on('close', (code) => {
+      if (code !== 0) {
+        finish({ ok: false, error: `Pi installation failed (exit ${code ?? 'unknown'}).`, output })
+        return
+      }
+      emit('verifying', '正在检查 Pi 安装…')
+      const installed = resolvePiPath()
+      const version = piVersion(installed)
+      if (!version) {
+        finish({ ok: false, error: 'Pi installation finished, but the executable could not be found. Restart Pi Desktop and check again.', output })
+        return
+      }
+      emit('ready', `Pi ${version} 已就绪`)
+      finish({ ok: true, piPath: installed, piVersion: version, output })
+    })
+  })
+  piInstallTask = task
+  void task.finally(() => { if (piInstallTask === task) piInstallTask = null })
+  return task
+}
+
+let permissionGuideKind: 'accessibility' | 'screen' | null = null
+
+function showPermissionGuide(kind: 'accessibility' | 'screen'): void {
+  if (process.platform !== 'darwin') return
+  permissionGuideKind = kind
+  if (permissionGuideWindow && !permissionGuideWindow.isDestroyed()) { permissionGuideWindow.showInactive(); return }
+  const area = screen.getDisplayMatching(mainWindow?.getBounds() ?? screen.getPrimaryDisplay().bounds).workArea
+  const width = Math.min(400, area.width)
+  const height = 118
+  const guide = new BrowserWindow({
+    width, height, x: Math.round(area.x + (area.width - width) / 2), y: area.y + area.height - height - 12,
+    frame: false, resizable: false, alwaysOnTop: true, skipTaskbar: true, show: false,
+    backgroundColor: '#202328',
+    webPreferences: { preload: join(__dirname, '../preload/index.js'), sandbox: false, contextIsolation: true, nodeIntegration: false }
+  })
+  permissionGuideWindow = guide
+  guide.on('closed', () => { if (permissionGuideWindow === guide) { permissionGuideWindow = null; permissionGuideKind = null } })
+  guide.once('ready-to-show', () => guide.showInactive())
+  const devUrl = process.env['ELECTRON_RENDERER_URL']
+  if (devUrl) { const url = new URL(devUrl); url.searchParams.set('view', 'permission-guide'); void guide.loadURL(url.toString()) }
+  else void guide.loadFile(join(__dirname, '../renderer/index.html'), { query: { view: 'permission-guide' } })
+}
 let queue: Promise<unknown> = Promise.resolve()
+const execFileAsync = promisify(execFile)
+
+async function desktopPermissionService() {
+  const current = proc
+  const cwd = current?.cwd || loadSettings().lastWorkspace || homedir()
+  let runningRoot: string | undefined
+  let provisional = true
+  if (current?.desktopToolInfoFile && !existsSync(current.desktopToolInfoFile)) {
+    const state = await current.send<{ isStreaming?: boolean }>({ type: 'get_state' }, 5000)
+    if (!state.success || state.data?.isStreaming) throw new Error('The current session is busy; try the permission check again after the task finishes.')
+    const response = await current.send({ type: 'prompt', message: '/pi-desktop-access-status' }, 5000)
+    if (!response.success) throw new Error(response.error || 'The current Computer Use component could not be identified.')
+    const deadline = Date.now() + 2000
+    while (!existsSync(current.desktopToolInfoFile) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  if (current?.desktopToolInfoFile) {
+    try {
+      const info = JSON.parse(readFileSync(current.desktopToolInfoFile, 'utf8')) as { helperRoot?: unknown; provisional?: unknown }
+      if (typeof info.helperRoot !== 'string' || !info.helperRoot) throw new Error('The current Computer Use extension does not expose a recognizable permission helper.')
+      runningRoot = info.helperRoot
+      provisional = info.provisional !== false
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('does not expose')) throw error
+      throw new Error('The current Computer Use session is not ready for a permission check. Try again or start a new session.')
+    }
+  }
+  const direct = runningRoot ? undefined : findExistingComputerUse(agentDir(), cwd)
+  const existing = runningRoot || direct ? undefined : (await listPackagesAsync(cwd)).find((item) => item.name === 'pi-desktop-computer-use' && item.path)
+  const root = runningRoot || direct || existing?.path || (app.isPackaged
+    ? prepareComputerUseRuntime(join(app.getAppPath(), 'extensions', 'computer-use'), app.getPath('userData'))
+    : join(app.getAppPath(), 'extensions', 'computer-use'))
+  const helper = join(root, 'bin', process.platform === 'win32' ? 'computer-use-helper.ps1' : 'computer-use-helper')
+  const service = createDesktopPermissionService({
+    async run(command) {
+      const executable = process.platform === 'win32' ? 'powershell.exe' : helper
+      const args = process.platform === 'win32' ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helper, command] : [command]
+      const { stdout } = await execFileAsync(executable, args, { timeout: command.startsWith('request-') ? 120_000 : 30_000, windowsHide: true })
+      const result = JSON.parse(stdout) as Record<string, unknown>
+      if (result.ok !== true) throw new Error(String(result.error || 'Computer Use permission check failed.'))
+      return result
+    },
+    async open(kind) {
+      if (process.platform !== 'darwin') throw new Error('Open your operating system privacy settings to grant Computer Use permissions.')
+      const pane = kind === 'accessibility' ? 'Privacy_Accessibility' : 'Privacy_ScreenCapture'
+      await execFileAsync('/usr/bin/open', [`x-apple.systempreferences:com.apple.preference.security?${pane}`], { timeout: 10_000 })
+      showPermissionGuide(kind)
+    }
+  })
+  return { service, provisional }
+}
 
 function enqueue<T>(task: () => Promise<T>): Promise<T> {
   const run = queue.then(task, task)
@@ -91,18 +258,79 @@ function send(channel: string, payload: unknown): void {
   }
 }
 
+const sessionUiRequests = new SessionUiRequests(
+  (record) => send('pi:record', record),
+  (owner, response) => (owner as PiProcess).write(response),
+  () => publishPendingSessionRequests(),
+  {
+    begin: (owner, token) => {
+      const process = owner as PiProcess
+      const key = [...processes.entries()].find(([key, value]) => key.startsWith('session:') && value === process)?.[0]
+      uiJournal().begin(token, { cwd: process.cwd, sessionPath: key ? key.slice('session:'.length) : null })
+    },
+    finish: (token) => uiJournal().finish(token),
+    interrupt: (token) => { uiJournal().interrupt(token); publishInterruptedUi() },
+    error: () => send('pi:record', { type: 'desktop_ui_journal_error' })
+  }
+)
+
+let uiJournalInstance: InterruptedUiJournal | undefined
+function uiJournal(): InterruptedUiJournal {
+  return uiJournalInstance ??= new InterruptedUiJournal(join(app.getPath('userData'), 'interrupted-ui-requests.json'))
+}
+function publishInterruptedUi(): void { send('pi:record', { type: 'desktop_interrupted_ui', entries: uiJournal().interrupted() }) }
+
+function publishPendingSessionRequests(): void {
+  const owners = new Set(sessionUiRequests.pendingOwners())
+  const sessions = [...processes.entries()].flatMap(([key, process]) =>
+    key.startsWith('session:') && process !== proc && owners.has(process)
+      ? [{ path: key.slice('session:'.length), cwd: process.cwd }]
+      : []
+  )
+  send('pi:record', { type: 'desktop_background_ui_pending', sessions })
+}
+
 function sessionKey(sessionPath: string): string {
   return `session:${sessionPath}`
 }
 
+function bindSessionPath(process: PiProcess, path: string | null): void {
+  if (process.sessionPath && process.sessionPath !== path && processes.get(sessionKey(process.sessionPath)) === process) {
+    processes.delete(sessionKey(process.sessionPath))
+  }
+  process.sessionPath = path
+  if (path) processes.set(sessionKey(path), process)
+}
+
 function wireProcess(process: PiProcess, key: string): void {
   process.on('record', (record: PiRecord) => {
+    if (sessionUiRequests.receive(process, record)) return
     if (proc === process) send('pi:record', record)
   })
   process.on('stderr', (chunk: string) => {
-    if (proc === process) send('pi:stderr', chunk)
+    const visible: string[] = []
+    for (const line of chunk.split('\n')) {
+      if (!line) continue
+      if (process.sandboxed && /No matching rule, denying:|Connection blocked to/i.test(line)) {
+        const match = line.match(/(?:denying|blocked to):?\s*([^\s:]+)(?::(\d+))?/i)
+        const host = match?.[1]
+        const port = match?.[2] ? Number(match[2]) : undefined
+        appendSandboxAudit({ type: 'network_denied', host, port, line: line.slice(0, 500) })
+        if (host && proc === process) send('sandbox:domain-denied', { host, port })
+      } else if (process.sandboxed && /Allowed by config rule:/i.test(line)) {
+        const match = line.match(/Allowed by config rule:\s*([^\s:]+)(?::(\d+))?/i)
+        appendSandboxAudit({ type: 'network_allowed', host: match?.[1], port: match?.[2] ? Number(match[2]) : undefined, line: line.slice(0, 500) })
+      } else if (line.startsWith('[SandboxDebug]')) {
+        if (process.sandboxed) appendSandboxAudit({ type: 'sandbox_debug', line: line.slice(0, 1000) })
+      } else {
+        visible.push(line)
+      }
+    }
+    if (visible.length && proc === process) send('pi:stderr', `${visible.join('\n')}\n`)
   })
   process.on('exit', (info: { code: number | null; signal: string | null; intentional?: boolean }) => {
+    if (process.sandboxed) appendSandboxAudit({ type: 'exit', code: info.code, signal: info.signal })
+    sessionUiRequests.drop(process)
     if (processes.get(key) === process) processes.delete(key)
     for (const [candidate, value] of processes) {
       if (value === process) processes.delete(candidate)
@@ -127,6 +355,7 @@ function stopProcess(process: PiProcess): void {
 async function closeSession(): Promise<void> {
   const current = proc
   proc = null
+  sessionUiRequests.activate(null)
   if (current) {
     stopProcess(current)
     await new Promise((resolve) => setTimeout(resolve, 150))
@@ -139,10 +368,48 @@ function scratchWorkspace(): string {
   return realpathSync(dir)
 }
 
+function addProject(input: { cwd: string; name: string; trust?: boolean }): AddProjectResult {
+  const settings = loadSettings()
+  const english = settings.language === 'en'
+  let cwd: string
+  try {
+    if (typeof input?.cwd !== 'string' || !input.cwd) throw new Error()
+    cwd = realpathSync(input.cwd)
+    if (!statSync(cwd).isDirectory() || cwd === scratchWorkspace()) throw new Error()
+  } catch {
+    throw new Error(english ? 'Choose an existing project folder.' : '请选择一个仍然存在的项目文件夹。')
+  }
+  if (settings.workspaces.includes(cwd)) return { status: 'added', cwd }
+  const name = typeof input.name === 'string' ? input.name.trim() : ''
+  if (!name || name.length > 80 || /[\u0000-\u001f\u007f]/.test(name)) {
+    throw new Error(english ? 'Enter a project name of 1–80 characters.' : '请输入 1 到 80 个字符的项目名称。')
+  }
+  const trust = projectTrustStatus(cwd)
+  const undecided = trust.decision === null
+  if (undecided && (typeof input.trust !== 'boolean' || input.cwd !== cwd)) {
+    return { status: 'needs-trust', cwd, trust }
+  }
+  if (undecided) setProjectTrust(cwd, input.trust!, 'project')
+  try {
+    const next = saveSettings({
+      workspaces: [...settings.workspaces, cwd],
+      workspaceNames: { ...settings.workspaceNames, [cwd]: name }
+    })
+    send('app:settings', next)
+    return { status: 'added', cwd }
+  } catch (error) {
+    if (undecided) setProjectTrust(cwd, null, 'project')
+    throw error
+  }
+}
+
 async function doOpenSession(options: {
   cwd: string
   sessionPath?: string | null
   scratch?: boolean
+  permission?: SessionPermission
+  replace?: PiProcess
+  emptySession?: boolean
 }): Promise<OpenSessionResult> {
   const english = loadSettings().language === 'en'
   const requested = options.cwd?.trim()
@@ -153,23 +420,21 @@ async function doOpenSession(options: {
   const cwd = options.scratch ? scratchRoot : realpathSync(requested)
   const scratch = options.scratch === true || cwd === scratchRoot
 
-  if (options.sessionPath && !(await sessionExists(options.sessionPath))) {
-    return { ok: false, error: english ? 'This session file no longer exists.' : '这个会话文件已经不存在了。' }
-  }
-
   const targetKey = options.sessionPath ? sessionKey(options.sessionPath) : null
-  if (targetKey) {
+  if (targetKey && !options.replace) {
     const existing = processes.get(targetKey)
     if (existing?.alive) {
       proc = existing
+      sessionUiRequests.activate(existing)
       try {
         const stateResponse = await existing.send<{ sessionFile?: string | null }>(
           { type: 'get_state' },
           20_000
         )
         const existingPath = stateResponse.data?.sessionFile ?? options.sessionPath ?? null
+        const existingScratch = existing.cwd === scratchRoot
         if (existingPath) rememberActiveSession(existing.cwd, existingPath)
-        if (!scratch) {
+        if (!existingScratch) {
           saveSettings({
             lastWorkspace: existing.cwd,
             workspaces: [...loadSettings().workspaces, existing.cwd]
@@ -182,7 +447,7 @@ async function doOpenSession(options: {
           ok: true,
           cwd: existing.cwd,
           sessionPath: existingPath,
-          scratch
+          scratch: existingScratch
         }
       } catch {
         processes.delete(targetKey)
@@ -190,17 +455,57 @@ async function doOpenSession(options: {
     }
   }
 
+  if (options.sessionPath && !options.emptySession && !(await sessionExists(options.sessionPath))) {
+    return { ok: false, error: english ? 'This session file no longer exists.' : '这个会话文件已经不存在了。' }
+  }
+
   const settings = loadSettings()
-  const piPath = locatePi(settings.piPath)
+  const permission = options.permission ?? (settings.toolApprovalMode === 'all' ? 'ask' : 'review')
+  const needsSandbox = permission !== 'full' && settings.sandboxEnabled === true
+  const piPath = resolvePiPath(settings.piPath)
   const process = new PiProcess()
   const key = targetKey ?? `new:${cwd}:${++sessionCounter}`
   wireProcess(process, key)
 
   try {
+    const runtime = app.isPackaged
+      ? prepareComputerUseRuntime(join(app.getAppPath(), 'extensions', 'computer-use'), app.getPath('userData'))
+      : join(app.getAppPath(), 'extensions', 'computer-use')
+    const infoDir = join(app.getPath('userData'), 'computer-use-sessions')
+    mkdirSync(infoDir, { recursive: true, mode: 0o700 })
+    process.desktopToolInfoFile = join(infoDir, `${randomUUID()}.json`)
+    const additionalArgs = [
+      '--extension', join(runtime, 'src', 'desktop-access-extension.ts'),
+      '--skill', join(runtime, 'desktop-guidance')
+    ]
+    const sandbox = needsSandbox ? createSandbox(cwd, settings) : null
+    if (needsSandbox && !sandbox) {
+      throw new Error('沙箱已启用，但当前环境没有可用的 sandbox runtime 或 Node.js。请在设置中关闭沙箱后重试。')
+    }
+    if (sandbox) {
+      appendSandboxAudit({
+        type: 'start',
+        cwd,
+        mode: settings.sandboxMode ?? 'workspace-write',
+        network: settings.sandboxNetwork ?? 'model',
+        domains: settings.sandboxAllowedDomains ?? []
+      })
+    }
     await process.start({
       cwd,
       piPath,
       sessionPath: options.sessionPath ?? undefined,
+      additionalArgs,
+      desktopSettingsFile: settingsFile(),
+      desktopToolInfoFile: process.desktopToolInfoFile,
+      security: {
+        permission,
+        mode: permission === 'full' ? 'never' : permission === 'ask' ? 'all' : 'dangerous',
+        sandboxed: Boolean(sandbox),
+        ...(sandbox ? { files: settings.sandboxMode ?? 'workspace-write', network: settings.sandboxNetwork ?? 'model' } : {})
+      },
+      extraEnv: { ...jevEnv(), ...proxyEnv(settings) },
+      sandbox: sandbox ?? undefined,
       appendSystemPrompt: scheduleGuidance()
     })
   } catch (error) {
@@ -213,9 +518,6 @@ async function doOpenSession(options: {
     }
   }
 
-  proc = process
-  processes.set(key, process)
-
   try {
     const response = await process.send<{ sessionFile?: string | null }>(
       { type: 'get_state' },
@@ -225,7 +527,7 @@ async function doOpenSession(options: {
       throw new Error(response.error || 'get_state failed')
     }
     let sessionFile = response.data?.sessionFile ?? options.sessionPath ?? null
-    if (!sessionFile) {
+    if (!sessionFile && !options.replace) {
       // pi may not materialize a new session until the first prompt; create it
       // now so the sidebar can track the running session immediately.
       const created = await process.send<{ sessionFile?: string | null }>(
@@ -234,7 +536,6 @@ async function doOpenSession(options: {
       )
       if (created.success) sessionFile = created.data?.sessionFile ?? null
     }
-    if (sessionFile) processes.set(sessionKey(sessionFile), process)
     if (sessionFile) rememberActiveSession(cwd, sessionFile)
 
     saveSettings(
@@ -245,14 +546,54 @@ async function doOpenSession(options: {
             workspaces: [...settings.workspaces, cwd]
           }
     )
+    processes.set(key, process)
+    bindSessionPath(process, sessionFile)
+    proc = process
+    sessionUiRequests.activate(process)
+    if (options.replace) stopProcess(options.replace)
+    publishPendingSessionRequests()
     send('app:settings', loadSettings())
     return { ok: true, cwd, sessionPath: sessionFile, scratch }
   } catch (error) {
-    process.stop()
-    processes.delete(key)
-    proc = null
+    stopProcess(process)
+    sessionUiRequests.drop(process)
     const message = error instanceof Error ? error.message : String(error)
     return { ok: false, error: english ? `Pi is not ready: ${message}` : `pi 没有就绪：${message}` }
+  }
+}
+
+async function setSessionPermission(input: { cwd: string; sessionPath: string | null; permission: SessionPermission }): Promise<SessionSecurity> {
+  const settings = loadSettings()
+  const english = settings.language === 'en'
+  const current = proc
+  if (!current?.alive || typeof input?.cwd !== 'string' || current.cwd !== input.cwd || current.sessionPath !== input.sessionPath) {
+    throw new Error(english ? 'The active conversation changed. Try again.' : '当前会话已切换，请重试。')
+  }
+  if (input.permission !== 'ask' && input.permission !== 'review' && input.permission !== 'full') throw new Error('Invalid permission mode.')
+  if (input.permission === 'full' && settings.allowFullAccess !== true) {
+    throw new Error(english ? 'Enable full access in Settings first.' : '请先在设置中允许使用完全访问。')
+  }
+  if (current.security.permission === input.permission) return current.security
+
+  const busy = english ? 'Wait for the current operation to finish before switching permissions.' : '请等待当前操作结束后再切换权限。'
+  if (current.hasPendingWork || sessionUiRequests.pendingOwners().includes(current)) throw new Error(busy)
+  changingSessionPermission = true
+  try {
+    const state = await current.send<PiState>({ type: 'get_state' }, 5000)
+    const actualPath = state.data?.sessionFile ?? current.sessionPath
+    if (!state.success || !state.data || state.data.isStreaming || state.data.isCompacting || state.data.pendingMessageCount ||
+      sessionUiRequests.pendingOwners().includes(current) || (!actualPath && state.data.messageCount)) throw new Error(busy)
+    if (actualPath !== input.sessionPath) throw new Error(english ? 'The active conversation changed. Try again.' : '当前会话已切换，请重试。')
+    // Pi reserves a path before it writes the first message. Reopen that same
+    // path in an empty conversation so the composer keeps its draft owner.
+    const opened = await doOpenSession({
+      cwd: current.cwd, sessionPath: actualPath, permission: input.permission,
+      replace: current, emptySession: state.data.messageCount === 0
+    })
+    if (!opened.ok || !proc) throw new Error(opened.error ?? (english ? 'Could not change permissions.' : '无法切换权限。'))
+    return proc.security
+  } finally {
+    changingSessionPermission = false
   }
 }
 
@@ -286,6 +627,23 @@ function runGit(cwd: string, args: string[]): string {
   }
 }
 
+function runGitCapture(cwd: string, args: string[]): { ok: boolean; output: string; error?: string } {
+  const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
+  try {
+    const output = execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      timeout: 30_000,
+      maxBuffer: 16 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    return { ok: true, output: output.trim() }
+  } catch (error) {
+    const value = error as { stdout?: string; stderr?: string; message?: string }
+    return { ok: false, output: String(value.stdout ?? '').trim(), error: String(value.stderr ?? value.message ?? 'git failed').trim() }
+  }
+}
+
 function parseNumstat(output: string): Record<string, { additions: number; deletions: number }> {
   const stats: Record<string, { additions: number; deletions: number }> = {}
   for (const line of output.split('\n')) {
@@ -308,23 +666,70 @@ function commandTimeout(type: string): number {
 }
 
 function registerIpc(): void {
+  ipcMain.on('desktop:permission-guide-close', (event) => {
+    if (permissionGuideWindow && (event.sender === permissionGuideWindow.webContents || event.sender === mainWindow?.webContents)) permissionGuideWindow.close()
+  })
+  ipcMain.on('desktop:permission-drag-app', (event) => {
+    if (process.platform !== 'darwin' || !app.isPackaged) return
+    const bundle = dirname(dirname(dirname(app.getPath('exe'))))
+    if (!bundle.endsWith('.app') || !existsSync(join(bundle, 'Contents', 'Info.plist'))) return
+    const icon = nativeImage.createFromPath(join(app.getAppPath(), 'build', 'icon.png')).resize({ width: 48, height: 48 })
+    event.sender.startDrag({ file: bundle, icon })
+  })
+  ipcMain.handle('desktop:permission-check', async () => {
+    const value = await desktopPermissionService()
+    const status = await value.service.check()
+    if ((permissionGuideKind === 'accessibility' && status.accessibility) || (permissionGuideKind === 'screen' && status.screenRecording)) permissionGuideWindow?.close()
+    return { ...status, provisional: value.provisional }
+  })
+  ipcMain.handle('desktop:permission-request', async (_event, kind: 'accessibility' | 'screen') => { const value = await desktopPermissionService(); return { ...await value.service.request(kind), provisional: value.provisional } })
+  ipcMain.handle('pi:install', () => installPiRuntime())
+  ipcMain.handle('project:trust-status', (_event, cwd: string) => projectTrustStatus(cwd))
+  ipcMain.handle('project:add', (_event, input: Parameters<typeof addProject>[0]) => addProject(input))
+  ipcMain.handle('app:check-update', () => checkForUpdate())
+  ipcMain.handle('jev:status', () => jevStatus())
+  ipcMain.handle('sandbox:status', () => sandboxStatus())
+  ipcMain.handle('sandbox:audit', () => readSandboxAudit())
+  ipcMain.handle('jev:save', (_event, patch) => saveJevSettings(patch))
+  ipcMain.handle('app:download-update', () => downloadUpdate((progress) => send('app:update-progress', progress)))
+  ipcMain.handle('auth:list', () => listAuthProviders())
+  ipcMain.handle('auth:save-api-key', (_event, provider: string, key: string) => saveApiKey(provider, key))
+  ipcMain.handle('auth:remove', (_event, provider: string) => removeAuthProvider(provider))
+  ipcMain.handle('auth:oauth-providers', () => listOAuthProviders())
+  ipcMain.handle('auth:oauth-start', (event, provider: string) => startOAuth(provider, event.sender))
+  ipcMain.on('auth:oauth-respond', (_event, id: string, value: string, cancelled?: boolean) => respondOAuth(id, value, cancelled === true))
+  ipcMain.on('auth:oauth-cancel', () => cancelOAuth())
+  ipcMain.handle('app:open-release', (_event, url: string) => openReleasePage(url))
+  ipcMain.handle('project:trust-set', (_event, cwd: string, decision: boolean | null, scope?: 'project' | 'parent') => setProjectTrust(cwd, decision, scope))
+  ipcMain.handle('pi:recheck', () => {
+    const piPath = resolvePiPath(loadSettings().piPath)
+    return { piPath, piVersion: piVersion(piPath) }
+  })
   ipcMain.handle('app:bootstrap', (): Bootstrap => {
     const settings = loadSettings()
-    const piPath = locatePi(settings.piPath)
+    const piPath = resolvePiPath(settings.piPath)
     return {
       platform: process.platform,
       appVersion: app.getVersion(),
       electronVersion: process.versions.electron,
       piPath,
       piVersion: piVersion(piPath),
+      piBundled: piPath.includes('pi-seed'),
+      autoInstallPi: process.env.PI_DESKTOP_SKIP_AUTO_INSTALL !== '1',
       home: homedir(),
       sessionsRoot: sessionsRoot(),
       scratchPath: scratchWorkspace(),
       settings,
       piSettings: loadPiSettings(),
       piSettingsFile: piSettingsFile(),
-      agentDir: agentDir()
+      agentDir: agentDir(),
+      interruptedUi: (() => { try { return uiJournal().interrupted() } catch { return null } })()
     }
+  })
+
+  ipcMain.handle('session:ack-interrupted-ui', (_event, id: string) => {
+    uiJournal().acknowledge(id)
+    publishInterruptedUi()
   })
 
   ipcMain.handle('app:update-pi-settings', (_event, patch: PiSettings): PiSettings => {
@@ -374,34 +779,47 @@ function registerIpc(): void {
         })
 
     if (result.canceled || !result.filePaths[0]) return null
-    const folder = result.filePaths[0]
-    saveSettings({ lastWorkspace: folder, workspaces: [...settings.workspaces, folder] })
-    send('app:settings', loadSettings())
-    return folder
+    return realpathSync(result.filePaths[0])
   })
 
   ipcMain.handle('sessions:list', () => listSessions())
+  ipcMain.handle('sessions:search', (_event, query: string) => searchSessions(query))
+  ipcMain.handle('workspace:list-files', (_event, cwd: string, query: string) => listWorkspaceFiles(cwd, query))
   ipcMain.handle('sessions:delete', (_event, path: string) => deleteSession(path))
   ipcMain.handle('sessions:restore', (_event, trashPath: string, path: string) =>
     restoreSession(trashPath, path)
   )
-  ipcMain.handle('session:close', () => closeSession())
+  ipcMain.handle('session:close', () => enqueue(closeSession))
+  ipcMain.handle('session:security', (_event, sessionPath: string | null) => {
+    const current = proc
+    return current?.alive && current.sessionPath === sessionPath ? current.security : null
+  })
+  ipcMain.handle('session:set-permission', (_event, input: Parameters<typeof setSessionPermission>[0]) =>
+    enqueue(() => setSessionPermission(input))
+  )
 
   ipcMain.handle(
     'session:open',
-    (_event, options: { cwd: string; sessionPath?: string | null }) =>
-      enqueue(() => doOpenSession(options))
+    (_event, { cwd, sessionPath, scratch }: { cwd: string; sessionPath?: string | null; scratch?: boolean }) =>
+      enqueue(() => doOpenSession({ cwd, sessionPath, scratch }))
   )
 
   ipcMain.handle(
     'pi:command',
     async (_event, command: Record<string, unknown>, timeoutMs?: number) => {
       const process = proc
+      if (changingSessionPermission && !String(command.type).startsWith('get_')) {
+        return { type: 'response', command: String(command.type), success: false, error: 'Session permissions are changing.' }
+      }
       if (!process) {
         return { type: 'response', command: String(command.type), success: false, error: 'pi 没有在运行' }
       }
       try {
-        return await process.send(command, timeoutMs ?? commandTimeout(String(command.type)))
+        const result = await process.send<PiState>(command, timeoutMs ?? commandTimeout(String(command.type)))
+        if (result.success && command.type === 'get_state' && typeof result.data?.sessionFile === 'string' && proc === process) {
+          bindSessionPath(process, result.data.sessionFile)
+        }
+        return result
       } catch (error) {
         return {
           type: 'response',
@@ -414,7 +832,7 @@ function registerIpc(): void {
   )
 
   ipcMain.on('pi:ui-response', (_event, response: Record<string, unknown>) => {
-    proc?.write(response)
+    sessionUiRequests.respond(response)
   })
 
   ipcMain.handle('models:read', (): ModelsConfig => readModelsConfig())
@@ -422,8 +840,17 @@ function registerIpc(): void {
   ipcMain.handle('skills:list', (_event, cwd: string) => listSkills(cwd))
   ipcMain.handle('skills:count', (_event, cwd: string) => countSkills(cwd))
   ipcMain.handle('connectors:list', (_event, cwd: string) => listConnectors(cwd))
+  ipcMain.handle('mcp-connectors:list', () => listMcpConnectors())
+  ipcMain.handle('mcp-connectors:save', (_event, input: McpConnectorInput) => saveMcpConnector(input))
+  ipcMain.handle('mcp-connectors:test', (_event, input: McpConnectorInput) => {
+    const settings = loadSettings()
+    return testMcpConnector(input, resolvePiPath(settings.piPath), proxyEnv(settings))
+  })
+  ipcMain.handle('mcp-connectors:remove', (_event, id: string) => removeMcpConnector(id))
   ipcMain.handle('skills:read', (_event, path: string) => readSkillFile(path))
   ipcMain.handle('packages:list', (_event, cwd: string) => listPackages(cwd))
+  ipcMain.handle('packages:inspect', (_event, source: string, cwd: string) => inspectPackage(source, cwd))
+  ipcMain.handle('packages:catalog', (_event, query: string) => searchPackageCatalog(query))
 
   ipcMain.handle(
     'packages:install',
@@ -484,11 +911,11 @@ function registerIpc(): void {
   ipcMain.handle('models:remove-provider', (_event, id: string): ModelsConfig => removeProvider(id))
 
   ipcMain.handle('models:list', (): Promise<{ models: PiModelRow[]; error?: string }> =>
-    listPiModels(locatePi(loadSettings().piPath))
+    listPiModels(resolvePiPath(loadSettings().piPath))
   )
 
   ipcMain.handle('models:refresh-catalog', (): Promise<{ ok: boolean; output: string }> =>
-    refreshModelCatalog(locatePi(loadSettings().piPath))
+    refreshModelCatalog(resolvePiPath(loadSettings().piPath))
   )
 
   ipcMain.handle('shell:open-external', async (_event, url: string) => {
@@ -496,15 +923,18 @@ function registerIpc(): void {
     await shell.openExternal(url)
   })
 
-  ipcMain.handle('browser:open', (_event, url: string) => browserOpen(url))
-  ipcMain.handle('browser:navigate', (_event, url: string) => browserNavigate(url))
-  ipcMain.handle('browser:back', () => browserBack())
-  ipcMain.handle('browser:forward', () => browserForward())
-  ipcMain.handle('browser:reload', () => browserReload())
-  ipcMain.handle('browser:stop', () => browserStop())
-  ipcMain.handle('browser:close', () => browserClose())
-  ipcMain.handle('browser:bounds', (_event, bounds) => browserBounds(bounds))
-  ipcMain.handle('browser:visible', (_event, visible: boolean) => browserSetVisible(visible))
+  ipcMain.handle('browser:preview', (event, doc: string, url: string, candidate?: string) => event.sender === mainWindow?.webContents ? browserPreview(doc, url, candidate) : null)
+  ipcMain.handle('browser:reveal-page', (event, doc: string, openPanel = true) => event.sender === mainWindow?.webContents && revealPage(doc, openPanel))
+  ipcMain.handle('browser:current', () => panelPage().getFallbackState())
+  ipcMain.handle('browser:open', (_event, url: string, separate = false) => panelPage(separate).browserOpen(url))
+  ipcMain.handle('browser:navigate', (_event, url: string, separate = false) => panelPage(separate).browserNavigate(url))
+  ipcMain.handle('browser:back', () => panelPage().browserBack())
+  ipcMain.handle('browser:forward', () => panelPage().browserForward())
+  ipcMain.handle('browser:reload', () => panelPage().browserReload())
+  ipcMain.handle('browser:stop', () => panelPage().browserStop())
+  ipcMain.handle('browser:close', () => panelPage().browserClose())
+  ipcMain.handle('browser:bounds', (_event, bounds) => setPanelBounds(bounds))
+  ipcMain.handle('browser:visible', (_event, visible: boolean) => setPanelVisible(visible))
   ipcMain.handle('chrome:profiles', () => listChromeProfiles())
   ipcMain.handle('chrome:preview', (_event, profileId: string) => previewChromeProfile(profileId))
   ipcMain.handle('chrome:import', (_event, profileId: string, domains: string[]) =>
@@ -512,7 +942,20 @@ function registerIpc(): void {
   )
 
   ipcMain.handle('chrome:bridge-info', () => prepareChromeBridge())
-  ipcMain.handle('chrome:bridge-check', () => checkChromeBridge())
+  ipcMain.handle('chrome:bridge-copy-path', () => clipboard.writeText(prepareChromeBridge()))
+  ipcMain.on('chrome:bridge-drag', (event) => {
+    const folder = prepareChromeBridge()
+    if (!existsSync(join(folder, 'manifest.json'))) return
+    const icon = nativeImage.createFromPath(join(app.getAppPath(), 'build', 'icon.png')).resize({ width: 48, height: 48 })
+    event.sender.startDrag({ file: folder, icon })
+  })
+  ipcMain.handle('browser:router-status', () => browserRouterStatus())
+  ipcMain.handle('browser:start-cdp', () => startCdpBrowser())
+  ipcMain.handle('chrome:bridge-check', () => {
+    let expectedVersion: string | undefined
+    try { expectedVersion = String(JSON.parse(readFileSync(join(app.getAppPath(), 'extensions', 'chrome-bridge', 'manifest.json'), 'utf8')).version ?? '') } catch { /* Unknown version must not be presented as current. */ }
+    return checkChromeBridge({ expectedVersion })
+  })
   ipcMain.handle('chrome:open-extensions', () => {
     if (process.platform === 'darwin') execFileSync('open', ['-a', 'Google Chrome', 'chrome://extensions'])
     else if (process.platform === 'win32') execFileSync('cmd', ['/c', 'start', 'chrome', 'chrome://extensions'])
@@ -600,6 +1043,24 @@ function registerIpc(): void {
       return runGit(dir, args)
     }
   )
+
+  ipcMain.handle('git:commit', (_event, cwd: string, message: string, paths: string[]) => {
+    const dir = resolve(cwd)
+    const text = String(message ?? '').trim()
+    if (!text) return { ok: false, output: '', error: '提交说明不能为空。' }
+    if (text.length > 5000) return { ok: false, output: '', error: '提交说明过长。' }
+    const list = Array.isArray(paths) ? paths.filter((path): path is string => typeof path === 'string').slice(0, 500) : []
+    if (!list.length) return { ok: false, output: '', error: '没有选择要提交的文件。' }
+    for (const path of list) {
+      const full = resolve(dir, path)
+      if (full !== dir && !full.startsWith(`${dir}${sep}`)) return { ok: false, output: '', error: '提交路径越过了项目目录。' }
+      if (path.startsWith('-') || path.includes('\0')) return { ok: false, output: '', error: '提交路径无效。' }
+    }
+    const add = runGitCapture(dir, ['add', '--', ...list])
+    if (!add.ok) return add
+    const commit = runGitCapture(dir, ['commit', '-m', text])
+    return { ...commit, output: [add.output, commit.output].filter(Boolean).join('\n') }
+  })
 
   ipcMain.handle('shell:open-path', async (_event, path: string): Promise<boolean> => {
     if (!path) return false
@@ -768,52 +1229,36 @@ function buildMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-function checkChromeBridge(): Promise<{ connected: boolean; busy: boolean }> {
-  return new Promise((resolve) => {
-    let settled = false
-    const server = createServer((req, res) => {
-      if (req.method === 'GET' && req.url === '/next') {
-        settled = true
-        res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ id: 'bridge-check', type: 'ping' }))
-        cleanup()
-        resolve({ connected: true, busy: false })
-        return
-      }
-      res.writeHead(404)
-      res.end()
-    })
-    const cleanup = (): void => {
-      clearTimeout(timer)
-      server.close()
-      server.closeAllConnections?.()
-    }
-    const timer = setTimeout(() => {
-      if (settled) return
-      settled = true
-      cleanup()
-      resolve({ connected: false, busy: false })
-    }, 2500)
-    server.once('error', () => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve({ connected: false, busy: true })
-    })
-    server.listen(9317, '127.0.0.1')
-  })
-}
-
 function prepareChromeBridge(): string {
   const source = join(app.getAppPath(), 'extensions', 'chrome-bridge')
   const destination = join(app.getPath('userData'), 'chrome-bridge')
   try {
-    if (!existsSync(join(destination, 'manifest.json'))) {
+    const sourceManifest = join(source, 'manifest.json')
+    const targetManifest = join(destination, 'manifest.json')
+    if (!existsSync(targetManifest)) {
       cpSync(source, destination, { recursive: true })
+    } else {
+      const sourceVersion = String(JSON.parse(readFileSync(sourceManifest, 'utf8')).version ?? '')
+      const targetVersion = String(JSON.parse(readFileSync(targetManifest, 'utf8')).version ?? '')
+      const parts = (version: string): number[] | null => /^\d+(\.\d+){0,3}$/.test(version) ? version.split('.').map(Number) : null
+      const sourceParts = parts(sourceVersion)
+      const targetParts = parts(targetVersion)
+      const comparison = sourceParts && targetParts
+        ? [0, 1, 2, 3].map((index) => (sourceParts[index] ?? 0) - (targetParts[index] ?? 0)).find((value) => value !== 0) ?? 0
+        : 0
+      if (comparison > 0) {
+        const backupRoot = join(app.getPath('userData'), 'chrome-bridge-backups')
+        mkdirSync(backupRoot, { recursive: true })
+        const backup = mkdtempSync(join(backupRoot, 'previous-'))
+        cpSync(destination, backup, { recursive: true, filter: (path) => basename(path) !== 'pairing.json' })
+        // Copy the manifest last so an interrupted update is retried on startup.
+        cpSync(source, destination, { recursive: true, filter: (path) => basename(path) !== 'manifest.json' })
+        cpSync(sourceManifest, targetManifest)
+      }
     }
-  } catch {
-    // The source may not be present in a development build; the UI will
-    // still show the configured path and the user can load it manually.
+    prepareChromePairing(chromePairingPath(), destination)
+  } catch (error) {
+    console.error('[chrome-bridge] unable to prepare extension:', error)
   }
   return destination
 }
@@ -849,7 +1294,9 @@ function createWindow(): void {
   const background = process.argv.includes('--background')
   initBrowser(mainWindow)
   prepareChromeBridge()
-  void startBrowserBridge().catch(() => undefined)
+  const bridgeReady = startBrowserBridge().catch((error) => {
+    console.error('[browser-bridge] unable to start:', error)
+  })
   mainWindow.on('ready-to-show', () => {
     if (!background) mainWindow?.show()
   })
@@ -861,6 +1308,7 @@ function createWindow(): void {
   })
 
   mainWindow.on('closed', () => {
+    permissionGuideWindow?.close()
     mainWindow = null
     void closeSession()
   })
@@ -878,12 +1326,18 @@ function createWindow(): void {
     }
   })
 
-  const devUrl = process.env['ELECTRON_RENDERER_URL']
-  if (devUrl) {
-    void mainWindow.loadURL(devUrl)
-  } else {
-    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-  }
+  // A renderer can immediately start a Pi child. Publish its bridge before the
+  // renderer loads so the first browser request cannot race bridge startup.
+  const window = mainWindow
+  void bridgeReady.then(() => {
+    if (window.isDestroyed()) return
+    const devUrl = process.env['ELECTRON_RENDERER_URL']
+    if (devUrl) {
+      void window.loadURL(devUrl)
+    } else {
+      void window.loadFile(join(__dirname, '../renderer/index.html'))
+    }
+  })
 }
 
 app.setName('Pi Desktop')
@@ -902,6 +1356,9 @@ if (!gotLock) {
   })
 
   app.whenReady().then(() => {
+    // Every Pi child, including headless scheduler children, is scoped to this
+    // process. Headless runs have no browser bridge and must fail closed.
+    process.env.PI_DESKTOP_BROWSER_BRIDGE_FILE = browserBridgePath()
     ensureScheduleCli()
     if (process.argv.includes('--scheduler-run-due')) {
       app.dock?.hide()
@@ -928,6 +1385,13 @@ if (!gotLock) {
         openAtLogin: settings.launchAtLogin === true,
         args: ['--background']
       })
+    }
+    if (app.isPackaged && settings.autoCheckUpdates !== false) {
+      setTimeout(() => {
+        void checkForUpdate().then((info) => {
+          if (info.hasUpdate && info.latest) send('app:update-available', info)
+        })
+      }, 4000)
     }
     if (settings.backgroundScheduler === true) {
       void backgroundSchedulerStatus().then((status) => {
@@ -968,5 +1432,6 @@ if (!gotLock) {
     for (const process of new Set(processes.values())) process.stop()
     processes.clear()
     proc = null
+    sessionUiRequests.dispose()
   })
 }

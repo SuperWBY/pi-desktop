@@ -1,0 +1,25 @@
+{
+  "date": "2026-11-07",
+  "scope": "Local macOS fixture only",
+  "launcher": "Launch Services: /Applications/Pi Desktop.app",
+  "agent": "Pi 1.5.0 subprocess of Pi Desktop",
+  "method": "Registered local extension command invokes computer_use_observe and computer_use_act with normal confirmation, then checks fixture-written file and observes again",
+  "observedButton": "e2",
+  "fileResult": "completed",
+  "afterContainsDone": true,
+  "toolVerification": {
+    "status": "confirmed",
+    "changed": true,
+    "windowTitleChanged": false,
+    "elementCountBefore": 6,
+    "elementCountAfter": 6,
+    "changedElements": 1
+  },
+  "limitations": [
+    "Single local AX button, not a website or business task",
+    "No coordinate or OCR action tested",
+    "No timeout, stale-target, or cross-display fault injected in this live run"
+  ],
+  "tccResponsibility": "macOS TCC attributed helper request to dev.pi.desktop at /Applications/Pi Desktop.app",
+  "confirmation": "The installed UI sent confirmed=true via the real Pi RPC session"
+}

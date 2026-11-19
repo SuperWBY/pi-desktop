@@ -1,10 +1,11 @@
 import { useTranslation } from './i18n'
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { AlertTriangle } from 'lucide-react'
 import { AppProvider, useApp } from './store'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
+import { ComputerPreview } from './components/ComputerPreview'
 import { ChatView } from './components/ChatView'
 import { Composer } from './components/Composer'
 import { Welcome } from './components/Welcome'
@@ -16,13 +17,20 @@ import { WorkPanel } from './components/WorkPanel'
 import { ImageLightbox, openImage } from './components/ImageLightbox'
 import { UiRequestDialog } from './components/UiRequestDialog'
 import { Toasts } from './components/Toasts'
+import { ProjectCommandHelp } from './components/ProjectCommandHelp'
+import { ProjectTrustBanner } from './components/ProjectTrustBanner'
+import { AddProjectDialog } from './components/AddProjectDialog'
 import { formatDuration } from './lib/format'
 
 function Shell(): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
-  const showWelcome = !state.workspace
-  const failed = state.status === 'error' && Boolean(state.workspace)
+  const [expandedDocument, setExpandedDocument] = useState<string | null>(null)
+  const hasConversation = Boolean(state.workspace || state.scratchWorkspace)
+  const showWelcome = !hasConversation
+  const failed = state.status === 'error' && hasConversation
+  const newChat = hasConversation && !state.streaming && state.messages.length === 0 &&
+    (state.status === 'ready' || (state.status === 'starting' && state.sessionPath === null))
 
   useEffect(() => {
     const when = (timestamp: number | null): string =>
@@ -82,7 +90,7 @@ function Shell(): ReactNode {
         void actions.newSession()
       } else if (key === 'o' && !event.shiftKey) {
         event.preventDefault()
-        void actions.pickFolder()
+        actions.openAddProject(true)
       } else if (key === ',') {
         event.preventDefault()
         actions.openSettings(true)
@@ -93,7 +101,7 @@ function Shell(): ReactNode {
     }
 
     const onEscape = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape' && state.settingsOpen) {
+      if (event.key === 'Escape' && state.settingsOpen && !state.addProjectOpen) {
         if (document.querySelector('.popover')) return
         event.stopPropagation()
         actions.openSettings(false)
@@ -116,7 +124,7 @@ function Shell(): ReactNode {
       window.removeEventListener('keydown', onKeyDown)
       document.removeEventListener('keydown', onEscape, true)
     }
-  }, [actions, state.settings.theme, state.settingsOpen])
+  }, [actions, state.settings.theme, state.settingsOpen, state.addProjectOpen])
 
   return (
     <div
@@ -128,7 +136,7 @@ function Shell(): ReactNode {
     >
       <Sidebar />
 
-      <main className="main">
+      <main className={clsx('main', newChat && 'new-chat')}>
         <TopBar />
 
         {failed && (
@@ -141,26 +149,32 @@ function Shell(): ReactNode {
             <button className="button ghost small" onClick={() => actions.openSettings(true)}>{t("Settings")}</button>
             <button
               className="button ghost small"
-              onClick={() => void actions.openSession(state.workspace ?? '', null)}
+              onClick={() => void actions.openSession(state.workspace ?? '', null, { scratch: state.scratchWorkspace })}
             >
               Retry
             </button>
           </div>
         )}
 
-        {showWelcome ? <Welcome /> : <ChatView />}
-        {state.workspace && <Composer />}
+        <ProjectTrustBanner />
+        <div className="conversation-region">
+          {state.status === 'ready' && <ComputerPreview expandedDocument={expandedDocument} key={state.sessionPath ?? state.workspace} />}
+          {showWelcome ? <Welcome /> : <ChatView newChat={newChat} />}
+        </div>
+        {hasConversation && <Composer />}
       </main>
 
-      <WorkPanel />
+      <WorkPanel onExpandedDocument={setExpandedDocument} />
 
       {state.skillsOpen && <SkillsPage />}
       {state.schedulesOpen && <SchedulesPage />}
       <SettingsPage />
+      {state.addProjectOpen && <AddProjectDialog />}
       <Diagnostics />
       <ImageLightbox />
       <UiRequestDialog />
       <Toasts />
+      <ProjectCommandHelp />
     </div>
   )
 }

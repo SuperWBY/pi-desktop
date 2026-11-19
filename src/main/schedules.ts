@@ -26,9 +26,14 @@ import type {
 } from '@shared/types'
 import { nextRun, nextRuns, isValidTimezone } from './schedule-cadence'
 import { addSessionNotice } from './session-notices'
-import { locatePi, augmentedPath } from './pi-locate'
+import { augmentedPath } from './pi-locate'
+import { resolvePiPath } from './pi-runtime'
 import { scheduleGuidance } from './schedule-bridge'
-import { loadSettings } from './settings'
+import { loadSettings, settingsFile } from './settings'
+import { prepareComputerUseRuntime } from './computer-use-runtime'
+import { quoteWindowsPiPaths } from './pi-launch'
+import { createSandbox, type SandboxLaunch } from './sandbox'
+import { proxyEnv } from './network-env'
 
 const RUN_TIMEOUT_MS = 30 * 60_000
 const MAX_RUNS_PER_TASK = 100
@@ -126,11 +131,15 @@ class ScheduleStore {
       }
       if (changed) {
         this.saveRuns(task.id, runs)
-        if (task.lastStatus === 'running') task.lastStatus = 'interrupted'
-        if (task.catchUp && task.pendingCatchUpAt == null) {
-          const interrupted = runs.find((run) => run.status === 'interrupted')
-          if (interrupted) task.pendingCatchUpAt = interrupted.scheduledFor ?? interrupted.startedAt
-        }
+        task.lastStatus = 'interrupted'
+        task.enabled = false
+        task.nextRunAt = null
+        task.pendingCatchUpAt = null
+      } else if (task.lastStatus === 'interrupted' && task.pendingCatchUpAt != null) {
+        // Older builds queued interrupted runs for retry. Their result is unknown.
+        task.enabled = false
+        task.nextRunAt = null
+        task.pendingCatchUpAt = null
       }
     }
     this.saveTasks()
@@ -264,7 +273,7 @@ export class ScheduleScheduler {
       model: input.model,
       thinking: input.thinking,
       tools: input.tools,
-      catchUp: input.catchUp ?? true,
+      catchUp: input.catchUp ?? false,
       catchUpWindowMs: 24 * 60 * 60_000,
       notifications: input.notifications ?? true,
       enabled: input.enabled ?? true,
@@ -369,7 +378,9 @@ export class ScheduleScheduler {
     for (const task of this.store.tasks) {
       if (!this.running.has(task.id)) continue
       task.lastStatus = 'interrupted'
-      if (task.catchUp) task.pendingCatchUpAt = Date.now()
+      task.enabled = false
+      task.nextRunAt = null
+      task.pendingCatchUpAt = null
     }
     this.store.saveTasks()
     for (const child of this.children.values()) {
@@ -627,7 +638,7 @@ export class ScheduleScheduler {
     })
 
     const promise = new Promise<ScheduledRun>((resolve) => {
-      const pi = locatePi(loadSettings().piPath)
+      const pi = resolvePiPath(loadSettings().piPath)
       const sessionDir = join(sessionsDir(), task.id)
       mkdirSync(sessionDir, { recursive: true })
       const priorSession =
@@ -651,19 +662,19 @@ export class ScheduleScheduler {
       if (task.tools?.length) args.push('--tools', task.tools.join(','))
       args.push(task.prompt)
 
-      const cwd = existsSync(task.projectPath) && statSync(task.projectPath).isDirectory()
-        ? task.projectPath
-        : homedir()
+      const cwd = task.projectPath
       const log = createWriteStream(logPath, { flags: 'a' })
       let tail = ''
       let finished = false
       let timedOut = false
       let timeout: NodeJS.Timeout | null = null
+      let sandbox: SandboxLaunch | null = null
 
       const finish = (status: ScheduledRunStatus, code: number | null, error?: string): void => {
         if (finished) return
         finished = true
         if (timeout) clearTimeout(timeout)
+        if (sandbox) { try { rmSync(sandbox.configPath, { force: true }) } catch { /* cleanup is best effort */ } }
         if (this.shuttingDown && status === 'failed') {
           status = 'interrupted'
           error = 'Pi Desktop 已退出'
@@ -736,12 +747,30 @@ export class ScheduleScheduler {
 
       let child: ChildProcess
       try {
-        child = spawn(pi, args, {
+        if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
+          task.enabled = false
+          finish('failed', null, '项目文件夹不可用，任务已暂停。请恢复该文件夹或修改任务后再运行。')
+          return
+        }
+        const runtime = app.isPackaged
+          ? prepareComputerUseRuntime(join(app.getAppPath(), 'extensions', 'computer-use'), app.getPath('userData'))
+          : join(app.getAppPath(), 'extensions', 'computer-use')
+        args.unshift('--extension', join(runtime, 'src', 'desktop-access-extension.ts'), '--skill', join(runtime, 'desktop-guidance'))
+        const settings = loadSettings()
+        sandbox = settings.sandboxEnabled ? createSandbox(cwd, settings, [sessionDir]) : null
+        if (settings.sandboxEnabled && !sandbox) {
+          task.enabled = false
+          finish('failed', null, '沙箱已启用，但当前环境无法启动沙箱。任务已暂停。')
+          return
+        }
+        const executable = sandbox ? sandbox.nodePath : process.platform === 'win32' ? `"${pi}"` : pi
+        const launchArgs = sandbox ? [sandbox.cliPath, '--settings', sandbox.configPath, '/usr/bin/env', '-u', 'ELECTRON_RUN_AS_NODE', pi, ...args] : process.platform === 'win32' ? quoteWindowsPiPaths(args) : args
+        child = spawn(executable, launchArgs, {
           cwd,
-          env: { ...process.env, PATH: augmentedPath() },
+          env: { ...process.env, PATH: augmentedPath(), PI_DESKTOP_SETTINGS_FILE: settingsFile(), PI_DESKTOP_TOOL_APPROVAL: settings.toolApprovalMode ?? 'dangerous', ...proxyEnv(settings), ...(sandbox ? { PI_DESKTOP_SANDBOX: '1', SRT_DEBUG: '1' } : {}) },
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: process.platform !== 'win32',
-          shell: process.platform === 'win32'
+          shell: !sandbox && process.platform === 'win32'
         })
       } catch (error) {
         finish('failed', null, error instanceof Error ? error.message : String(error))

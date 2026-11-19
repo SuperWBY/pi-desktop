@@ -88,8 +88,9 @@ export function useTurnFolds(
   const levelOf = useCallback(
     (turn: Turn): FoldLevel => {
       const entry = map[turn.key]
-      if (turn.streaming) return entry ? entry.level : 0
       if (entry) return entry.level
+      if (Object.keys(turn.stats.tools).some(name => name.startsWith('computer_use_'))) return 1
+      if (turn.streaming) return 0
       return settings.autoFold ? settings.defaultLevel : 0
     },
     [map, settings.autoFold, settings.defaultLevel]

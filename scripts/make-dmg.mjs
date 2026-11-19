@@ -19,14 +19,8 @@ if (!existsSync(appPath)) {
   process.exit(1)
 }
 
-// Ad-hoc signing keeps the arm64 binary runnable on other machines.
-// A Developer ID + notarization is still required to skip the Gatekeeper warning.
-try {
-  execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], { stdio: 'inherit' })
-  console.log('Ad-hoc signed', appPath)
-} catch (error) {
-  console.warn('codesign failed (continuing):', error instanceof Error ? error.message : error)
-}
+// Keep the signature produced by pack; re-signing here changes the app identity.
+execFileSync('codesign', ['--verify', '--deep', '--strict', appPath], { stdio: 'inherit' })
 
 const staging = resolve(`release/dmg-${arch}`)
 rmSync(staging, { recursive: true, force: true })

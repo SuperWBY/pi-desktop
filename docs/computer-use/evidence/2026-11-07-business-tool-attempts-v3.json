@@ -1,0 +1,193 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-07T06:27:54.297Z",
+  "task": "local-backoffice-lookup-download-upload-submit-v3",
+  "environment": {
+    "node": "v26.8.2",
+    "platform": "darwin",
+    "arch": "arm64",
+    "chromeVersion": "Google Chrome for Testing 151.0.7922.34",
+    "playwright": "1.64.1",
+    "revision": "0e00755701da5c8749c7b5bc5235b45cde2a8533",
+    "sourceHash": "8f51320e56333914f113ec8ef224331471c5f5fb8928858eb366c1dd63873425"
+  },
+  "method": {
+    "automation": "scripted",
+    "model": "none",
+    "humanApprovals": "simulated; Pi approvals always accepted",
+    "fileSelection": "Playwright supplies a test file through each browser file chooser; Pi verifies selection",
+    "downloadCapture": "Playwright observes the download event and reads the temporary downloaded file for both paths",
+    "browser": "isolated headless persistent profile per run",
+    "timer": "after browser launch through final page status; excludes server readback and startup",
+    "evaluator": "fresh local server state, expected record, upload SHA-256, exact download SHA-256, exactly one upload and submission, and exactly one request for each",
+    "limits": "not autonomous agents, no real site, no native chooser UI or human confirmation latency, no speed conclusion from small sample; Pi script includes tool setup and different observation steps"
+  },
+  "results": [
+    {
+      "kind": "pi_cdp_scripted_tools",
+      "iteration": 1,
+      "order": 1,
+      "success": true,
+      "elapsedMs": 222,
+      "steps": [
+        "selected_record",
+        "download_verified",
+        "upload_status",
+        "submit_status"
+      ],
+      "toolCalls": 24,
+      "approvalCount": 7,
+      "uploads": 1,
+      "submissions": 1,
+      "duplicateSideEffects": false,
+      "uploadAttempts": 1,
+      "submitAttempts": 1,
+      "duplicateAttempts": false,
+      "downloadVerified": true,
+      "error": null
+    },
+    {
+      "kind": "playwright_script",
+      "iteration": 1,
+      "order": 2,
+      "success": true,
+      "elapsedMs": 287,
+      "steps": [
+        "selected_record",
+        "download_verified",
+        "upload_status",
+        "submit_status"
+      ],
+      "toolCalls": 0,
+      "approvalCount": 0,
+      "uploads": 1,
+      "submissions": 1,
+      "duplicateSideEffects": false,
+      "uploadAttempts": 1,
+      "submitAttempts": 1,
+      "duplicateAttempts": false,
+      "downloadVerified": true,
+      "error": null
+    },
+    {
+      "kind": "playwright_script",
+      "iteration": 2,
+      "order": 1,
+      "success": true,
+      "elapsedMs": 291,
+      "steps": [
+        "selected_record",
+        "download_verified",
+        "upload_status",
+        "submit_status"
+      ],
+      "toolCalls": 0,
+      "approvalCount": 0,
+      "uploads": 1,
+      "submissions": 1,
+      "duplicateSideEffects": false,
+      "uploadAttempts": 1,
+      "submitAttempts": 1,
+      "duplicateAttempts": false,
+      "downloadVerified": true,
+      "error": null
+    },
+    {
+      "kind": "pi_cdp_scripted_tools",
+      "iteration": 2,
+      "order": 2,
+      "success": true,
+      "elapsedMs": 129,
+      "steps": [
+        "selected_record",
+        "download_verified",
+        "upload_status",
+        "submit_status"
+      ],
+      "toolCalls": 24,
+      "approvalCount": 7,
+      "uploads": 1,
+      "submissions": 1,
+      "duplicateSideEffects": false,
+      "uploadAttempts": 1,
+      "submitAttempts": 1,
+      "duplicateAttempts": false,
+      "downloadVerified": true,
+      "error": null
+    },
+    {
+      "kind": "pi_cdp_scripted_tools",
+      "iteration": 3,
+      "order": 1,
+      "success": true,
+      "elapsedMs": 132,
+      "steps": [
+        "selected_record",
+        "download_verified",
+        "upload_status",
+        "submit_status"
+      ],
+      "toolCalls": 24,
+      "approvalCount": 7,
+      "uploads": 1,
+      "submissions": 1,
+      "duplicateSideEffects": false,
+      "uploadAttempts": 1,
+      "submitAttempts": 1,
+      "duplicateAttempts": false,
+      "downloadVerified": true,
+      "error": null
+    },
+    {
+      "kind": "playwright_script",
+      "iteration": 3,
+      "order": 2,
+      "success": true,
+      "elapsedMs": 291,
+      "steps": [
+        "selected_record",
+        "download_verified",
+        "upload_status",
+        "submit_status"
+      ],
+      "toolCalls": 0,
+      "approvalCount": 0,
+      "uploads": 1,
+      "submissions": 1,
+      "duplicateSideEffects": false,
+      "uploadAttempts": 1,
+      "submitAttempts": 1,
+      "duplicateAttempts": false,
+      "downloadVerified": true,
+      "error": null
+    }
+  ],
+  "summary": {
+    "pi_cdp_scripted_tools": {
+      "runs": 3,
+      "successes": 3,
+      "failures": 0,
+      "duplicateSideEffects": 0,
+      "duplicateAttempts": 0,
+      "unknownAttempts": 0,
+      "successfulElapsedMs": [
+        129,
+        132,
+        222
+      ]
+    },
+    "playwright_script": {
+      "runs": 3,
+      "successes": 3,
+      "failures": 0,
+      "duplicateSideEffects": 0,
+      "duplicateAttempts": 0,
+      "unknownAttempts": 0,
+      "successfulElapsedMs": [
+        287,
+        291,
+        291
+      ]
+    }
+  }
+}

@@ -24,7 +24,7 @@ async function main() {
     await page.addInitScript(() => {
       let settings = {
         theme: 'dark', language: 'zh-CN', workspaces: ['/work/alpha', '/work/beta'],
-        lastWorkspace: '/work/alpha', workPanelOpen: true, workPanelWidth: 360,
+        lastWorkspace: '/work/alpha', lastSessionPath: '/session/1', workPanelOpen: true, workPanelWidth: 360,
         workPanelTab: 'changes', followStream: true, turnAutoFold: true
       }
       settings = { ...settings, ...JSON.parse(sessionStorage.getItem('mock-settings') || '{}') }
@@ -34,6 +34,8 @@ async function main() {
         ...Array.from({ length: 30 }, (_, i) => ({ id: `bulk-${i}`, name: `Mock Bulk ${i}`, provider: 'mock' }))
       ]
       let currentModel = models[0]
+      let currentSessionPath = null
+      let sessionPermission = { permission: 'review', mode: 'dangerous', sandboxed: false }
       const messages = [
         { role: 'user', content: '请检查项目结构。', timestamp: Date.now() },
         { role: 'assistant', content: [{ type: 'text', text: '正在检查项目。' }], timestamp: Date.now() },
@@ -80,6 +82,18 @@ async function main() {
       window.sentCommands = []
       const noop = () => () => {}
       window.pi = {
+        onPiInstallProgress: noop, onBrowserReveal: noop, onUpdateAvailable: noop,
+        onUpdateProgress: noop, onSandboxDomainDenied: noop, onOAuthEvent: noop,
+        sandboxStatus: async () => ({ available: false, reason: '测试环境' }),
+        sessionSecurity: async () => sessionPermission,
+        setSessionPermission: async ({ permission }) => {
+          sessionPermission = { ...sessionPermission, permission, mode: permission === 'ask' ? 'all' : 'dangerous' }
+          return sessionPermission
+        },
+        projectTrustStatus: async () => ({ required: true, decision: null, resources: ['/work/alpha/.pi/extensions'] }),
+        countSkills: async () => 0,
+        listSchedules: async () => [],
+        getSessionNotices: async () => [],
         bootstrap: async () => ({ settings, home: '/work', piVersion: '1.4.0', electronVersion: '45', appVersion: '0.1.6', piSettings }),
         updatePiSettings: async (patch) => { Object.assign(piSettings, patch); window.savedPiSettings = { ...piSettings }; return piSettings },
         listSessions: async () => [
@@ -87,7 +101,10 @@ async function main() {
           { path: '/session/2', id: '2', cwd: '/work/beta', name: 'Beta 的会话', preview: '', updatedAt: Date.now(), createdAt: Date.now(), messageCount: 2, size: 10 },
           { path: '/session/3', id: '3', cwd: '/work/gamma', name: '旧项目会话', preview: '', updatedAt: Date.now(), createdAt: Date.now(), messageCount: 2, size: 10 }
         ],
-        openSession: async ({ cwd, sessionPath }) => ({ ok: true, cwd, sessionPath: sessionPath ?? null }),
+        openSession: async ({ cwd, sessionPath }) => {
+          currentSessionPath = sessionPath ?? '/session/new'
+          return { ok: true, cwd, sessionPath: currentSessionPath }
+        },
         closeSession: async () => {},
         pickFolder: async () => { window.folderPickerOpened = true; return null },
         readModelsConfig: async () => modelConfig,
@@ -98,8 +115,8 @@ async function main() {
           if (['steer', 'follow_up'].includes(command.type) && window.failNextQueue) { window.failNextQueue = false; return { success: false, error: 'queue rejected' } }
           if (command.type === 'set_model') currentModel = models.find((model) => model.id === command.modelId)
           return { success: true, data: ({
-            get_state: { thinkingLevel: 'high', model: currentModel, isStreaming: false },
-            get_messages: { messages }, get_session_stats: {}, get_available_models: { models },
+            get_state: { thinkingLevel: 'high', model: currentModel, isStreaming: window.mockStreaming === true },
+            get_messages: { messages: currentSessionPath === '/session/new' ? [] : messages }, get_session_stats: {}, get_available_models: { models },
             get_available_thinking_levels: { levels: [] }, get_commands: { commands: [] }
           })[command.type] || {} }
         },
@@ -120,13 +137,30 @@ async function main() {
       }
     })
     const errors = []
-    page.on('pageerror', (error) => errors.push(error.message))
+    page.on('pageerror', (error) => { errors.push(error.message); console.error(`页面异常: ${error.message}`) })
     await page.goto(`http://127.0.0.1:${server.address().port}/`)
-    await page.waitForSelector('.project-shortcut')
+    await page.waitForSelector('.project-row').catch(async (error) => {
+      throw new Error(`项目列表未加载: ${errors.join('; ') || '无页面异常'}; 内容: ${(await page.locator('body').innerText()).slice(0, 500)}`, { cause: error })
+    })
     await page.waitForSelector('.turn')
+    await page.getByRole('button', { name: '当前会话权限' }).click()
+    if (!await page.getByText('沙箱未开启', { exact: true }).isVisible()) throw Error('权限菜单没有说明当前沙箱状态')
+    await page.getByRole('menuitem', { name: /询问审批/ }).click()
+    await page.getByRole('button', { name: '当前会话权限' }).getByText('询问审批', { exact: true }).waitFor()
+    if ((await page.evaluate(() => JSON.parse(sessionStorage.getItem('mock-settings') || '{}'))).toolApprovalMode === 'all') throw Error('切换当前会话误改了全局默认权限')
+    await page.getByRole('button', { name: '当前会话权限' }).click()
+    await page.getByRole('menuitem', { name: /自动审核/ }).click()
+    await page.getByRole('button', { name: '查看并信任' }).click()
+    if (!await page.getByText('/work/alpha/.pi/extensions', { exact: true }).isVisible()) throw Error('信任提示没有显示检测到的资源')
+    await page.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByRole('button', { name: '收起提示' }).click()
+    if (!await page.getByRole('button', { name: '项目资源待确认' }).isVisible()) throw Error('收起后缺少信任入口')
     if (await page.locator('.workspace-button, .brand-action').count()) throw Error('侧栏仍有重复的项目或新建会话入口')
-    await page.getByRole('button', { name: '打开文件夹…' }).click()
+    await page.locator('.project-add').click()
+    await page.getByRole('heading', { name: '添加项目', exact: true }).waitFor()
+    await page.getByRole('button', { name: '选择文件夹', exact: true }).click()
     if (!await page.evaluate(() => window.folderPickerOpened)) throw Error('项目列表无法打开文件夹')
+    await page.getByRole('button', { name: '取消', exact: true }).click()
     if (await page.locator('.work-tab-button').count() !== 1) throw Error('新工作区不应预置四个标签')
     if (await page.locator('.older-turns').count()) throw Error('默认隐藏了较早的对话')
     if (await page.locator('.work-file-head', { hasText: 'failed.txt' }).count()) throw Error('失败的写入被当作文件变更')
@@ -149,42 +183,41 @@ async function main() {
     await page.waitForTimeout(100)
     const errorCount = await page.locator('.turn').filter({ hasText: '测试工具错误' }).locator('.turn-summary-error').innerText()
     if (errorCount.trim() !== '1') throw Error(`同一工具错误被重复计数: ${errorCount}`)
-    if (await page.locator('.project-shortcut').count() !== 3) throw Error('旧会话的项目没有出现在项目列表')
+    if (await page.locator('.project-row').count() !== 2 || !await page.getByText('旧项目会话', { exact: true }).count()) throw Error('项目列表或最近对话未显示预期内容')
     await page.locator('.search-box input').fill('Beta 的会话')
-    if (await page.locator('.project-shortcut').count() !== 1) throw Error('搜索未隐藏无匹配的项目')
+    if (await page.locator('.project-row').count() !== 1) throw Error('搜索未隐藏无匹配的项目')
     await page.locator('.search-box input').fill('绝无匹配的会话名称')
     if (await page.getByText('没有匹配的会话。', { exact: true }).count() !== 1) throw Error('搜索无结果提示不正确')
     await page.locator('.search-box input').fill('')
     const betaExpand = page.getByRole('button', { name: '展开 beta 的会话' })
-    if (await betaExpand.count() !== 1) throw Error('无法展开其他项目的会话')
-    await betaExpand.click()
+    if (await betaExpand.count()) await betaExpand.click()
     if (!await page.getByText('Beta 的会话', { exact: true }).isVisible()) throw Error('项目下未显示会话')
     await page.getByText('项目结构', { exact: true }).click()
     await page.waitForTimeout(100)
     await page.locator('.chat-scroll').evaluate((el) => { el.scrollTop = 0; el.dispatchEvent(new Event('scroll')) })
     await page.getByText('Beta 的会话', { exact: true }).click()
-    await page.waitForFunction(() => document.querySelector('.project-shortcut.active')?.textContent === 'beta')
+    await page.waitForFunction(() => document.querySelector('.project-row.active .project-row-main span')?.textContent === 'beta')
     await page.getByText('项目结构', { exact: true }).click()
-    await page.waitForFunction(() => document.querySelector('.project-shortcut.active')?.textContent === 'alpha')
+    await page.waitForFunction(() => document.querySelector('.project-row.active .project-row-main span')?.textContent === 'alpha')
     await page.waitForTimeout(150)
     if (await page.locator('.chat-scroll').evaluate((el) => el.scrollTop) > 20) throw Error('切回会话后阅读位置丢失')
     await page.locator('.composer-input').fill('alpha 的草稿')
     await page.locator('input[type="file"]').setInputFiles({ name: 'draft.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY1sAAAAASUVORK5CYII=', 'base64') })
     await page.locator('.attachment').waitFor()
-    await page.locator('.project-shortcut').filter({ hasText: 'beta' }).click()
-    await page.waitForFunction(() => document.querySelector('.project-shortcut.active')?.textContent === 'beta')
+    await page.getByText('Beta 的会话', { exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('.project-row.active .project-row-main span')?.textContent === 'beta')
     if (await page.locator('.composer-input').inputValue()) throw Error('切换项目时带入了其他会话的草稿')
     if (await page.locator('.attachment').count()) throw Error('切换项目时带入了其他会话的附件')
     await page.locator('.composer-input').fill('beta 的草稿')
-    await page.locator('.new-session').click()
+    await page.getByRole('button', { name: '在 beta 中新建对话' }).click()
     await page.waitForTimeout(150)
     if (await page.locator('.composer-input').inputValue() !== 'beta 的草稿' || !await page.getByText('当前有未发送的草稿', { exact: true }).count()) throw Error('新建会话时未保护未发送草稿')
     await page.locator('.composer-input').fill('')
-    await page.locator('.new-session').click()
+    await page.getByRole('button', { name: '在 beta 中新建对话' }).click()
     await page.waitForTimeout(150)
-    if (await page.locator('.composer-input').inputValue()) throw Error('同一项目的新会话继承了之前的草稿')
+    if (await page.locator('.composer-input').inputValue({ timeout: 5000 }).catch(async (error) => { throw new Error(`新会话输入框未出现: ${(await page.locator('body').innerText()).slice(-700)}`, { cause: error }) })) throw Error('同一项目的新会话继承了之前的草稿')
     await page.getByText('项目结构', { exact: true }).click()
-    await page.waitForFunction(() => document.querySelector('.project-shortcut.active')?.textContent === 'alpha')
+    await page.waitForFunction(() => document.querySelector('.project-row.active .project-row-main span')?.textContent === 'alpha')
     if (await page.locator('.composer-input').inputValue() !== 'alpha 的草稿') throw Error('切回会话未恢复草稿')
     if (await page.locator('.attachment').count() !== 1) throw Error('切回会话未恢复附件')
     await page.waitForTimeout(100)
@@ -220,12 +253,10 @@ async function main() {
     await page.locator('.composer-input').press('Enter')
     await page.waitForFunction(() => window.sentCommands.some((command) => command.type === 'follow_up' && command.message === '请任务结束后再检查'))
     await page.waitForFunction(() => document.querySelector('.composer-input').value === '')
-    await page.locator('.queue-strip summary').click()
     await page.locator('.queue-item').getByText('请任务结束后再检查', { exact: true }).waitFor()
     await page.locator('.composer-input').fill('现在调整方向')
-    await page.getByRole('button', { name: '选择发送方式' }).click()
-    await page.getByRole('menuitemradio', { name: /插话/ }).click()
-    await page.getByRole('button', { name: '插话', exact: true }).click()
+    await page.locator('.composer-input').press('Enter')
+    await page.locator('.queue-item').filter({ hasText: '现在调整方向' }).getByRole('button', { name: '引导', exact: true }).click()
     await page.waitForFunction(() => window.sentCommands.some((command) => command.type === 'steer' && command.message === '现在调整方向'))
     await page.waitForFunction(() => document.querySelector('.composer-input').value === '')
     await page.evaluate(() => window.emitRecord({ type: 'message_start', message: { role: 'user', content: '现在调整方向', timestamp: Date.now() } }))
@@ -242,18 +273,18 @@ async function main() {
     if (await page.locator('.queue-item').filter({ hasText: '再排队一条' }).count()) throw Error('发送失败的消息仍显示排队')
     if (await page.locator('.composer-input').inputValue() !== '再排队一条') throw Error('发送失败后草稿丢失')
     await page.evaluate(() => window.emitRecord({ type: 'queue_update', steering: ['立即调整'], followUp: ['稍后检查'] }))
-    if (!await page.locator('.queue-strip').evaluate((el) => el.open)) await page.locator('.queue-strip summary').click()
-    await page.locator('.queue-item').filter({ hasText: '待插话 1' }).getByText('立即调整', { exact: true }).waitFor()
-    await page.locator('.queue-item').filter({ hasText: '任务后发送 1' }).getByText('稍后检查', { exact: true }).waitFor()
+    await page.locator('.queue-item.is-guiding').getByText('立即调整', { exact: true }).waitFor()
+    await page.locator('.queue-item:not(.is-guiding)').getByText('稍后检查', { exact: true }).waitFor()
     await page.locator('.composer-input').fill('')
-    await page.locator('.project-shortcut').filter({ hasText: 'beta' }).click()
-    await page.waitForTimeout(100)
-    if (await page.locator('.project-shortcut.active').innerText() !== 'alpha') throw Error('运行中切换中断任务')
-    if (!await page.getByText('任务正在运行', { exact: true }).count()) throw Error('运行中切换没有提示')
+    // Background session switching is handled by the Electron main process;
+    // this single-process renderer stub cannot verify that the old task survives.
     await page.evaluate(() => window.emitRecord({ type: 'agent_settled' }))
     await page.waitForTimeout(100)
-    await page.locator('.project-shortcut').filter({ hasText: 'beta' }).click()
-    await page.waitForFunction(() => document.querySelector('.project-shortcut.active')?.textContent === 'beta')
+    await page.evaluate(() => { window.mockStreaming = true })
+    await page.getByRole('button', { name: '在 beta 中新建对话' }).click()
+    await page.waitForFunction(() => document.querySelector('.project-row.active .project-row-main span')?.textContent === 'beta')
+    if (!await page.getByRole('button', { name: '停止 (Esc)' }).count()) throw Error('返回运行中会话后未恢复运行状态')
+    await page.evaluate(() => { window.mockStreaming = false; window.emitRecord({ type: 'agent_settled' }) })
     await page.locator('.chip').first().click()
     await page.waitForSelector('.popover .menu-list')
     await page.mouse.move(0, 0)
@@ -265,8 +296,8 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('.chip-label')?.textContent === 'Mock Deep')
     const panel = page.getByRole('button', { name: '工作面板', exact: true })
     for (const label of ['文件', '终端', '产物']) {
-      await page.getByRole('button', { name: '添加工作区标签' }).click()
-      await page.getByRole('menuitem', { name: label, exact: true }).click()
+      await page.getByRole('button', { name: '新标签页', exact: true }).click()
+      await page.locator('.work-home').getByRole('button', { name: label === '产物' ? '全部产物' : label, exact: true }).click()
     }
     if (await panel.count() !== 1 || await page.locator('.work-tab-button').count() !== 4) throw Error('工作面板入口或标签缺失')
     await page.getByRole('tab', { name: '变更', exact: true }).click()
@@ -286,11 +317,11 @@ async function main() {
     if (!await page.getByRole('tab', { name: 'nested.txt', exact: true }).count()) throw Error('不能同时打开多个文件标签')
     await page.getByRole('button', { name: '关闭nested.txt标签' }).click()
     if (await page.getByRole('tab', { name: 'nested.txt', exact: true }).count()) throw Error('文件标签无法关闭')
-    await page.locator('.project-shortcut').filter({ hasText: 'alpha' }).click()
-    await page.waitForFunction(() => document.querySelector('.project-shortcut.active')?.textContent === 'alpha')
+    await page.getByRole('button', { name: '在 alpha 中新建对话' }).click()
+    await page.waitForFunction(() => document.querySelector('.project-row.active .project-row-main span')?.textContent === 'alpha')
     if (await page.getByRole('tab', { name: 'example.txt', exact: true }).count()) throw Error('切换项目后显示了旧项目的文件标签')
-    await page.locator('.project-shortcut').filter({ hasText: 'beta' }).click()
-    await page.waitForFunction(() => document.querySelector('.project-shortcut.active')?.textContent === 'beta')
+    await page.getByRole('button', { name: '在 beta 中新建对话' }).click()
+    await page.waitForFunction(() => document.querySelector('.project-row.active .project-row-main span')?.textContent === 'beta')
     await page.getByRole('tab', { name: '文件', exact: true }).click()
     await page.getByText('example.txt', { exact: true }).click()
     await page.getByRole('tab', { name: 'example.txt', exact: true }).click()
@@ -324,16 +355,16 @@ async function main() {
     if (await closeFileTab.count() !== 1) throw Error('缺少关闭工作区标签入口')
     await closeFileTab.click()
     if (await page.getByRole('tab', { name: '文件', exact: true }).count()) throw Error('标签未关闭')
-    await page.getByRole('button', { name: '添加工作区标签' }).click()
-    await page.getByRole('menuitem', { name: '文件', exact: true }).click()
+    await page.getByRole('button', { name: '新标签页', exact: true }).click()
+    await page.locator('.work-home').getByRole('button', { name: '文件', exact: true }).click()
     await page.getByRole('tab', { name: 'example.txt', exact: true }).click()
     if (!await page.locator('.file-preview:visible').getByText('示例文件', { exact: true }).isVisible()) throw Error('重新添加标签后预览丢失')
     await page.getByRole('button', { name: '关闭文件标签' }).click()
     await page.reload()
     await page.waitForSelector('.work-panel')
     if (await page.getByRole('tab', { name: '文件', exact: true }).count()) throw Error('重启后已关闭的标签重新出现')
-    await page.getByRole('button', { name: '添加工作区标签' }).click()
-    await page.getByRole('menuitem', { name: '文件', exact: true }).click()
+    await page.getByRole('button', { name: '新标签页', exact: true }).click()
+    await page.locator('.work-home').getByRole('button', { name: '文件', exact: true }).click()
     await page.getByText('example.txt', { exact: true }).click()
     await panel.click()
     await panel.click()
@@ -346,6 +377,18 @@ async function main() {
     await page.locator('.sidebar-footer .settings-entry').click()
     await page.waitForSelector('.settings-page')
     if (!await page.getByText('常规', { exact: true }).count()) throw Error('设置页未显示')
+    if (!await page.getByText('Pi 可执行文件', { exact: true }).isVisible()) throw Error('运行时设置应默认展开')
+    await page.locator('.settings-search input').first().fill('可执行文件')
+    if (!await page.getByText('Pi 可执行文件', { exact: true }).isVisible()) throw Error('搜索应显示收起的高级设置')
+    await page.locator('.settings-search input').first().fill('')
+    await page.locator('.settings-nav-item').filter({ hasText: '网页浏览' }).click()
+    if (!await page.getByText('独立浏览器', { exact: true }).isVisible()) throw Error('独立浏览器应默认展开')
+    await page.locator('.settings-search input').first().fill('cdp')
+    if (!await page.getByText('独立浏览器', { exact: true }).isVisible()) throw Error('搜索 CDP 应找到独立浏览器')
+    await page.locator('.settings-search input').first().fill('')
+    await page.locator('.settings-nav-item').filter({ hasText: '网络与沙箱' }).click()
+    if (!await page.getByRole('heading', { name: '运行限制', exact: true }).isVisible()) throw Error('运行限制说明缺失')
+    if (!await page.getByRole('heading', { name: '网络代理', exact: true }).isVisible()) throw Error('网络代理应单独展示')
     await page.locator('.settings-nav-item').filter({ hasText: '模型' }).click()
     await page.getByRole('button', { name: '添加服务商 / 模型' }).click()
     if (!await page.getByText('选择模型服务商', { exact: true }).isVisible()) throw Error('添加模型时没有先选择服务商')
@@ -400,6 +443,8 @@ async function main() {
     await page.locator('.composer-input').fill('Test draft')
     if (await page.locator('.composer-input').inputValue() !== 'Test draft') throw Error('窄窗口输入框不可用')
     await page.setViewportSize({ width: 1440, height: 900 })
+    await page.getByText('项目结构', { exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('.project-row.active .project-row-main span')?.textContent === 'alpha')
     const longChat = page.locator('.chat-scroll')
     await longChat.evaluate((el) => { el.scrollTop = el.scrollHeight })
     await longChat.hover()
@@ -461,7 +506,7 @@ async function main() {
     if (await group.locator('> .tool-head').getAttribute('aria-expanded') !== 'true') throw Error('新增同类工具时丢失展开状态')
     if (await group.locator('.tool-card .tool-head').first().getAttribute('aria-expanded') !== 'true') throw Error('新增同类工具时已展开的详情丢失')
     if (errors.length) throw Error(`页面异常: ${errors.join('; ')}`)
-    console.log('无窗口检查通过：项目切换、运行中保护、模型菜单、工作面板、设置、主题和窄窗口')
+    console.log('无窗口检查通过：项目切换、草稿保护、队列、模型菜单、工作面板、设置、主题和窄窗口；后台任务跨会话存活需另测')
   } finally {
     await browser.close()
     server.close()

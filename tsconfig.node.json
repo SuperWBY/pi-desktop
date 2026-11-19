@@ -11,6 +11,7 @@
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "types": ["node", "electron"],
     "paths": {
       "@shared/*": ["./src/shared/*"]
@@ -20,6 +21,8 @@
     "electron.vite.config.ts",
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
-    "src/shared/**/*.ts"
+    "src/shared/**/*.ts",
+    "extensions/computer-use/src/browser-router.ts",
+    "extensions/computer-use/src/browser-action-journal.ts"
   ]
 }

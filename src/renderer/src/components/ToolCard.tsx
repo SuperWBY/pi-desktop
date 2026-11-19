@@ -1,7 +1,6 @@
 import { useTranslation } from '../i18n'
 import { memo, useState, type ReactNode } from 'react'
 import {
-  ChevronDown,
   ChevronRight,
   ExternalLink,
   FilePlus2,
@@ -14,7 +13,7 @@ import {
 import clsx from 'clsx'
 import type { ContentBlock, ToolCallBlock, ToolResultMessage, ToolRun } from '@shared/types'
 import { baseName, formatDuration } from '../lib/format'
-import { contentText, durationOf, editPairs, toolImages, toolMeta, toolPhrases } from '../lib/tools'
+import { browserActionResultUnknown, computerUseOutcome, contentText, durationOf, editPairs, toolImages, toolMeta, toolPhrases } from '../lib/tools'
 import { useElapsed } from '../lib/use-elapsed'
 import { Spinner } from './ui'
 import { CopyButton } from './Markdown'
@@ -123,7 +122,7 @@ export const ToolCard = memo(function ToolCard({
   const meta = toolMeta(call.name, args)
   const phrases = toolPhrases(call.name)
   const status = run?.status === 'error' || result?.isError ? 'error' : run?.status ?? (result ? 'done' : 'running')
-  const resultText = run?.resultText ?? contentText(result)
+  const resultText = run?.resultText || contentText(result)
   const images = toolImages(run?.resultContent ?? (result?.content as ContentBlock[] | undefined))
   const running = status === 'running'
   const elapsed = useElapsed(run?.startedAt, running)
@@ -135,7 +134,10 @@ export const ToolCard = memo(function ToolCard({
   const Icon = ICONS[meta.kind]
   const path = typeof args.path === 'string' ? args.path : ''
   const pairs = meta.kind === 'edit' ? editPairs(args) : []
-  const verb = status === 'error' ? phrases.failed : running ? phrases.running : phrases.done
+  const outcome = !running && status !== 'error' ? computerUseOutcome(call.name, run?.resultDetails ?? result?.details) : null
+  const resultUnknown = browserActionResultUnknown(call.name, status === 'error', resultText)
+  const outcomeIsTitle = outcome === '已取消' || outcome === '等待人工处理' || outcome === '等待选择文件'
+  const verb = resultUnknown ? '操作结果未知，请核对' : status === 'error' ? phrases.failed : running ? phrases.running : outcomeIsTitle ? outcome : phrases.done
 
   return (
     <div className={clsx('tool-card', `status-${status}`, open && 'is-open')}>
@@ -150,7 +152,7 @@ export const ToolCard = memo(function ToolCard({
         aria-expanded={open}
       >
         <span className="tool-chevron">
-          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          <ChevronRight size={13} />
         </span>
         <span className={clsx('tool-icon', `kind-${meta.kind}`)}>
           <Icon size={12} />
@@ -160,8 +162,9 @@ export const ToolCard = memo(function ToolCard({
           {meta.subtitle}
         </span>
         <span className="tool-status">
+          {outcome && !outcomeIsTitle && <span className="tool-outcome" title={t(outcome)}>{t(outcome)}</span>}
           {duration !== undefined && <span className="tool-duration">{formatDuration(duration)}</span>}
-          {status === 'error' && !running && <span className="tool-failed">{t('failed')}</span>}
+          {status === 'error' && !running && !resultUnknown && <span className="tool-failed">{t('failed')}</span>}
         </span>
       </button>
 

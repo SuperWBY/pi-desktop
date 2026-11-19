@@ -1,0 +1,8 @@
+{
+  "date": "2026-11-07",
+  "environment": "installed Pi Desktop on macOS; Pi process loads the current source extension in an isolated local project",
+  "task": "observe a local native test window, approve a button click, and observe the result",
+  "approval": "Pi Desktop confirmation dialog accepted via local UI; it displayed the test application, window, click, and target button",
+  "result": {"ok": true, "fixtureClickCount": 1, "buttonChangedToDone": true, "pendingActionsAfter": 0, "activeRunnerRecordsAfter": 0},
+  "limitations": ["scripted command invokes tool handlers; no model planning", "single local run, no crash injection during the native action", "current source extension, not an installed update", "does not establish general reliability or exact-once guarantees"]
+}

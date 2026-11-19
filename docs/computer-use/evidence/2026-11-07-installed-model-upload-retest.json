@@ -1,0 +1,11 @@
+{
+  "scenario": "model-driven-installed-inapp-local-upload-retest",
+  "date": "2026-11-07",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "piVersion": "1.5.0",
+  "scope": "one local mock-backend run after backend status fix",
+  "method": "Natural-language task in installed Pi Desktop. Pi called browser tools; Codex confirmed local actions and manually opened the page file input and selected the generated local CSV.",
+  "result": {"recordId":"ORD-2026-002","uploads":1,"submissions":1,"sha256Matched":true,"serverStatus":"已提交","modelFinalStatus":"已提交","elapsedDisplayed":"11m 34s","toolCallsDisplayed":24,"uiReportedErrors":2},
+  "issues": ["Upstream model returned 429 overloaded before recovering.","After the agent clicked the file input, the native file picker was not visible and the in-app work panel was closed; Codex expanded the panel and manually clicked the file input to open the picker.","The model claimed the file picker had opened automatically, which was inconsistent with the observed UI.","A read operation failed because no fresh observation was available; the model observed again and recovered."],
+  "limitations": ["One local run, no success-rate or comparative speed claim.","Multiple approvals, panel expansion and file selection performed by Codex.","No production platform or anti-bot evaluation.","Displayed cost and token usage are UI estimates, not independently verified billing."]
+}

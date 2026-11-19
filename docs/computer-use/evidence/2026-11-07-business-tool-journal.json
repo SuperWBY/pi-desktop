@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-07T00:25:09.410Z",
+  "task": "local-backoffice-lookup-upload-submit-v1",
+  "environment": {
+    "node": "v26.8.2",
+    "platform": "darwin",
+    "arch": "arm64",
+    "chromeVersion": "Google Chrome for Testing 151.0.7922.34",
+    "playwright": "1.64.1",
+    "revision": "0e00755701da5c8749c7b5bc5235b45cde2a8533",
+    "sourceHash": "6e98f3770eb66cd3e74b767b5d76bac21e174e637ae95c2125455160b32812f3"
+  },
+  "method": {
+    "automation": "scripted",
+    "model": "none",
+    "humanApprovals": "simulated; Pi approvals always accepted",
+    "fileSelection": "Playwright setInputFiles for both",
+    "browser": "isolated headless persistent profile per run",
+    "timer": "after browser launch through final page status; excludes server readback and startup",
+    "evaluator": "fresh local server state, expected record, file SHA-256 and exactly one upload and submission",
+    "limits": "not autonomous agents, no real site, no download, no human confirmation latency, no speed conclusion from small sample; Pi script includes tool setup and different observation steps"
+  },
+  "results": [
+    {
+      "kind": "pi_cdp_scripted_tools",
+      "iteration": 1,
+      "order": 1,
+      "success": true,
+      "elapsedMs": 174,
+      "steps": [
+        "selected_record",
+        "upload_status",
+        "submit_status"
+      ],
+      "toolCalls": 19,
+      "approvalCount": 5,
+      "uploads": 1,
+      "submissions": 1,
+      "duplicateSideEffects": false,
+      "error": null
+    },
+    {
+      "kind": "playwright_script",
+      "iteration": 1,
+      "order": 2,
+      "success": true,
+      "elapsedMs": 201,
+      "steps": [
+        "selected_record",
+        "upload_status",
+        "submit_status"
+      ],
+      "toolCalls": 0,
+      "approvalCount": 0,
+      "uploads": 1,
+      "submissions": 1,
+      "duplicateSideEffects": false,
+      "error": null
+    },
+    {
+      "kind": "playwright_script",
+      "iteration": 2,
+      "order": 1,
+      "success": true,
+      "elapsedMs": 242,
+      "steps": [
+        "selected_record",
+        "upload_status",
+        "submit_status"
+      ],
+      "toolCalls": 0,
+      "approvalCount": 0,
+      "uploads": 1,
+      "submissions": 1,
+      "duplicateSideEffects": false,
+      "error": null
+    },
+    {
+      "kind": "pi_cdp_scripted_tools",
+      "iteration": 2,
+      "order": 2,
+      "success": true,
+      "elapsedMs": 112,
+      "steps": [
+        "selected_record",
+        "upload_status",
+        "submit_status"
+      ],
+      "toolCalls": 19,
+      "approvalCount": 5,
+      "uploads": 1,
+      "submissions": 1,
+      "duplicateSideEffects": false,
+      "error": null
+    },
+    {
+      "kind": "pi_cdp_scripted_tools",
+      "iteration": 3,
+      "order": 1,
+      "success": true,
+      "elapsedMs": 108,
+      "steps": [
+        "selected_record",
+        "upload_status",
+        "submit_status"
+      ],
+      "toolCalls": 19,
+      "approvalCount": 5,
+      "uploads": 1,
+      "submissions": 1,
+      "duplicateSideEffects": false,
+      "error": null
+    },
+    {
+      "kind": "playwright_script",
+      "iteration": 3,
+      "order": 2,
+      "success": true,
+      "elapsedMs": 250,
+      "steps": [
+        "selected_record",
+        "upload_status",
+        "submit_status"
+      ],
+      "toolCalls": 0,
+      "approvalCount": 0,
+      "uploads": 1,
+      "submissions": 1,
+      "duplicateSideEffects": false,
+      "error": null
+    }
+  ],
+  "summary": {
+    "pi_cdp_scripted_tools": {
+      "runs": 3,
+      "successes": 3,
+      "failures": 0,
+      "duplicateSideEffects": 0,
+      "successfulElapsedMs": [
+        108,
+        112,
+        174
+      ]
+    },
+    "playwright_script": {
+      "runs": 3,
+      "successes": 3,
+      "failures": 0,
+      "duplicateSideEffects": 0,
+      "successfulElapsedMs": [
+        201,
+        242,
+        250
+      ]
+    }
+  }
+}

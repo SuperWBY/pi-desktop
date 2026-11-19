@@ -1,0 +1,11 @@
+{
+  "scenario": "installed-model-inapp-local-order-lookup",
+  "date": "2026-11-07",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "scope": "one local read-only mock-backend run through the installed Pi Desktop UI",
+  "task": "look up ORD-2026-002 and report product and status without uploading, submitting or changing data",
+  "result": {"recordId":"ORD-2026-002","product":"青木测试商品","status":"待处理","displayedTime":"58.3s","displayedToolOperations":9,"displayedUiErrors":1,"approvalCount":2,"serverUploadAttempts":0,"serverSubmitAttempts":0,"serverUploads":0,"serverSubmissions":0},
+  "evidence": "Pi's final answer and the visible result agreed with an independent local server readback; the test operator approved two local browser actions.",
+  "observations": ["The first page read failed; Pi observed again and then read successfully.","The approval dialog displayed action, target, backend and page, but not the proposed input text."],
+  "limits": ["One run, no success-rate or comparative speed claim.","No real platform, upload, download or real user approval.","The reported elapsed time and tool count are UI values, not independently timed or billed."]
+}

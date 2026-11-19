@@ -23,6 +23,7 @@ import type {
   SessionNotice,
   SessionStats,
   SessionSummary,
+  SessionTreeData,
   Settings,
   ThinkingLevel,
   ToolRun
@@ -76,22 +77,27 @@ export interface AppState {
   messages: AgentMessage[]
   streaming: boolean
   streamingIndex: number
+  turnStartedAt: number
   toolRuns: Record<string, ToolRun>
   queue: { steering: QueuedMessage[]; followUp: QueuedMessage[] }
   notices: Notice[]
   uiRequests: ExtensionUiRequest[]
+  backgroundUiPending: { path: string; cwd: string }[]
+  interruptedUi: { id: string; cwd: string; sessionPath: string | null; at: number }[]
+  interruptedUiError: boolean
   compacting: boolean
   retry: RetryState | null
   settings: Settings
   piSettings: PiSettings
   settingsOpen: boolean
+  addProjectOpen: boolean
   skillsOpen: boolean
   schedulesOpen: boolean
   scheduleDraft: ScheduleDraft | null
   scheduleFocusId: string | null
   sidebarOpen: boolean
   statusText: string | null
-  editorText: { value: string; nonce: number } | null
+  editorText: { value: string; nonce: number; append?: boolean } | null
   sendMode: SendMode
   stderr: string
   diagnosticsOpen: boolean
@@ -128,15 +134,20 @@ export const initialState: AppState = {
   messages: [],
   streaming: false,
   streamingIndex: -1,
+  turnStartedAt: 0,
   toolRuns: {},
   queue: { steering: [], followUp: [] },
   notices: [],
   uiRequests: [],
+  backgroundUiPending: [],
+  interruptedUi: [],
+  interruptedUiError: false,
   compacting: false,
   retry: null,
   settings: initialSettings,
   piSettings: {},
   settingsOpen: false,
+  addProjectOpen: false,
   skillsOpen: false,
   schedulesOpen: false,
   scheduleDraft: null,
@@ -283,8 +294,16 @@ function reduceRecord(state: AppState, record: Record<string, unknown>): AppStat
   const type = String(record.type ?? '')
 
   switch (type) {
+    case 'desktop_interrupted_ui':
+      return { ...state, interruptedUi: Array.isArray(record.entries) ? record.entries as AppState['interruptedUi'] : state.interruptedUi }
+    case 'desktop_ui_journal_error':
+      return addNotice({ ...state, interruptedUiError: true }, 'error', '确认记录不可用', '无法安全记录确认状态，本次确认已取消。请检查应用数据目录。')
+    case 'desktop_background_ui_pending':
+      return { ...state, backgroundUiPending: Array.isArray(record.sessions) ? record.sessions.filter((item): item is { path: string; cwd: string } => Boolean(item) && typeof item === 'object' && typeof item.path === 'string' && typeof item.cwd === 'string') : [] }
+    case 'desktop_ui_requests_reset':
+      return { ...state, uiRequests: [] }
     case 'agent_start':
-      return { ...state, streaming: true, sendMode: state.streaming ? state.sendMode : 'followUp' }
+      return { ...state, turnStartedAt: Date.now(), streaming: true, sendMode: state.streaming ? state.sendMode : 'followUp' }
 
     case 'agent_settled':
       return {
@@ -541,6 +560,7 @@ export type Action =
   | { type: 'SET_STREAMING'; streaming: boolean }
   | { type: 'TOGGLE_SIDEBAR' }
   | { type: 'SET_SETTINGS_OPEN'; open: boolean }
+  | { type: 'SET_ADD_PROJECT_OPEN'; open: boolean }
   | { type: 'SET_SKILLS_OPEN'; open: boolean }
   | { type: 'SET_SCHEDULES_OPEN'; open: boolean }
   | { type: 'SET_SCHEDULE_DRAFT'; draft: ScheduleDraft | null }
@@ -552,7 +572,8 @@ export type Action =
   | { type: 'BASH_CLEAR' }
   | { type: 'SET_DELETED_SESSION'; deleted: { path: string; trashPath: string; name: string } | null }
   | { type: 'SET_THEME'; theme: 'dark' | 'light' }
-  | { type: 'FILL_COMPOSER'; value: string }
+  | { type: 'FILL_COMPOSER'; value: string; append?: boolean }
+  | { type: 'CONSUME_EDITOR_TEXT'; nonce: number }
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -560,6 +581,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         boot: action.boot,
+        interruptedUi: action.boot.interruptedUi ?? [],
+        interruptedUiError: action.boot.interruptedUi === null,
         settings: action.boot.settings,
         piSettings: action.boot.piSettings ?? {},
         status: 'booting'
@@ -619,7 +642,7 @@ export function reducer(state: AppState, action: Action): AppState {
         scratchWorkspace: action.scratch ?? state.scratchWorkspace,
         sessionPath: action.sessionPath ?? action.piState?.sessionFile ?? null,
         sessionName: action.piState?.sessionName ?? null,
-        streaming: false,
+        streaming: action.piState?.isStreaming === true,
         streamingIndex: -1,
         toolRuns: {}
       }
@@ -817,6 +840,9 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'SET_SETTINGS_OPEN':
       return { ...state, settingsOpen: action.open }
 
+    case 'SET_ADD_PROJECT_OPEN':
+      return { ...state, addProjectOpen: action.open }
+
     case 'SET_SKILLS_OPEN':
       return { ...state, skillsOpen: action.open }
 
@@ -830,7 +856,10 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, scheduleFocusId: action.id }
 
     case 'FILL_COMPOSER':
-      return { ...state, editorText: { value: action.value, nonce: Date.now() } }
+      return { ...state, editorText: { value: action.value, nonce: Date.now(), append: action.append } }
+
+    case 'CONSUME_EDITOR_TEXT':
+      return state.editorText?.nonce === action.nonce ? { ...state, editorText: null } : state
 
     default:
       return state
@@ -842,6 +871,10 @@ export interface Attachment {
   dataUrl: string
   mimeType: string
   name: string
+  kind?: 'image' | 'file'
+  path?: string
+  text?: string
+  size?: number
 }
 
 interface AppActions {
@@ -849,11 +882,11 @@ interface AppActions {
   openSession: (
     cwd: string,
     sessionPath?: string | null,
-    options?: { scratch?: boolean }
+    options?: { scratch?: boolean; reload?: boolean }
   ) => Promise<boolean>
   newSession: () => Promise<boolean>
   newScratchSession: () => Promise<boolean>
-  pickFolder: () => Promise<void>
+  openAddProject: (open: boolean) => void
   sendMessage: (
     text: string,
     images: { type: 'image'; data: string; mimeType: string }[]
@@ -894,13 +927,18 @@ interface AppActions {
   respondUi: (response: Record<string, unknown>) => void
   refreshMeta: () => Promise<void>
   restartSession: () => Promise<void>
+  cloneSession: () => Promise<void>
+  forkMessages: () => Promise<{ entryId: string; text: string }[]>
+  sessionTree: () => Promise<SessionTreeData | null>
+  forkSession: (entryId: string) => Promise<{ ok: boolean; text?: string; error?: string }>
   exportHtml: () => Promise<void>
   exportMarkdown: () => Promise<void>
   runBash: (command: string, excluded: boolean) => Promise<void>
   stopBash: () => Promise<void>
   clearBash: () => void
   compact: () => Promise<void>
-  fillComposer: (text: string) => void
+  fillComposer: (text: string, append?: boolean) => void
+  consumeEditorText: (nonce: number) => void
   openExternal: (url: string) => void
   openBrowser: (url: string) => void
   revealSession: (path: string) => void
@@ -964,16 +1002,18 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     async (
       cwd: string,
       sessionPath?: string | null,
-      options: { scratch?: boolean } = {}
+      options: { scratch?: boolean; reload?: boolean } = {}
     ): Promise<boolean> => {
       const current = stateRef.current
       const isScratchCwd = Boolean(
         cwd && stateRef.current.boot?.scratchPath && cwd === stateRef.current.boot.scratchPath
       )
       const scratch = options.scratch === true || isScratchCwd
+      const workspace = scratch ? current.boot?.scratchPath ?? cwd : cwd
       // Clicking the conversation that is already open (including the two
       // clicks of a double-click) must not restart pi or flash a loader.
       if (
+        !options.reload &&
         sessionPath &&
         current.sessionPath === sessionPath &&
         current.workspace === cwd &&
@@ -983,7 +1023,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       }
       dispatch({
         type: 'SESSION_START',
-        workspace: cwd,
+        workspace,
         scratch,
         sessionPath: sessionPath ?? null,
         keepMessages: Boolean(sessionPath)
@@ -1030,7 +1070,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         commands: commandsResponse?.data?.commands ?? [],
         messages,
         sessionPath: readyPath,
-        workspace: result.cwd ?? cwd,
+        workspace: result.cwd ?? workspace,
         scratch: result.scratch === true
       })
       if (readyPath) {
@@ -1133,10 +1173,56 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     const current = stateRef.current
     if (!current.workspace) return
     await window.pi.closeSession()
-    await openSession(current.workspace, current.sessionPath)
+    await openSession(current.workspace, current.sessionPath, { reload: true })
+  }, [openSession])
+  const adoptBranchedSession = useCallback(async (): Promise<{ ok: boolean; text?: string; error?: string }> => {
+    const current = stateRef.current
+    const response = await safeCommand<{ sessionFile?: string | null }>({ type: 'get_state' }, 15_000)
+    const nextPath = response?.data?.sessionFile
+    if (!response?.success || !nextPath || !current.workspace) return { ok: false, error: response?.error ?? '没有找到新会话文件。' }
+    await window.pi.closeSession()
+    const opened = await openSession(current.workspace, nextPath)
+    return opened ? { ok: true } : { ok: false, error: '新会话已创建，但无法重新打开。' }
   }, [openSession])
 
+  const cloneSession = useCallback(async (): Promise<void> => {
+    const current = stateRef.current
+    if (!current.workspace || current.streaming) return
+    const response = await safeCommand<{ cancelled?: boolean }>({ type: 'clone' }, 60_000)
+    if (!response?.success || response.data?.cancelled) {
+      notify('error', '复制会话失败', response?.error ?? 'pi 没有创建新会话。')
+      return
+    }
+    const result = await adoptBranchedSession()
+    if (result.ok) notify('success', '已复制会话', '可以在新会话中继续。')
+    else notify('error', '复制会话失败', result.error)
+  }, [adoptBranchedSession, notify])
+
+  const forkMessages = useCallback(async (): Promise<{ entryId: string; text: string }[]> => {
+    const response = await safeCommand<{ messages?: { entryId?: unknown; text?: unknown }[] }>({ type: 'get_fork_messages' }, 15_000)
+    if (!response?.success) return []
+    return (response.data?.messages ?? [])
+      .filter((item) => typeof item.entryId === 'string' && typeof item.text === 'string')
+      .map((item) => ({ entryId: item.entryId as string, text: item.text as string }))
+  }, [])
+
+  const sessionTree = useCallback(async (): Promise<SessionTreeData | null> => {
+    const response = await safeCommand<SessionTreeData>({ type: 'get_tree' }, 15_000)
+    if (!response?.success || !Array.isArray(response.data?.tree)) return null
+    return { tree: response.data.tree, leafId: typeof response.data.leafId === 'string' ? response.data.leafId : null }
+  }, [])
+
+  const forkSession = useCallback(async (entryId: string): Promise<{ ok: boolean; text?: string; error?: string }> => {
+    if (stateRef.current.streaming) return { ok: false, error: '当前任务正在运行。' }
+    const response = await safeCommand<{ text?: string; cancelled?: boolean }>({ type: 'fork', entryId }, 60_000)
+    if (!response?.success || response.data?.cancelled) return { ok: false, error: response?.error ?? '分支已取消。' }
+    const result = await adoptBranchedSession()
+    return { ...result, text: typeof response.data?.text === 'string' ? response.data.text : undefined }
+  }, [adoptBranchedSession])
+
   const newSession = useCallback(async (): Promise<boolean> => {
+    const current = stateRef.current
+    if (current.status === 'starting' && current.scratchWorkspace && !current.sessionPath) return false
     const draftCheck = new Event('pi:before-new-session', { cancelable: true })
     window.dispatchEvent(draftCheck)
     if (draftCheck.defaultPrevented) return false
@@ -1145,17 +1231,11 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     return openSession('', null, { scratch: true })
   }, [openSession])
 
-  const newScratchSession = useCallback(async (): Promise<boolean> => {
-    const draftCheck = new Event('pi:before-new-session', { cancelable: true })
-    window.dispatchEvent(draftCheck)
-    if (draftCheck.defaultPrevented) return false
-    return openSession('', null, { scratch: true })
-  }, [openSession])
+  const newScratchSession = newSession
 
-  const pickFolder = useCallback(async () => {
-    const folder = await window.pi.pickFolder()
-    if (folder) await openSession(folder, null)
-  }, [openSession])
+  const openAddProject = useCallback((open: boolean) => {
+    dispatch({ type: 'SET_ADD_PROJECT_OPEN', open })
+  }, [])
 
   const sendMessage = useCallback(
     async (
@@ -1170,6 +1250,25 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       if (current.status === 'starting') {
         notify('info', '会话正在启动', translate(current.settings.language ?? 'zh-CN', '稍等一下再发送。'))
         return false
+      }
+
+      // A bare slash token looks like a command, not an instruction to a model.
+      // Refresh the registry to account for extensions registered after startup.
+      const bareCommand = text.trim().match(/^\/([a-zA-Z][a-zA-Z0-9_:-]*)$/)?.[1]
+      if (bareCommand && images.length === 0 && !current.streaming) {
+        const available = await safeCommand<{ commands: CommandInfo[] }>({ type: 'get_commands' }, 20_000)
+        if (!available?.success || !Array.isArray(available.data?.commands)) {
+          notify('warning', translate(current.settings.language ?? 'zh-CN', '无法检查命令'), translate(current.settings.language ?? 'zh-CN', '暂时无法读取命令列表，请稍后重试。输入内容仍在输入框中。'))
+          return false
+        }
+        if (!available.data.commands.some((item) => item.name === bareCommand)) {
+          const workspace = current.workspace
+          notify('warning', translate(current.settings.language ?? 'zh-CN', '命令未找到'), translate(current.settings.language ?? 'zh-CN', '该命令未加载，可能需要信任项目或启用对应扩展。输入内容仍在输入框中。'), {
+            label: translate(current.settings.language ?? 'zh-CN', '查看排查步骤'),
+            run: () => window.dispatchEvent(new CustomEvent('pi:project-command-help', { detail: { workspace } }))
+          })
+          return false
+        }
       }
 
       const optimistic = !current.streaming
@@ -1589,9 +1688,10 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     }
   }, [notify, refreshMeta])
 
-  const fillComposer = useCallback((text: string) => {
-    dispatch({ type: 'FILL_COMPOSER', value: text })
+  const fillComposer = useCallback((text: string, append = false) => {
+    dispatch({ type: 'FILL_COMPOSER', value: text, append })
   }, [])
+  const consumeEditorText = useCallback((nonce: number) => dispatch({ type: 'CONSUME_EDITOR_TEXT', nonce }), [])
 
   const openExternal = useCallback((url: string) => {
     void window.pi.openExternal(url)
@@ -1617,18 +1717,17 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         const boot = await window.pi.bootstrap()
         if (cancelled) return
         dispatch({ type: 'BOOT', boot })
-        await refreshSessions()
+        const sessions = await window.pi.listSessions().catch(() => [])
+        if (cancelled) return
+        dispatch({ type: 'SET_SESSIONS', sessions })
+        // A temporary chat can be the last conversation while lastWorkspace
+        // still points to the most recently opened project.
+        const last = sessions.find((session) => session.path === boot.settings.lastSessionPath)
+        if (last && await openSession(last.cwd, last.path, { scratch: last.cwd === boot.scratchPath })) return
+        if (cancelled) return
         const workspace = boot.settings.lastWorkspace
         if (workspace) {
-          const last = boot.settings.lastSessionPath
-          let restored = false
-          if (last) {
-            const sessions = await window.pi.listSessions().catch(() => [])
-            if (sessions.some((session) => session.path === last)) {
-              restored = await openSession(workspace, last)
-            }
-          }
-          if (!restored) await openSession(workspace, null)
+          await openSession(workspace, null)
         } else {
           dispatch({ type: 'STATUS', status: { status: 'idle' } })
         }
@@ -1644,7 +1743,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     return () => {
       cancelled = true
     }
-  }, [openSession, refreshSessions])
+  }, [openSession])
 
   // pi creates the transcript lazily (first prompt), so the session path can
   // appear after the process is already running. Persist it whenever it lands;
@@ -1723,13 +1822,31 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     const offStatus = window.pi.onStatus((status) => dispatch({ type: 'STATUS', status }))
     const offStderr = window.pi.onStderr((text) => dispatch({ type: 'STDERR', text }))
     const offSettings = window.pi.onSettings((settings) => applySettings(settings))
+    const offUpdate = window.pi.onUpdateAvailable((info) => {
+      if (!info.hasUpdate || !info.latest) return
+      notify('info', `发现新版本 ${info.latest}`, '启动时检查到可用更新；下载需要你确认。', info.url ? {
+        label: '查看更新',
+        run: () => void window.pi.openReleasePage(info.url as string)
+      } : undefined)
+    })
+    const offSandboxDenied = window.pi.onSandboxDomainDenied((event) => {
+      const current = stateRef.current
+      const domains = current.settings.sandboxAllowedDomains ?? []
+      if (domains.includes(event.host)) return
+      notify('warning', '沙箱拦截了网络请求', `${event.host}${event.port ? `:${event.port}` : ''} 不在允许列表。`, {
+        label: '允许并重启',
+        run: () => {
+          void updateSettings({ sandboxAllowedDomains: [...domains, event.host] }).then(() => restartSession())
+        }
+      })
+    })
     const offApp = window.pi.onAppEvent((event) => {
       switch (event.name) {
         case 'new-session':
           void newSession()
           break
         case 'open-folder':
-          void pickFolder()
+          openAddProject(true)
           break
         case 'toggle-sidebar':
           dispatch({ type: 'TOGGLE_SIDEBAR' })
@@ -1749,9 +1866,11 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       offStatus()
       offStderr()
       offSettings()
+      offUpdate()
+      offSandboxDenied()
       offApp()
     }
-  }, [newSession, pickFolder, setTheme, applySettings])
+  }, [newSession, openAddProject, setTheme, applySettings])
 
   useEffect(() => {
     const theme = state.settings.theme
@@ -1790,7 +1909,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       openSession,
       newSession,
       newScratchSession,
-      pickFolder,
+      openAddProject,
       sendMessage,
       stop,
       guideQueued,
@@ -1823,6 +1942,10 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       respondUi,
       refreshMeta,
       restartSession,
+      cloneSession,
+      forkMessages,
+      sessionTree,
+      forkSession,
       exportHtml,
       exportMarkdown,
       runBash,
@@ -1830,6 +1953,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       clearBash,
       compact,
       fillComposer,
+      consumeEditorText,
       openExternal,
       openBrowser,
       revealSession
@@ -1839,7 +1963,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       openSession,
       newSession,
       newScratchSession,
-      pickFolder,
+      openAddProject,
       sendMessage,
       stop,
       guideQueued,
@@ -1872,6 +1996,10 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       respondUi,
       refreshMeta,
       restartSession,
+      cloneSession,
+      forkMessages,
+      sessionTree,
+      forkSession,
       exportHtml,
       exportMarkdown,
       runBash,
@@ -1879,6 +2007,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       clearBash,
       compact,
       fillComposer,
+      consumeEditorText,
       openExternal,
       openBrowser,
       revealSession

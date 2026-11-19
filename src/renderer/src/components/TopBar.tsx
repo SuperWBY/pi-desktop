@@ -3,7 +3,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Archive, PanelLeft, PanelRight } from 'lucide-react'
 import clsx from 'clsx'
 import { useApp } from '../store'
-import { baseName, formatTokens, shortenPath, truncate } from '../lib/format'
+import { projectName, truncate } from '../lib/format'
 import { shortcutKeys, shiftMod } from '../lib/platform'
 import { contentText } from '../lib/tools'
 
@@ -18,12 +18,12 @@ export function TopBar(): ReactNode {
     ? truncate(contentText((firstUser as { content?: unknown }).content), 56)
     : state.scratchWorkspace
       ? t('临时对话')
-      : baseName(state.workspace) || t('Session')
+      : projectName(state.settings.workspaceNames, state.workspace) || t('Session')
   const title =
     state.sessionName ??
     (state.messages.length > 0
       ? fallbackTitle
-      : state.workspace
+      : state.workspace || state.scratchWorkspace
         ? t('New session')
         : 'Pi Desktop')
   const percent = state.stats?.contextUsage?.percent ?? 0
@@ -77,24 +77,13 @@ export function TopBar(): ReactNode {
             <span className="topbar-path" title={state.workspace ?? ''}>
               {state.scratchWorkspace
                 ? t('临时对话')
-                : shortenPath(state.workspace, state.boot?.home) || t('No project')}
+                : projectName(state.settings.workspaceNames, state.workspace) || t('No project')}
             </span>
-            {state.sessionPath && (
-              <>
-                <span className="dot-sep">·</span>
-                <span>{t('{count} messages').replace('{count}', String(state.messages.length))}</span>
-              </>
-            )}
           </div>
         </div>
       </div>
 
       <div className="topbar-right">
-        {(state.stats?.tokens?.total ?? 0) > 0 && (
-          <div className="token-pill" title={t("Session token usage")}>
-            {formatTokens(state.stats?.tokens?.total)} tokens
-          </div>
-        )}
         {percent >= 40 && (
           <button
             className={clsx('icon-button', percent > 80 && 'warn')}

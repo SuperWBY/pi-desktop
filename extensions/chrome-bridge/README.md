@@ -15,15 +15,10 @@ Chrome bridge     → your everyday Chrome + this extension
 1. Open Chrome.
 2. Go to `chrome://extensions`.
 3. Enable **Developer mode**.
-4. Click **Load unpacked**.
-5. Select this folder:
+4. In Pi Desktop, open the Chrome bridge guide and use its drag-and-drop folder, or click **Load unpacked** and select the Pi Desktop-prepared folder. The source folder is not paired.
 
-```text
-extensions/chrome-bridge
-```
-
-6. Pin **Pi Desktop Chrome Bridge** to the toolbar.
-7. Keep Pi Desktop running.
+5. Pin **Pi Desktop Chrome Bridge** to the toolbar.
+6. Keep Pi Desktop running.
 
 The extension polls a local bridge on:
 
@@ -31,7 +26,7 @@ The extension polls a local bridge on:
 http://127.0.0.1:9317
 ```
 
-It only accepts requests from a `chrome-extension://` origin.
+Pi Desktop generates a private per-user pairing key and prepares the extension folder. Each exchange authenticates both endpoints and binds task and result to fresh nonces. A process that can read the same user’s private files can still obtain the key; this is not protection against same-user malware. After an app update, reload the unpacked extension in Chrome. For a Chrome Web Store build, run `npm run package:chrome` and upload `release/pi-desktop-chrome-bridge-<version>.zip`.
 
 ## Use
 
@@ -48,8 +43,9 @@ The extension only operates the active tab. It does not install a native messagi
 - Password-field values are never returned.
 - Typing into password fields is refused.
 - `chrome://` and extension pages are rejected.
-- Actions still go through Pi's approval layer.
+- Actions request approval by default; the Pi extension permits this to be disabled by configuration.
 - The bridge is bound to `127.0.0.1` and only lives while a Pi tool call is waiting.
+- The worker registers a periodic wake alarm; clicking the extension icon also wakes it. Reload the extension in Chrome after an update.
 - Page content is treated as untrusted input.
 
 ## Troubleshooting

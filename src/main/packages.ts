@@ -1,10 +1,12 @@
-import { execFileSync, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import type { PackageEntry, PackageProgress, PackageResources } from '@shared/types'
 import { loadSettings } from './settings'
-import { locatePi, augmentedPath } from './pi-locate'
+import { augmentedPath } from './pi-locate'
+import { resolvePiPath } from './pi-runtime'
 import { agentDir, loadPiSettings } from './pi-settings'
+import { parsePiListPaths } from './pi-list-parser'
 
 interface ConfiguredPackage {
   source: string
@@ -37,7 +39,7 @@ function projectSettingsPackages(cwd: string): string[] {
 /** `pi list` is the only source that knows where git/local packages landed. */
 function installedPaths(cwd: string): Map<string, string> {
   const paths = new Map<string, string>()
-  const pi = locatePi(loadSettings().piPath)
+  const pi = resolvePiPath(loadSettings().piPath)
   try {
     const command = process.platform === 'win32' ? `"${pi}"` : pi
     const output = execFileSync(command, ['list'], {
@@ -47,23 +49,22 @@ function installedPaths(cwd: string): Map<string, string> {
       env: { ...process.env, PATH: augmentedPath() },
       shell: process.platform === 'win32'
     })
-    let current = ''
-    for (const line of output.split('\n')) {
-      const source = /^ {2}(\S+)\s*$/.exec(line)
-      if (source) {
-        current = source[1]
-        continue
-      }
-      const path = /^ {4}(\/.*|[A-Za-z]:\\.*)\s*$/.exec(line)
-      if (path && current) {
-        paths.set(current, path[1])
-        current = ''
-      }
-    }
+    for (const [source, path] of parsePiListPaths(output)) paths.set(source, path)
   } catch {
     // pi missing or offline: fall back to the npm layout below
   }
   return paths
+}
+
+function installedPathsAsync(cwd: string): Promise<Map<string, string>> {
+  const pi = resolvePiPath(loadSettings().piPath)
+  const command = process.platform === 'win32' ? `"${pi}"` : pi
+  return new Promise((resolve, reject) => {
+    execFile(command, ['list'], { cwd, encoding: 'utf8', timeout: 8000, env: { ...process.env, PATH: augmentedPath() }, shell: process.platform === 'win32' }, (error, output) => {
+      if (error) reject(new Error('Unable to determine the installed Pi packages. Check the Pi installation and try again.'))
+      else resolve(parsePiListPaths(output))
+    })
+  })
 }
 
 function npmPath(source: string): string {
@@ -159,12 +160,36 @@ export function listPackages(cwd: string): PackageEntry[] {
   return result.sort((a, b) => a.name.localeCompare(b.name))
 }
 
+/** Permission checks must not block Electron's main thread while Pi resolves packages. */
+export async function listPackagesAsync(cwd: string): Promise<PackageEntry[]> {
+  const settings = loadPiSettings() as { packages?: unknown }
+  const configured: ConfiguredPackage[] = [
+    ...sourcesFrom(settings.packages).map((source) => ({ source, scope: 'user' as const })),
+    ...projectSettingsPackages(cwd).map((source) => ({ source, scope: 'project' as const }))
+  ]
+  let paths: Map<string, string> | undefined
+  const seen = new Set<string>()
+  const result: PackageEntry[] = []
+  for (const item of configured) {
+    const key = `${item.scope}:${item.source}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const direct = npmPath(item.source)
+    if (direct && existsSync(direct)) result.push(describe(item.source, item.scope, direct))
+    else {
+      paths ??= await installedPathsAsync(cwd)
+      result.push(describe(item.source, item.scope, paths.get(item.source) ?? ''))
+    }
+  }
+  return result.sort((a, b) => a.name.localeCompare(b.name))
+}
+
 export function runPiPackageCommand(
   args: string[],
   cwd: string,
   onProgress: (progress: PackageProgress) => void
 ): Promise<{ ok: boolean; code: number | null; error?: string }> {
-  const pi = locatePi(loadSettings().piPath)
+  const pi = resolvePiPath(loadSettings().piPath)
   return new Promise((resolve) => {
     const child = spawn(process.platform === 'win32' ? `"${pi}"` : pi, args, {
       cwd,

@@ -1,15 +1,71 @@
-import { promises as fs } from 'node:fs'
+import { chmodSync, mkdirSync, promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
-import type { SessionSummary } from '@shared/types'
+import { DatabaseSync } from 'node:sqlite'
+import type { SessionSearchMatch, SessionSummary } from '@shared/types'
+
+interface IndexedMessage {
+  role: 'user' | 'assistant'
+  text: string
+}
 
 interface CacheEntry {
   mtimeMs: number
   size: number
   summary: SessionSummary | null
+  messages?: IndexedMessage[]
 }
 
 const cache = new Map<string, CacheEntry>()
+let indexDb: DatabaseSync | null | undefined
+let indexUnavailable = false
+
+function sessionIndex(): DatabaseSync | null {
+  if (indexDb !== undefined) return indexDb
+  try {
+    const root = sessionsRoot()
+    mkdirSync(root, { recursive: true })
+    const indexPath = join(root, '.session-search.sqlite')
+    const db = new DatabaseSync(indexPath)
+    db.exec("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS sessions (path TEXT PRIMARY KEY, mtime REAL NOT NULL, size INTEGER NOT NULL, summary TEXT NOT NULL, indexed INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS messages (path TEXT NOT NULL, seq INTEGER NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL, PRIMARY KEY(path, seq)); CREATE INDEX IF NOT EXISTS messages_path ON messages(path);")
+    try { chmodSync(indexPath, 0o600) } catch { /* best effort */ }
+    indexDb = db
+  } catch {
+    indexUnavailable = true
+    indexDb = null
+  }
+  return indexDb
+}
+
+function cachedSummary(file: string, mtimeMs: number, size: number): SessionSummary | null | undefined {
+  const row = sessionIndex()?.prepare('SELECT summary, indexed FROM sessions WHERE path = ? AND mtime = ? AND size = ?').get(file, mtimeMs, size) as { summary: string; indexed: number } | undefined
+  if (!row) return undefined
+  try {
+    return JSON.parse(row.summary) as SessionSummary
+  } catch {
+    return undefined
+  }
+}
+
+function storeSummary(file: string, mtimeMs: number, size: number, summary: SessionSummary, messages: IndexedMessage[] | null): void {
+  const db = sessionIndex()
+  if (!db) return
+  try {
+    db.prepare('INSERT INTO sessions(path, mtime, size, summary, indexed) VALUES(?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, size=excluded.size, summary=excluded.summary, indexed=excluded.indexed').run(file, mtimeMs, size, JSON.stringify(summary), messages ? 1 : 0)
+    if (messages) {
+      db.prepare('DELETE FROM messages WHERE path = ?').run(file)
+      const insert = db.prepare('INSERT INTO messages(path, seq, role, text) VALUES(?, ?, ?, ?)')
+      messages.forEach((message, index) => insert.run(file, index, message.role, message.text))
+    }
+  } catch { /* index is an optimization; never fail the session list */ }
+}
+
+function hasIndexedMessages(file: string): boolean {
+  try {
+    const row = sessionIndex()?.prepare('SELECT indexed FROM sessions WHERE path = ?').get(file) as { indexed: number } | undefined
+    return row?.indexed === 1
+  } catch { return false }
+}
 
 export function sessionsRoot(): string {
   const configured = process.env.PI_CODING_AGENT_SESSION_DIR?.trim()
@@ -31,7 +87,7 @@ function textOf(content: unknown): string {
     .trim()
 }
 
-async function summarize(file: string): Promise<SessionSummary | null> {
+async function readSession(file: string, force = false): Promise<{ summary: SessionSummary; messages: IndexedMessage[] } | null> {
   let stat
   try {
     stat = await fs.stat(file)
@@ -40,8 +96,8 @@ async function summarize(file: string): Promise<SessionSummary | null> {
   }
 
   const cached = cache.get(file)
-  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-    return cached.summary
+  if (!force && cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.summary ? { summary: cached.summary, messages: cached.messages ?? [] } : null
   }
 
   const header: { id?: string; cwd?: string; timestamp?: string } = {}
@@ -49,6 +105,7 @@ async function summarize(file: string): Promise<SessionSummary | null> {
   let preview = ''
   let messageCount = 0
   let updatedAt = stat.mtimeMs
+  const messages: IndexedMessage[] = []
 
   try {
     const raw = await fs.readFile(file, 'utf8')
@@ -71,6 +128,10 @@ async function summarize(file: string): Promise<SessionSummary | null> {
       } else if (entry.type === 'message') {
         messageCount += 1
         const message = entry.message as { role?: string; content?: unknown } | undefined
+        if (message?.role === 'user' || message?.role === 'assistant') {
+          const text = textOf(message.content).slice(0, 20000)
+          if (text) messages.push({ role: message.role, text })
+        }
         if (message?.role === 'user' && !preview) {
           preview = textOf(message.content).slice(0, 160)
         }
@@ -102,8 +163,15 @@ async function summarize(file: string): Promise<SessionSummary | null> {
     size: stat.size
   }
 
-  cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, summary })
-  return summary
+  cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, summary, messages })
+  storeSummary(file, stat.mtimeMs, stat.size, summary, messages)
+  return { summary, messages }
+}
+
+async function summarize(file: string): Promise<SessionSummary | null> {
+  const cached = cache.get(file)
+  if (cached?.summary) return cached.summary
+  return (await readSession(file))?.summary ?? null
 }
 
 export async function listSessions(): Promise<SessionSummary[]> {
@@ -124,7 +192,18 @@ export async function listSessions(): Promise<SessionSummary[]> {
         if (!stat.isDirectory()) return []
         const files = await fs.readdir(dir)
         return Promise.all(
-          files.filter((file) => file.endsWith('.jsonl')).map((file) => summarize(join(dir, file)))
+          files.filter((file) => file.endsWith('.jsonl')).map(async (file) => {
+            const path = join(dir, file)
+            try {
+              const stat = await fs.stat(path)
+              const indexed = cachedSummary(path, stat.mtimeMs, stat.size)
+              if (indexed !== undefined) {
+                cache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, summary: indexed })
+                return indexed
+              }
+            } catch { /* fall through to the full parser */ }
+            return summarize(path)
+          })
         )
       } catch {
         return []
@@ -136,6 +215,88 @@ export async function listSessions(): Promise<SessionSummary[]> {
     .flat()
     .filter((item): item is SessionSummary => Boolean(item))
     .sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+export async function searchSessions(query: string, limit = 40): Promise<SessionSearchMatch[]> {
+  const needle = query.trim().toLowerCase()
+  if (needle.length < 2) return []
+  const summaries = await listSessions()
+  const byPath = new Map(summaries.map((session) => [session.path, session]))
+  const results: SessionSearchMatch[] = []
+
+  // First-time search builds the message index for sessions that predate it.
+  for (const session of summaries) {
+    if (!hasIndexedMessages(session.path)) {
+      const restored = await readSession(session.path, true)
+      if (restored) {
+        const stat = await fs.stat(session.path)
+        storeSummary(session.path, stat.mtimeMs, stat.size, restored.summary, restored.messages)
+      }
+    }
+  }
+
+  const db = sessionIndex()
+  if (db) {
+    try {
+      const escaped = needle.replace(/[\\%_]/g, '\\$&')
+      const rows = db.prepare("SELECT path, role, text FROM messages WHERE text LIKE ? ESCAPE '\\' ORDER BY rowid DESC LIMIT 400").all(`%${escaped}%`) as { path: string; role: string; text: string }[]
+      const grouped = new Map<string, { role: 'user' | 'assistant'; text: string }[]>()
+      for (const row of rows) {
+        const list = grouped.get(row.path) ?? []
+        if (list.length < 3 && byPath.has(row.path)) list.push({ role: row.role === 'user' ? 'user' : 'assistant', text: previewSnippet(row.text, needle) })
+        grouped.set(row.path, list)
+      }
+      for (const [path, matches] of grouped) {
+        if (results.length >= limit) break
+        const session = byPath.get(path)
+        if (session && matches.length) results.push({ session, matches })
+      }
+    } catch { /* fall back to the file scan below */ }
+  }
+
+  if (results.length) return results
+
+  // Metadata matches and a resilient fallback when SQLite is unavailable.
+  for (const session of summaries) {
+    if (results.length >= limit) break
+    const matches: { role: 'user' | 'assistant'; text: string }[] = []
+    if (`${session.name} ${session.preview} ${session.cwd}`.toLowerCase().includes(needle)) {
+      matches.push({ role: 'assistant', text: session.preview || session.name })
+    }
+    if (matches.length) results.push({ session, matches })
+  }
+  if (results.length || !indexUnavailable) return results
+
+  // Older runtimes without node:sqlite still get full-text search.
+  for (const session of summaries) {
+    if (results.length >= limit) break
+    const matches: { role: 'user' | 'assistant'; text: string }[] = []
+    if (`${session.name} ${session.preview} ${session.cwd}`.toLowerCase().includes(needle)) {
+      matches.push({ role: 'assistant', text: session.preview || session.name })
+    }
+    try {
+      const raw = await fs.readFile(session.path, 'utf8')
+      for (const line of raw.split('\n')) {
+        if (!line.trim() || matches.length >= 3) continue
+        let entry: Record<string, unknown>
+        try { entry = JSON.parse(line) as Record<string, unknown> } catch { continue }
+        if (entry.type !== 'message') continue
+        const message = entry.message as { role?: string; content?: unknown } | undefined
+        if (!message || (message.role !== 'user' && message.role !== 'assistant')) continue
+        const text = textOf(message.content)
+        if (!text || !text.toLowerCase().includes(needle)) continue
+        matches.push({ role: message.role, text: previewSnippet(text, needle) })
+      }
+    } catch { /* skip unreadable session */ }
+    if (matches.length) results.push({ session, matches })
+  }
+  return results
+}
+
+function previewSnippet(text: string, needle: string): string {
+  const index = text.toLowerCase().indexOf(needle)
+  const start = Math.max(0, index - 60)
+  return `${start > 0 ? '…' : ''}${text.slice(start, start + 180)}${start + 180 < text.length ? '…' : ''}`
 }
 
 export interface DeletedSession {

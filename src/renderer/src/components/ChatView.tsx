@@ -9,7 +9,7 @@ import {
   type ReactNode,
   type WheelEvent as ReactWheelEvent
 } from 'react'
-import { ArrowDown, Hammer, Sparkles, TerminalSquare } from 'lucide-react'
+import { ArrowDown } from 'lucide-react'
 import clsx from 'clsx'
 import type { AssistantMessage, ToolResultMessage } from '@shared/types'
 import { useApp } from '../store'
@@ -22,25 +22,7 @@ import { TurnPreview } from './TurnPreview'
 import { buildTurns, type Turn } from '../lib/turns'
 import { useTurnFolds, type FoldLevel } from '../lib/turn-fold'
 
-const SUGGESTIONS = [
-  {
-    icon: Sparkles,
-    title: '讲讲这个代码库',
-    prompt: 'Give me a tour of this codebase: what it does, the main modules, and where I should start.'
-  },
-  {
-    icon: Hammer,
-    title: '修一个失败的测试',
-    prompt: 'Run the test suite, find the first failure, and fix it.'
-  },
-  {
-    icon: TerminalSquare,
-    title: '帮我 review 改动',
-    prompt: 'Review my uncommitted changes for bugs, risky patterns, and missing tests.'
-  }
-]
-
-export function ChatView(): ReactNode {
+export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
   const scrollerRef = useRef<HTMLDivElement>(null)
@@ -420,7 +402,7 @@ export function ChatView(): ReactNode {
         ? `${runningTool.name}…`
         : t('运行中…')
 
-  if (state.status === 'starting' && state.messages.length === 0) {
+  if (state.status === 'starting' && state.messages.length === 0 && !newChat) {
     if (!showStarting) {
       return (
         <div className="chat-scroll" ref={scrollerRef} aria-live="polite" aria-relevant="additions text">
@@ -447,27 +429,7 @@ export function ChatView(): ReactNode {
           <div className="empty-mark">
             <PiLogo size={32} />
           </div>
-          <h1 className="empty-title">
-            {state.settings.language === 'en'
-              ? `What would you like to do in ${state.scratchWorkspace ? t('临时对话') : baseName(state.workspace)}?`
-              : `在 ${state.scratchWorkspace ? t('临时对话') : baseName(state.workspace)} 里做点什么？`}
-          </h1>
-          <p>{t("pi 能读写文件、跑命令、搜网页。发出第一条消息后，这个会话就会被保存下来。")}</p>
-          <div className="suggestions">
-            {SUGGESTIONS.map((suggestion) => {
-              const Icon = suggestion.icon
-              return (
-                <button
-                  key={suggestion.title}
-                  className="suggestion"
-                  onClick={() => actions.fillComposer(t(suggestion.prompt))}
-                >
-                  <Icon size={15} />
-                  <span>{t(suggestion.title)}</span>
-                </button>
-              )
-            })}
-          </div>
+          <h1 className="empty-title">{t('想让 Pi 帮你做什么？')}</h1>
         </div>
       </div>
     )
@@ -517,7 +479,7 @@ export function ChatView(): ReactNode {
             />
           ))}
 
-          {state.streaming && !thinkingLive && (
+          {state.streaming && !thinkingLive && !Object.keys(turns.at(-1)?.stats.tools ?? {}).some(name => name.startsWith('computer_use_')) && (
             <div className="activity">
               <Spinner size={14} />
               <span>{activity}</span>

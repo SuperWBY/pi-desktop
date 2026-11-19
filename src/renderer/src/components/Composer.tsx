@@ -15,21 +15,29 @@ import {
 } from 'react'
 import {
   ArrowUp,
+  FileText,
   Brain,
   Check,
   ChevronDown,
   GripVertical,
   Image as ImageIcon,
   Plus,
+  ShieldCheck,
   Square,
   X
 } from 'lucide-react'
 import clsx from 'clsx'
-import type { ModelInfo, ScheduleCadence, ThinkingLevel } from '@shared/types'
+import type { ModelInfo, ScheduleCadence, SessionPermission, SessionSecurity, ThinkingLevel } from '@shared/types'
 import { useApp, type Attachment } from '../store'
 import { formatCost, formatTokens } from '../lib/format'
-import { Popover, Spinner } from './ui'
+import { Modal, Popover, Spinner } from './ui'
 import { ProjectPicker } from './ProjectPicker'
+
+const PERMISSIONS: Record<SessionPermission, { label: string; detail: string }> = {
+  ask: { label: '询问审批', detail: '每次调用工具前询问你。' },
+  review: { label: '自动审核', detail: '按本地规则检查终端命令，识别到高风险操作时询问你。' },
+  full: { label: '完全访问', detail: '本会话的 Pi 可访问系统允许的文件和网络，工具调用无需审批。' }
+}
 
 type Draft = { text: string; attachments: Attachment[] }
 const drafts = new Map<string, Draft>()
@@ -68,11 +76,58 @@ function readImage(file: File): Promise<Attachment> {
         id: crypto.randomUUID(),
         dataUrl: String(reader.result),
         mimeType: file.type || 'image/png',
-        name: file.name || 'image'
+        name: file.name || 'image',
+        kind: 'image',
+        size: file.size
       })
     reader.onerror = () => reject(reader.error ?? new Error('Could not read image'))
     reader.readAsDataURL(file)
   })
+}
+
+const TEXT_FILE = /\.(txt|md|markdown|json|jsonc|yaml|yml|toml|ini|cfg|conf|env|csv|tsv|log|xml|html|css|scss|less|js|jsx|mjs|cjs|ts|tsx|py|rb|go|rs|java|kt|swift|c|h|cc|cpp|hpp|cs|php|sh|zsh|bash|sql|graphql|gql|vue|svelte|astro|dockerfile|makefile|gitignore|editorconfig)$/i
+
+async function readAttachment(file: File): Promise<Attachment> {
+  if (file.type.startsWith('image/')) {
+    const image = await readImage(file)
+    try { image.path = window.pi.getPathForFile(file) } catch { /* optional */ }
+    return image
+  }
+  let text: string | undefined
+  if (file.size <= 128 * 1024 && (file.type.startsWith('text/') || TEXT_FILE.test(file.name))) {
+    try { text = await file.text() } catch { text = undefined }
+  }
+  let path = ''
+  try { path = window.pi.getPathForFile(file) } catch { path = '' }
+  return {
+    id: crypto.randomUUID(),
+    dataUrl: '',
+    mimeType: file.type || 'application/octet-stream',
+    name: file.name || 'file',
+    kind: 'file',
+    path,
+    text,
+    size: file.size
+  }
+}
+
+function attachmentContext(files: Attachment[]): string {
+  if (!files.length) return ''
+  let budget = 64 * 1024
+  const blocks = files.map((file) => {
+    const location = file.path ? `路径：${file.path}` : '没有可用的绝对路径'
+    let content = ''
+    if (file.text !== undefined) {
+      const slice = file.text.slice(0, Math.max(0, budget))
+      budget -= slice.length
+      content = `\n\n\`\`\`\n${slice}\n\`\`\``
+      if (slice.length < file.text.length) content += file.path ? '\n附件内容未完整内嵌；请通过路径读取完整文件。' : '\n附件内容未完整内嵌，且没有可用路径；不能假设已读完整内容。'
+    } else if (file.path) {
+      content = '\n附件内容未内嵌；请通过路径读取文件。'
+    }
+    return `### ${file.name}\n${location}${content}`
+  })
+  return `\n\n<attachments>\n${blocks.join('\n\n')}\n</attachments>\n请先阅读这些附件，再回答。`
 }
 
 function ModelMenu({ close }: { close: () => void }): ReactNode {
@@ -163,7 +218,21 @@ function ModelMenu({ close }: { close: () => void }): ReactNode {
       <div className="menu-list" id="model-menu-list" role="listbox" ref={listRef}>
         {grouped.length === 0 && (
           <div className="menu-empty">
-            {state.models.length === 0 ? t("pi 还没就绪，稍等一下…") : t("没有匹配的模型")}
+            {state.models.length === 0 ? (
+              <>
+                <span>{t('还没有可用模型')}</span>
+                <button
+                  className="menu-empty-action"
+                  onClick={() => {
+                    close()
+                    actions.openSettings(true)
+                    window.dispatchEvent(new CustomEvent('pi:settings-section', { detail: 'models' }))
+                  }}
+                >
+                  {t('配置模型')}
+                </button>
+              </>
+            ) : t("没有匹配的模型")}
           </div>
         )}
         {grouped.map(([provider, models]) => (
@@ -246,13 +315,52 @@ export function Composer(): ReactNode {
   const [dragOverQueue, setDragOverQueue] = useState<number | null>(null)
   const [dragging, setDragging] = useState(false)
   const [commandIndex, setCommandIndex] = useState(0)
+  const [mention, setMention] = useState<{ query: string; start: number; end: number } | null>(null)
+  const [mentionFiles, setMentionFiles] = useState<string[]>([])
+  const [mentionIndex, setMentionIndex] = useState(0)
+  const [sessionSecurity, setSessionSecurity] = useState<SessionSecurity | null>(null)
+  const [changingPermission, setChangingPermission] = useState(false)
+  const [fullAccessTarget, setFullAccessTarget] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const focusedWhileStarting = useRef(false)
 
   const streaming = state.streaming
+  const starting = state.status === 'starting'
+  const ready = state.status === 'ready'
   const context = state.stats?.contextUsage
   const percent = typeof context?.percent === 'number' ? context.percent : 0
   const model = state.piState?.model
+
+  useEffect(() => {
+    let current = true
+    setSessionSecurity(null)
+    if (state.status === 'ready' && state.sessionPath) {
+      void window.pi.sessionSecurity(state.sessionPath).then((security) => { if (current) setSessionSecurity(security) }).catch(() => { if (current) setSessionSecurity(null) })
+    }
+    return () => { current = false }
+  }, [state.sessionPath, state.status])
+
+  const openPermissionSettings = (section: 'tools' | 'network'): void => {
+    actions.openSettings(true)
+    window.dispatchEvent(new CustomEvent('pi:settings-section', { detail: section }))
+  }
+
+  const changePermission = async (permission: SessionPermission): Promise<void> => {
+    const workspace = state.workspace
+    if (!workspace || changingPermission || sending || streaming || state.status !== 'ready') return
+    setFullAccessTarget(null)
+    setChangingPermission(true)
+    try {
+      const security = await window.pi.setSessionPermission({ cwd: workspace, sessionPath: state.sessionPath, permission })
+      if (draftRef.current.key === key) setSessionSecurity(security)
+    } catch (error) {
+      actions.notify('error', t('无法切换权限'), (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': Error: /, ''))
+    } finally {
+      setChangingPermission(false)
+    }
+  }
+
 
   useLayoutEffect(() => {
     const previous = draftRef.current
@@ -286,14 +394,14 @@ export function Composer(): ReactNode {
 
   useEffect(() => {
     const onNewSession = (event: Event): void => {
-      if (state.sessionPath || (!text.trim() && attachments.length === 0)) return
+      if (!text.trim() && attachments.length === 0) return
       event.preventDefault()
       actions.notify('warning', state.settings.language === 'en' ? 'Unsent draft' : '当前有未发送的草稿',
         state.settings.language === 'en' ? 'Send or clear this draft before starting another new session.' : '请先发送或清空草稿，再新建会话。')
     }
     window.addEventListener('pi:before-new-session', onNewSession)
     return () => window.removeEventListener('pi:before-new-session', onNewSession)
-  }, [actions, attachments.length, state.sessionPath, state.settings.language, text])
+  }, [actions, attachments.length, state.settings.language, text])
 
   useEffect(() => {
     const node = textareaRef.current
@@ -304,17 +412,28 @@ export function Composer(): ReactNode {
 
   useEffect(() => {
     if (!state.editorText) return
-    setText(state.editorText.value)
+    const { value, append, nonce } = state.editorText
+    setText((current) => append && current.trim() ? `${current}\n\n${value}` : value)
+    actions.consumeEditorText(nonce)
     const node = textareaRef.current
     requestAnimationFrame(() => {
       node?.focus()
       node?.setSelectionRange(node.value.length, node.value.length)
     })
-  }, [state.editorText])
+  }, [state.editorText, actions])
 
   useEffect(() => {
-    if (state.status === 'ready') textareaRef.current?.focus()
-  }, [state.status, state.sessionPath])
+    if (state.addProjectOpen || state.settingsOpen) return
+    if (starting) {
+      focusedWhileStarting.current = state.sessionPath === null
+      if (focusedWhileStarting.current) textareaRef.current?.focus({ preventScroll: true })
+    } else if (ready) {
+      if (!focusedWhileStarting.current || document.activeElement === document.body) {
+        textareaRef.current?.focus({ preventScroll: true })
+      }
+      focusedWhileStarting.current = false
+    }
+  }, [starting, ready, state.sessionPath, state.workspace, state.addProjectOpen, state.settingsOpen])
 
   const slashQuery = text.startsWith('/') && !text.includes(' ') ? text.slice(1) : null
   const commandMatches = useMemo(() => {
@@ -328,30 +447,65 @@ export function Composer(): ReactNode {
     setCommandIndex(0)
   }, [slashQuery])
 
+  const updateMention = useCallback((value: string, caret: number): void => {
+    const before = value.slice(0, caret)
+    const match = before.match(/(^|\s)@([^\s@]*)$/)
+    if (!match || !state.workspace) {
+      setMention(null)
+      setMentionFiles([])
+      return
+    }
+    setMention({ query: match[2], start: caret - match[2].length - 1, end: caret })
+    setMentionIndex(0)
+  }, [state.workspace])
+
+  useEffect(() => {
+    if (!mention) return
+    let alive = true
+    const timer = window.setTimeout(() => {
+      window.pi.listWorkspaceFiles(state.workspace ?? '', mention.query)
+        .then((files) => { if (alive) setMentionFiles(files) })
+        .catch(() => { if (alive) setMentionFiles([]) })
+    }, 120)
+    return () => { alive = false; window.clearTimeout(timer) }
+  }, [mention, state.workspace])
+
+  const pickMention = useCallback((path: string): void => {
+    if (!mention) return
+    const next = `${text.slice(0, mention.start)}@${path} ${text.slice(mention.end)}`
+    setText(next)
+    setMention(null)
+    setMentionFiles([])
+    const caret = mention.start + path.length + 2
+    window.requestAnimationFrame(() => {
+      const input = textareaRef.current
+      if (input) {
+        input.focus()
+        input.setSelectionRange(caret, caret)
+      }
+    })
+  }, [mention, text])
+
   const addFiles = useCallback(
     async (files: FileList | File[]) => {
       const owner = draftRef.current
-      const images = Array.from(files).filter((file) => file.type.startsWith('image/'))
-      if (!images.length) {
-        if (files.length) {
-          actions.notify('info', t('暂时只能附加图片'), t('拖进来的是文件，pi 的图片输入只接受图片。'))
-        }
-        return
-      }
+      const incoming = Array.from(files)
+      if (!incoming.length) return
       const available = Math.max(0, 6 - attachments.length)
-      if (images.length > available) {
-        actions.notify('warning', t('最多添加 6 张图片'), state.settings.language === 'en' ? `${images.length - available} images were not added.` : `本次有 ${images.length - available} 张图片未添加。`)
+      if (incoming.length > available) {
+        actions.notify('warning', t('最多添加 6 个附件'), state.settings.language === 'en' ? `${incoming.length - available} files were not added.` : `本次有 ${incoming.length - available} 个文件未添加。`)
       }
       const next: Attachment[] = []
-      for (const file of images.slice(0, available)) {
-        if (file.size > 8 * 1024 * 1024) {
-          actions.notify('warning', t('已跳过这张图片'), state.settings.language === 'en' ? `${file.name} exceeds 8 MB.` : `${file.name} 超过 8 MB。`)
+      for (const file of incoming.slice(0, available)) {
+        const limit = file.type.startsWith('image/') ? 8 * 1024 * 1024 : 20 * 1024 * 1024
+        if (file.size > limit) {
+          actions.notify('warning', t('已跳过这个附件'), state.settings.language === 'en' ? `${file.name} exceeds ${Math.round(limit / 1024 / 1024)} MB.` : `${file.name} 超过 ${Math.round(limit / 1024 / 1024)} MB。`)
           continue
         }
         try {
-          next.push(await readImage(file))
+          next.push(await readAttachment(file))
         } catch {
-          actions.notify('error', t('无法读取图片'), file.name)
+          actions.notify('error', t('无法读取附件'), file.name)
         }
       }
       if (draftRef.current.key === owner.key) {
@@ -366,7 +520,7 @@ export function Composer(): ReactNode {
 
   const submit = useCallback(async () => {
     const value = text.trim()
-    if ((!value && attachments.length === 0) || sending) return
+    if ((!value && attachments.length === 0) || starting || sending || changingPermission) return
     if (value === '/schedule' || value.startsWith('/schedule ')) {
       const rest = value.slice('/schedule'.length).trim()
       if (!rest) {
@@ -393,21 +547,29 @@ export function Composer(): ReactNode {
       return
     }
 
-    const images = attachments.map((attachment) => {
-      const base64 = attachment.dataUrl.split(',')[1] ?? ''
-      return { type: 'image' as const, data: base64, mimeType: attachment.mimeType }
-    })
+    const images = attachments
+      .filter((attachment) => attachment.kind !== 'file')
+      .map((attachment) => {
+        const base64 = attachment.dataUrl.split(',')[1] ?? ''
+        return { type: 'image' as const, data: base64, mimeType: attachment.mimeType }
+      })
+    const files = attachments.filter((attachment) => attachment.kind === 'file')
+    if (files.some((file) => !file.path && file.text === undefined)) {
+      actions.notify('warning', t('附件无法读取'), t('附件没有可用路径或文本内容，请重新选择文件。'))
+      return
+    }
+    const message = `${value}${attachmentContext(files)}`.trim()
 
     const owner = draftRef.current
     setSending(true)
-    const ok = await actions.sendMessage(value, images)
+    const ok = await actions.sendMessage(message, images)
     setSending(false)
     if (ok && draftRef.current === owner) {
       setText((current) => (current === text ? '' : current))
       const sentIds = new Set(attachments.map((attachment) => attachment.id))
       setAttachments((current) => current.filter((attachment) => !sentIds.has(attachment.id)))
     }
-  }, [actions, attachments, sending, state.status, state.sendMode, streaming, text, t])
+  }, [actions, attachments, starting, sending, changingPermission, state.status, state.sendMode, streaming, text, t])
 
   const stop = useCallback(async () => {
     if (stopping) return
@@ -421,8 +583,34 @@ export function Composer(): ReactNode {
     }
   }, [actions, stopping, t])
 
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
+    if (mention && mentionFiles.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setMentionIndex((index) => (index + 1) % mentionFiles.length)
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setMentionIndex((index) => (index - 1 + mentionFiles.length) % mentionFiles.length)
+        return
+      }
+      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+        event.preventDefault()
+        const file = mentionFiles[mentionIndex]
+        if (file) pickMention(file)
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setMention(null)
+        setMentionFiles([])
+        return
+      }
+    }
+
     if (commandMatches.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -458,7 +646,7 @@ export function Composer(): ReactNode {
 
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
     const files = Array.from(event.clipboardData.files)
-    if (files.some((file) => file.type.startsWith('image/'))) {
+    if (files.length) {
       event.preventDefault()
       void addFiles(files)
     }
@@ -484,7 +672,7 @@ export function Composer(): ReactNode {
     if (scroller.scrollTop !== before) event.preventDefault()
   }
 
-  const canSend = (text.trim().length > 0 || attachments.length > 0) && !sending
+  const canSend = ready && (text.trim().length > 0 || attachments.length > 0) && !sending && !changingPermission
 
   return (
     <div
@@ -502,7 +690,7 @@ export function Composer(): ReactNode {
       {dragging && (
         <div className="drop-overlay">
           <ImageIcon size={18} />
-          <span>{t("松手添加图片")}</span>
+          <span>{t("松手添加文件或图片")}</span>
         </div>
       )}
 
@@ -584,17 +772,27 @@ export function Composer(): ReactNode {
         </div>
       )}
 
+      {state.messages.length === 0 && (
+        <div className="composer-project-row">
+          <ProjectPicker />
+        </div>
+      )}
       <div className="composer">
-        {state.messages.length === 0 && (
-          <div className="composer-project-row">
-            <ProjectPicker />
-          </div>
-        )}
         {attachments.length > 0 && (
           <div className="attachment-row">
-            {attachments.map((attachment) => (
-              <div className="attachment" key={attachment.id}>
-                <img src={attachment.dataUrl} alt={attachment.name} />
+            {(() => { let remaining = 64 * 1024; return attachments.map((attachment) => {
+              const textLength = attachment.kind === 'file' ? attachment.text?.length : undefined
+              const partial = textLength !== undefined && textLength > remaining
+              if (textLength !== undefined) remaining = Math.max(0, remaining - textLength)
+              const status = attachment.kind !== 'file' ? '' : textLength === undefined
+                ? (attachment.path ? t('通过路径读取') : t('无法读取'))
+                : partial ? (attachment.path ? t('部分内容，需读取文件') : t('部分内容，无文件路径')) : t('已内嵌全文')
+              return (
+              <div className={clsx('attachment', attachment.kind === 'file' && 'file')} key={attachment.id} title={attachment.path || attachment.name}>
+                {attachment.kind === 'file'
+                  ? <span className="attachment-file-icon"><FileText size={15} /></span>
+                  : <img src={attachment.dataUrl} alt={attachment.name} />}
+                {attachment.kind === 'file' && <span className="attachment-file-copy"><span className="attachment-file-name">{attachment.name}</span><span className="attachment-file-status">{status}</span></span>}
                 <button
                   className="attachment-remove"
                   onClick={() =>
@@ -607,6 +805,24 @@ export function Composer(): ReactNode {
                   <X size={11} />
                 </button>
               </div>
+            ) }) })()}
+          </div>
+        )}
+
+        {mention && mentionFiles.length > 0 && (
+          <div className="command-menu mention-menu">
+            <div className="mention-label">{t('引用项目文件')}</div>
+            {mentionFiles.map((file, index) => (
+              <button
+                key={file}
+                className={clsx('command-item', index === mentionIndex && 'active')}
+                onMouseEnter={() => setMentionIndex(index)}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => pickMention(file)}
+              >
+                <FileText size={13} />
+                <span className="mention-path">{file}</span>
+              </button>
             ))}
           </div>
         )}
@@ -640,9 +856,12 @@ export function Composer(): ReactNode {
           spellCheck={false}
           aria-label={t("输入消息")}
           placeholder={
-            streaming ? (state.settings.language === 'en' ? 'Add a follow-up message…' : '输入后续消息…') : t("让 pi 帮你写代码、查问题、解释代码…")
+            streaming ? (state.settings.language === 'en' ? 'Add a follow-up message…' : '输入后续消息…') : state.messages.length === 0 ? t('例如，帮我比较两个网页的内容…') : t('输入后续消息…')
           }
-          onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setText(event.target.value)}
+          onChange={(event: ChangeEvent<HTMLTextAreaElement>) => {
+            setText(event.target.value)
+            updateMention(event.target.value, event.target.selectionStart ?? event.target.value.length)
+          }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
         />
@@ -651,8 +870,8 @@ export function Composer(): ReactNode {
           <div className="composer-left">
             <button
               className="icon-button add-attachment"
-              title={t("添加图片")}
-              aria-label={t("添加图片")}
+              title={t("添加文件或图片")}
+              aria-label={t("添加文件或图片")}
               onClick={() => fileRef.current?.click()}
             >
               <Plus size={16} />
@@ -660,7 +879,6 @@ export function Composer(): ReactNode {
             <input
               ref={fileRef}
               type="file"
-              accept="image/*"
               multiple
               hidden
               onChange={(event) => {
@@ -668,6 +886,62 @@ export function Composer(): ReactNode {
                 event.target.value = ''
               }}
             />
+            <Popover width={350} trigger={(open, toggle, expanded) => (
+              <button className={clsx('approval-mode-chip', sessionSecurity && `permission-${sessionSecurity.permission}`, open && 'open')}
+                onClick={toggle} disabled={changingPermission || state.status !== 'ready'} aria-label={t('当前会话权限')} title={t('当前会话权限')} {...expanded}>
+                {changingPermission ? <Spinner size={13} /> : <ShieldCheck size={13} />}
+                <span className="approval-mode-label">
+                  {t(changingPermission ? '正在切换权限…' : sessionSecurity ? PERMISSIONS[sessionSecurity.permission].label : '会话权限')}
+                </span>
+                <ChevronDown size={12} />
+              </button>
+            )}>
+              {(close) => <div className="menu">
+                <div className="menu-group">
+                  <div className="menu-group-label">{t('当前会话权限')}</div>
+                  {(['ask', 'review', ...(state.settings.allowFullAccess || sessionSecurity?.permission === 'full' ? ['full'] as const : [])] as const).map((permission) => {
+                    const { label, detail } = PERMISSIONS[permission]
+                    const active = permission === sessionSecurity?.permission
+                    return (
+                      <button key={permission} className={clsx('menu-item', 'approval-menu-item', `permission-${permission}`, active && 'active')}
+                        aria-pressed={active} disabled={streaming || sending || active} onClick={() => {
+                          close()
+                          if (permission === 'full') setFullAccessTarget(key)
+                          else void changePermission(permission)
+                        }}>
+                        <span className="approval-dot" aria-hidden="true" />
+                        <span className="menu-item-main"><span className="menu-item-title">{t(label)}</span><span className="menu-item-sub">{t(detail)}</span></span>
+                        {active && <Check size={14} />}
+                      </button>
+                    )
+                  })}
+                  <div className="permission-menu-scope">
+                    <ShieldCheck size={13} aria-hidden="true" />
+                    <span>{sessionSecurity?.sandboxed
+                      ? `${t(sessionSecurity.files === 'read-only' ? '项目只读' : '项目可写')} · ${t(sessionSecurity.network === 'off' ? '网络已关闭' : '联网受限')}`
+                      : t(sessionSecurity ? '沙箱未开启' : '权限状态加载中…')}</span>
+                    <button type="button" className="permission-settings-link" onClick={() => { close(); openPermissionSettings('network') }}>
+                      {t('文件与网络')}
+                    </button>
+                  </div>
+                  {streaming && <p className="approval-menu-note">{t('任务结束后可切换权限。')}</p>}
+                  {!state.settings.allowFullAccess && sessionSecurity?.permission !== 'full' && (
+                    <button type="button" className="menu-item permission-more" onClick={() => { close(); openPermissionSettings('tools') }}>
+                      {t('在设置中启用完全访问')}
+                    </button>
+                  )}
+                </div>
+              </div>}
+            </Popover>
+            {fullAccessTarget === key && (
+              <Modal open title={t('为当前会话启用完全访问？')}
+                subtitle={t('本会话会关闭 Pi 沙箱并跳过工具审批。Pi 可读写系统允许的文件并联网。浏览器和电脑操作仍由各自的权限设置管理。')}
+                onClose={() => setFullAccessTarget(null)}
+                footer={<>
+                  <button type="button" className="button ghost" onClick={() => setFullAccessTarget(null)}>{t('取消')}</button>
+                  <button type="button" className="button primary" onClick={() => void changePermission('full')}>{t('启用完全访问')}</button>
+                </>} children={null} />
+            )}
           </div>
 
           <div className="composer-right">
@@ -678,7 +952,7 @@ export function Composer(): ReactNode {
                 <button
                   className={clsx('chip', open && 'open')}
                   onClick={toggle}
-                  disabled={streaming}
+                  disabled={streaming || !ready}
                   title={
                     streaming
                       ? t("本轮结束后可切换模型")
@@ -704,7 +978,7 @@ export function Composer(): ReactNode {
                 <button
                   className={clsx('chip', open && 'open')}
                   onClick={toggle}
-                  disabled={streaming}
+                  disabled={streaming || !ready}
                   title={streaming ? t("本轮结束后可切换推理强度") : t("推理强度")}
                   aria-label={t("推理强度")}
                   {...expanded}
@@ -747,7 +1021,8 @@ export function Composer(): ReactNode {
                 title={t("Stop (Esc)")}
                 aria-label={t("Stop (Esc)")}
               >
-                {stopping ? <Spinner size={14} /> : <Square size={12} fill="currentColor" />}
+                {stopping ? <Spinner size={14} /> : <Square size={11} fill="currentColor" />}
+                {t("停止")}
               </button>
             )}
             {(!streaming || canSend || sending) && (
@@ -765,8 +1040,8 @@ export function Composer(): ReactNode {
         </div>
       </div>
 
-      <div className="composer-hint">
-        {streaming
+      <div className={clsx('composer-hint', starting && 'is-starting')} role={starting ? 'status' : undefined}>
+        {starting ? t('正在准备会话…') : streaming
           ? (state.settings.language === 'en' ? 'Enter to queue · Esc to stop' : 'Enter 排队发送 · Esc 停止')
           : t("Enter 发送 · Shift+Enter 换行")}
       </div>

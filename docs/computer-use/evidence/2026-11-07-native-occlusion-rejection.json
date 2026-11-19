@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-07",
+  "environment": "installed Pi Desktop and its Pi process loading the current source extension in an isolated local project",
+  "test": "observe a native fixture, request approval for a coordinate click, cover the fixture with Pi Desktop and confirm the test action",
+  "result": {"rejected": true, "reason": "target_obscured", "fixtureClickOccurred": false, "pendingActionsAfter": 0, "runnerRecordsAfter": 0},
+  "limitations": ["script command called tool handlers directly; no model planning", "installed UI displayed the approval dialog, but its source-only rejection card was not rendered in the installed version", "one local run; actual window movement was not verified", "not a general guarantee against all overlays or timing races"]
+}

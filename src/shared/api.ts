@@ -1,5 +1,6 @@
 import type {
   BackgroundSchedulerStatus,
+  AddProjectResult,
   Bootstrap,
   BrowserBounds,
   BrowserState,
@@ -11,6 +12,9 @@ import type {
   DeletedSession,
   DirEntry,
   GitStatus,
+  McpConnectionTest,
+  McpConnector,
+  McpConnectorInput,
   ModelsConfig,
   OpenSessionResult,
   PackageEntry,
@@ -32,13 +36,43 @@ import type {
   SkillEntry
 } from './types'
 
+import type { SessionPermission, SessionSecurity } from './types'
+
 export interface PiDesktopApi {
   bootstrap(): Promise<Bootstrap>
+  installPi(): Promise<{ ok: boolean; piPath?: string; piVersion?: string | null; output?: string; error?: string }>
+  recheckPi(): Promise<{ piPath: string; piVersion: string | null }>
+  projectTrustStatus(cwd: string): Promise<import('./types').ProjectTrustStatus>
+  checkUpdate(): Promise<import('./types').UpdateInfo>
+  listAuthProviders(): Promise<import('./types').AuthProviderStatus[]>
+  saveApiKey(provider: string, key: string): Promise<import('./types').AuthProviderStatus[]>
+  removeAuthProvider(provider: string): Promise<import('./types').AuthProviderStatus[]>
+  listOAuthProviders(): Promise<{ id: string; name: string; oauth: boolean; apiKey: boolean }[]>
+  startOAuth(provider: string): Promise<{ ok: boolean; error?: string }>
+  respondOAuth(id: string, value: string, cancelled?: boolean): void
+  cancelOAuth(): void
+  onOAuthEvent(callback: (event: Record<string, unknown>) => void): () => void
+  openReleasePage(url: string): Promise<void>
+  downloadUpdate(): Promise<{ ok: boolean; path?: string; error?: string }>
+  onUpdateProgress(callback: (progress: import('./types').UpdateProgress) => void): () => void
+  onUpdateAvailable(callback: (info: import('./types').UpdateInfo) => void): () => void
+  getJevStatus(): Promise<import('./types').JevStatus>
+  sandboxStatus(): Promise<import('./types').SandboxStatus>
+  sandboxAudit(): Promise<string[]>
+  onSandboxDomainDenied(callback: (event: { host: string; port?: number }) => void): () => void
+  saveJevSettings(patch: { enabled?: boolean; provider?: 'typesafe' | 'opencode-free'; model?: string; key?: string; sharePageText?: boolean }): Promise<import('./types').JevStatus>
+  projectTrustSet(cwd: string, decision: boolean | null, scope?: 'project' | 'parent'): Promise<import('./types').ProjectTrustStatus>
+  onPiInstallProgress(callback: (progress: { stage: string; message: string }) => void): () => void
+  acknowledgeInterruptedUi(id: string): Promise<void>
   updateSettings(patch: Partial<Settings>): Promise<Settings>
   updatePiSettings(patch: PiSettings): Promise<PiSettings>
   pickFolder(): Promise<string | null>
+  addProject(input: { cwd: string; name: string; trust?: boolean }): Promise<AddProjectResult>
   pickFile(options?: { title?: string; defaultPath?: string }): Promise<string | null>
+  getPathForFile(file: File): string
   listSessions(): Promise<SessionSummary[]>
+  searchSessions(query: string): Promise<import('./types').SessionSearchMatch[]>
+  listWorkspaceFiles(cwd: string, query: string): Promise<string[]>
   deleteSession(path: string): Promise<DeletedSession | null>
   restoreSession(trashPath: string, path: string): Promise<boolean>
   readModelsConfig(): Promise<ModelsConfig>
@@ -48,11 +82,16 @@ export interface PiDesktopApi {
   refreshModelCatalog(): Promise<{ ok: boolean; output: string }>
   openSession(options: { cwd: string; sessionPath?: string | null; scratch?: boolean }): Promise<OpenSessionResult>
   closeSession(): Promise<void>
+  sessionSecurity(sessionPath: string | null): Promise<SessionSecurity | null>
+  setSessionPermission(input: { cwd: string; sessionPath: string | null; permission: SessionPermission }): Promise<SessionSecurity>
   command<T = unknown>(command: Record<string, unknown>, timeoutMs?: number): Promise<PiResponse<T>>
   uiResponse(response: Record<string, unknown>): void
   openExternal(url: string): Promise<void>
-  browserOpen(url: string): Promise<BrowserState>
-  browserNavigate(url: string): Promise<BrowserState>
+  browserPreview(doc: string, url: string, candidate?: string): Promise<{ width: number; height: number; image: string; point: { x: number; y: number } | null; at: number } | null>
+  revealBrowserPage(doc: string, openPanel?: boolean): Promise<boolean>
+  browserCurrent(): Promise<BrowserState>
+  browserOpen(url: string, separate?: boolean): Promise<BrowserState>
+  browserNavigate(url: string, separate?: boolean): Promise<BrowserState>
   browserBack(): Promise<void>
   browserForward(): Promise<void>
   browserReload(): Promise<void>
@@ -61,9 +100,18 @@ export interface PiDesktopApi {
   browserBounds(bounds: BrowserBounds): Promise<void>
   browserVisible(visible: boolean): Promise<void>
   onBrowserState(callback: (state: BrowserState) => void): () => void
+  onBrowserReveal(callback: (doc: string) => void): () => void
   chromeBridgeInfo(): Promise<string>
-  chromeBridgeCheck(): Promise<{ connected: boolean; busy: boolean }>
+  chromeBridgeCopyPath(): Promise<void>
+  chromeBridgeDrag(): void
+  desktopPermissionDragApp(): void
+  desktopPermissionGuideClose(): void
+  chromeBridgeCheck(): Promise<{ connected: boolean; busy: boolean; versionStatus?: 'current' | 'outdated' | 'unknown' }>
+  desktopPermissionCheck(): Promise<{ accessibility: boolean; screenRecording: boolean; provisional?: boolean }>
+  desktopPermissionRequest(kind: 'accessibility' | 'screen'): Promise<{ accessibility: boolean; screenRecording: boolean; provisional?: boolean }>
   openChromeExtensions(): Promise<void>
+  browserRouterStatus(): Promise<import('./types').BrowserRouterStatus>
+  startCdpBrowser(): Promise<{ ok: boolean; detail: string }>
   chromeProfiles(): Promise<{ profiles: ChromeProfile[]; running: boolean; error?: string }>
   chromePreview(profileId: string): Promise<{ domains: ChromeDomain[]; running: boolean }>
   chromeImport(profileId: string, domains: string[]): Promise<ChromeImportResult>
@@ -83,11 +131,18 @@ export interface PiDesktopApi {
   platform: string
   gitStatus(cwd: string): Promise<GitStatus>
   gitDiff(cwd: string, path: string, staged?: boolean): Promise<string>
+  gitCommit(cwd: string, message: string, paths: string[]): Promise<{ ok: boolean; output: string; error?: string }>
   listSkills(cwd: string): Promise<SkillEntry[]>
   countSkills(cwd: string): Promise<number>
   listConnectors(cwd: string): Promise<ConnectorEntry[]>
+  listMcpConnectors(): Promise<McpConnector[]>
+  saveMcpConnector(input: McpConnectorInput): Promise<McpConnector>
+  testMcpConnector(input: McpConnectorInput): Promise<McpConnectionTest>
+  removeMcpConnector(id: string): Promise<void>
   readSkill(path: string): Promise<{ ok: boolean; content?: string; error?: string }>
   listPackages(cwd: string): Promise<PackageEntry[]>
+  inspectPackage(source: string, cwd: string): Promise<import('./types').PackageInspection>
+  searchPackageCatalog(query: string): Promise<{ entries: import('./types').PackageCatalogEntry[]; error?: string }>
   installPackage(
     source: string,
     options: { cwd: string; local?: boolean }

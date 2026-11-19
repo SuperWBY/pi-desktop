@@ -8,8 +8,9 @@
  * pi install, credentials, or token spend (and on CI).
  */
 import { createInterface } from 'node:readline'
+import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 const scenario = process.env.MOCK_SCENARIO ?? 'default'
 const args = process.argv.slice(2)
@@ -17,12 +18,34 @@ const sessionFlag = args.indexOf('--session')
 let sessionFile = sessionFlag !== -1 ? args[sessionFlag + 1] : null
 const cwd = process.cwd()
 
+if (args.includes('rpc') && basename(cwd) === 'scratch' && process.env.MOCK_SCRATCH_START_DELAY) {
+  await new Promise((resolve) => setTimeout(resolve, Number(process.env.MOCK_SCRATCH_START_DELAY)))
+}
+
+if (args[0] === 'list' && process.env.MOCK_LIST_SOURCE) {
+  await new Promise(resolve => setTimeout(resolve, Number(process.env.MOCK_LIST_DELAY_MS || 0)))
+  process.stdout.write(`User packages:\n  ${process.env.MOCK_LIST_SOURCE}\n    ${process.env.MOCK_LIST_SOURCE}\n`)
+  process.exit(0)
+}
+
 if (process.env.MOCK_RPC_ARGS_FILE && args.includes('--mode')) {
   writeFileSync(process.env.MOCK_RPC_ARGS_FILE, JSON.stringify(args))
+}
+if (process.env.MOCK_RPC_ENV_FILE && args.includes('--mode')) {
+  writeFileSync(process.env.MOCK_RPC_ENV_FILE, JSON.stringify({ desktopSettingsFile:process.env.PI_DESKTOP_SETTINGS_FILE, desktopBrowserBridgeFile:process.env.PI_DESKTOP_BROWSER_BRIDGE_FILE }))
+}
+if (process.env.PI_DESKTOP_TOOL_INFO_FILE && args.includes('--mode')) {
+  const guard = args[args.indexOf('--extension') + 1]
+  const helperRoot = process.env.MOCK_COMPUTER_USE_ROOT || (guard ? dirname(dirname(guard)) : null)
+  writeFileSync(process.env.PI_DESKTOP_TOOL_INFO_FILE, JSON.stringify({helperRoot}))
 }
 
 // Headless mode used by scheduled tasks: `pi -p ... "prompt"`.
 if (args.includes('-p') || args.includes('--print')) {
+  if (process.env.MOCK_SCHEDULE_PROBE_OUTSIDE) {
+    try { writeFileSync(process.env.MOCK_SCHEDULE_PROBE_OUTSIDE, 'unexpected'); console.log('outside-write-allowed') }
+    catch { console.log('outside-write-denied') }
+  }
   const dirFlag = args.indexOf('--session-dir')
   const idFlag = args.indexOf('--session-id')
   const sessionDir = dirFlag !== -1 ? args[dirFlag + 1] : cwd
@@ -119,6 +142,7 @@ let streamingTimer = null
 const transcriptSize = Number(process.env.MOCK_TRANSCRIPT ?? 0)
 const toolBurst = Number(process.env.MOCK_TOOLS ?? 0)
 const now = Date.now()
+if (process.env.MOCK_ENV_FILE) { try { writeFileSync(process.env.MOCK_ENV_FILE, JSON.stringify({ jev: process.env.PI_JEV_ENABLED, provider: process.env.PI_JEV_PROVIDER, key: process.env.TYPESAFE_API_KEY, model: process.env.PI_JEV_MODEL, sandbox: process.env.PI_DESKTOP_SANDBOX, proxy: process.env.HTTPS_PROXY, noProxy: process.env.NO_PROXY })) } catch {} }
 
 const sessionRoot = process.env.PI_CODING_AGENT_SESSION_DIR?.trim()
 
@@ -240,6 +264,7 @@ function seededTurn(i) {
 }
 
 let messages = Array.from({ length: transcriptSize }, (_, i) => seededTurn(i)).flat()
+if (process.env.MOCK_LOAD_SESSION === '1' && sessionFile) messages = loadSessionMessages(sessionFile)
 
 function write(record) {
   process.stdout.write(`${JSON.stringify(record)}\n`)
@@ -308,13 +333,45 @@ function stream(text) {
       message,
       assistantMessageEvent: { type: 'text_delta', delta: next, contentIndex: 0 }
     })
-  }, 25)
+  }, Number(process.env.MOCK_STREAM_INTERVAL || 25))
 }
 
 function handle(command) {
   pendingId = command.id ?? null
   const command_ = command.command
   switch (command.type) {
+    case 'get_fork_messages':
+      return response('get_fork_messages', { messages: [{ entryId: 'entry-1', text: 'first prompt' }, { entryId: 'entry-2', text: 'second prompt' }] })
+    case 'get_tree':
+      return response('get_tree', {
+        tree: [{
+          entry: { id: 'entry-1', type: 'message', parentId: null, message: { role: 'user', content: [{ type: 'text', text: 'first prompt' }] } },
+          children: [{
+            entry: { id: 'entry-2', type: 'message', parentId: 'entry-1', message: { role: 'assistant', content: [{ type: 'text', text: 'first answer' }] } },
+            children: [{
+              entry: { id: 'entry-3', type: 'message', parentId: 'entry-2', message: { role: 'user', content: [{ type: 'text', text: 'second prompt' }] } },
+              children: [{ entry: { id: 'entry-4', type: 'message', parentId: 'entry-3', message: { role: 'assistant', content: [{ type: 'text', text: 'second answer' }] } }, children: [] }]
+            }]
+          }]
+        }],
+        leafId: 'entry-4'
+      })
+    case 'clone': {
+      const base = sessionFile ? sessionFile.replace(/\.jsonl$/i, '') : join(cwd, `mock-${Date.now()}`)
+      const next = `${base}-clone-${Date.now()}.jsonl`
+      mkdirSync(dirname(next), { recursive: true })
+      writeFileSync(next, JSON.stringify({ type: 'session', id: 'clone', cwd, timestamp: new Date().toISOString() }) + '\n')
+      sessionFile = next
+      return response('clone', { cancelled: false })
+    }
+    case 'fork': {
+      const base = sessionFile ? sessionFile.replace(/\.jsonl$/i, '') : join(cwd, `mock-${Date.now()}`)
+      const next = `${base}-fork-${Date.now()}.jsonl`
+      mkdirSync(dirname(next), { recursive: true })
+      writeFileSync(next, JSON.stringify({ type: 'session', id: 'fork', cwd, timestamp: new Date().toISOString() }) + '\n')
+      sessionFile = next
+      return response('fork', { text: 'first prompt', cancelled: false })
+    }
     case 'get_state':
       return response('get_state', state())
     case 'get_messages':
@@ -326,6 +383,7 @@ function handle(command) {
     case 'get_available_thinking_levels':
       return response('get_available_thinking_levels', { levels: LEVELS })
     case 'get_commands':
+      if (process.env.MOCK_COMMANDS_FAIL === '1') return response('get_commands', undefined, false, 'registry unavailable')
       return response('get_commands', { commands: [] })
     case 'set_model': {
       const next = MODELS.find(
@@ -352,6 +410,10 @@ function handle(command) {
       }
       const text = String(command.message ?? '')
       messages.push({ role: 'user', content: [{ type: 'text', text }] })
+      if (text === 'local approval test' && process.env.MOCK_BACKGROUND_CONFIRM === '1') {
+        setTimeout(() => write({ type: 'extension_ui_request', id: 'fixture-confirm', method: 'confirm', title: `Fixture ${process.pid}`, message: 'Local test only' }), 800)
+        return response('prompt', { disposition: 'started' })
+      }
       write({ type: 'message_start', message: { role: 'user', content: command.message } })
       write({ type: 'message_end', message: { role: 'user', content: command.message } })
       const body = `mock reply ${messages.length}: ${text} ${'— streaming padding '.repeat(30)}`
@@ -361,6 +423,11 @@ function handle(command) {
       }
       return response('prompt', { disposition: 'started' })
     }
+    case 'extension_ui_response':
+      if (scenario === 'default' && command.id === 'fixture-confirm' && process.env.MOCK_BACKGROUND_CONFIRM === '1') {
+        messages.push({ role: 'assistant', content: [{ type: 'text', text: `approval:${String(command.confirmed)}` }] })
+      }
+      return
     case 'abort':
       if (streamingTimer) {
         clearInterval(streamingTimer)
@@ -374,13 +441,19 @@ function handle(command) {
         messages = loadSessionMessages(sessionFile)
       } else {
         sessionFile = createSessionFile()
-        messages = []
+        // E2E transcript fixtures seed `messages`; preserve them across the
+        // app's initial new_session handshake. Real pi starts empty here.
+        if (transcriptSize === 0) messages = []
       }
       return response(command.type, { sessionFile })
     case 'compact':
       return response('compact', {})
     case 'bash': {
       const command = String(command_ ?? '')
+      if (process.env.MOCK_SANDBOX_PROBE === '1') {
+        const probe = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8' })
+        return response('bash', { output: `${probe.stdout ?? ''}${probe.stderr ?? ''}`, exitCode: probe.status ?? 1 })
+      }
       const lines = [
         `$ ${command}`,
         'mock-pi: simulated output',

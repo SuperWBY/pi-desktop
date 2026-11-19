@@ -43,6 +43,17 @@ export interface PiState {
   pendingMessageCount?: number
 }
 
+export type ToolApprovalMode = 'dangerous' | 'all' | 'never'
+export type SessionPermission = 'ask' | 'review' | 'full'
+
+export interface SessionSecurity {
+  permission: SessionPermission
+  mode: ToolApprovalMode
+  sandboxed: boolean
+  files?: 'workspace-write' | 'read-only'
+  network?: 'model' | 'off'
+}
+
 export interface TokenCounts {
   input: number
   output: number
@@ -208,6 +219,7 @@ export interface BrowserBounds {
 }
 
 export interface BrowserDownload {
+  id: string
   filename: string
   state: 'completed' | 'cancelled' | 'interrupted'
 }
@@ -245,10 +257,12 @@ export interface ChromeImportResult {
 }
 
 export interface Settings {
+  computerUseEnabled?: boolean
   piPath?: string
   language?: 'zh-CN' | 'en'
   theme: 'dark' | 'light'
   workspaces: string[]
+  workspaceNames?: Record<string, string>
   lastWorkspace?: string
   lastSessionPath?: string
   /** Fold the process away once the final answer of a turn lands. */
@@ -261,11 +275,26 @@ export interface Settings {
   notifyOnFinish?: boolean
   workPanelOpen?: boolean
   workPanelWidth?: number
-  workPanelTab?: 'changes' | 'files' | 'terminal' | 'artifacts' | 'browser'
-  workPanelTabs?: ('changes' | 'files' | 'terminal' | 'artifacts' | 'browser')[]
+  workPanelTab?: 'home' | 'changes' | 'files' | 'terminal' | 'artifacts' | 'browser'
+  workPanelTabs?: ('home' | 'changes' | 'files' | 'terminal' | 'artifacts' | 'browser')[]
   /** Where links in chat open: the in-app browser panel or the OS browser. */
   linkOpenMode?: 'browser' | 'external'
+  /** Check GitHub Releases once after launch; never downloads without confirmation. */
+  autoCheckUpdates?: boolean
   toolCardsExpanded?: boolean
+  /** dangerous = confirm only high-risk bash; all = confirm every tool; never = no desktop approval. */
+  toolApprovalMode?: ToolApprovalMode
+  allowFullAccess?: boolean
+  /** OS-level sandbox for the pi process tree (macOS/Linux). */
+  sandboxEnabled?: boolean
+  /** workspace-write = edit project; read-only = project read, session/tmp writes only. */
+  sandboxMode?: 'workspace-write' | 'read-only'
+  /** model = model hosts + custom domains; off = no network at all. */
+  sandboxNetwork?: 'model' | 'off'
+  sandboxAllowedDomains?: string[]
+  /** Optional HTTP proxy for the pi child when the sandbox is off. */
+  networkProxy?: string
+  networkNoProxy?: string
   followStream?: boolean
   launchAtLogin?: boolean
   backgroundScheduler?: boolean
@@ -332,12 +361,58 @@ export interface PiSettings {
   [key: string]: unknown
 }
 
+export interface AuthProviderStatus {
+  provider: string
+  type: 'api_key' | 'oauth' | 'unknown'
+}
+
+export interface UpdateAsset {
+  name: string
+  url: string
+  size: number
+  digest?: string
+}
+
+export interface UpdateInfo {
+  current: string
+  latest: string | null
+  hasUpdate: boolean
+  url: string | null
+  notes: string | null
+  publishedAt: string | null
+  asset?: UpdateAsset | null
+  error?: string
+}
+
+export interface UpdateProgress {
+  phase: 'downloading' | 'verifying' | 'ready' | 'error'
+  received?: number
+  total?: number
+  message: string
+  path?: string
+}
+
+export interface ProjectTrustStatus {
+  required: boolean
+  decision: boolean | null
+  inheritedFrom?: string
+  resources?: string[]
+}
+
+export type AddProjectResult =
+  | { status: 'needs-trust'; cwd: string; trust: ProjectTrustStatus }
+  | { status: 'added'; cwd: string }
+
 export interface Bootstrap {
   platform: string
   appVersion: string
   electronVersion: string
   piPath: string
   piVersion: string | null
+  /** True when this executable came from the offline seed bundled with the app. */
+  piBundled?: boolean
+  /** False when the app was launched for an automated test or a managed build. */
+  autoInstallPi?: boolean
   home: string
   sessionsRoot: string
   /** Dedicated cwd for conversations without a project. */
@@ -346,6 +421,7 @@ export interface Bootstrap {
   piSettings: PiSettings
   piSettingsFile: string
   agentDir: string
+  interruptedUi?: { id: string; cwd: string; sessionPath: string | null; at: number }[] | null
 }
 
 export interface PiResponse<T = unknown> {
@@ -417,6 +493,55 @@ export interface GitStatus {
   files: GitFileChange[]
 }
 
+export interface SessionTreeEntry {
+  id: string
+  type: string
+  parentId?: string | null
+  timestamp?: string
+  message?: { role?: string; content?: unknown }
+}
+
+export interface SessionTreeNode {
+  entry: SessionTreeEntry
+  children: SessionTreeNode[]
+  label?: string
+}
+
+export interface SandboxStatus {
+  available: boolean
+  reason?: string
+  node?: string
+  cli?: string
+}
+
+export interface JevStatus {
+  enabled: boolean
+  provider: 'typesafe' | 'opencode-free'
+  model: string
+  sharePageText: boolean
+  keyConfigured: boolean
+  keySource: 'file' | 'env' | null
+}
+
+export interface BrowserRouterStatus {
+  cdpPort: number
+  backends: {
+    backend: 'inapp' | 'cdp' | 'extension'
+    connected: boolean
+    detail: string
+  }[]
+}
+
+export interface SessionTreeData {
+  tree: SessionTreeNode[]
+  leafId: string | null
+}
+
+export interface SessionSearchMatch {
+  session: SessionSummary
+  matches: { role: 'user' | 'assistant'; text: string }[]
+}
+
 export interface DeletedSession {
   path: string
   trashPath: string
@@ -434,6 +559,8 @@ export interface SessionListItem {
 export interface SkillEntry {
   name: string
   description: string
+  displayName?: string
+  summary?: string
   version?: string
   path: string
   realPath: string
@@ -468,6 +595,54 @@ export interface ConnectorEntry {
   installed: boolean
   path?: string
   usedBy: Array<{ name: string; path: string }>
+}
+
+export interface McpConnector {
+  id: string
+  name: string
+  transport: 'http' | 'stdio'
+  url?: string
+  enabled: boolean
+  headerNames: string[]
+}
+
+export interface McpConnectorInput {
+  id?: string
+  name: string
+  url: string
+  headers: Array<{ name: string; value: string; keep?: boolean }>
+}
+
+export type McpConnectionTest =
+  | { status: 'connected'; toolCount: number }
+  | { status: 'unauthorized' | 'unreachable' | 'unsupported' }
+
+export interface PackageCatalogEntry {
+  name: string
+  version: string
+  description: string
+  publishedAt: string | null
+  publisher: string | null
+  keywords: string[]
+  npmUrl: string | null
+  repositoryUrl: string | null
+  source: string
+}
+
+export interface PackageInspection {
+  source: string
+  kind: 'npm' | 'git' | 'local'
+  path?: string
+  name: string
+  version?: string
+  description?: string
+  manifestFound: boolean
+  scripts: { name: string; command: string }[]
+  resources: PackageResources
+  files?: number
+  bytes?: number
+  risk: 'low' | 'medium' | 'high' | 'unknown'
+  warnings: string[]
 }
 
 export interface PackageProgress {

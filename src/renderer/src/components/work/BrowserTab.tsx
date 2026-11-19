@@ -37,15 +37,19 @@ function normalizeAddress(input: string): string {
 }
 
 export function BrowserTab({
-  active,
+  active, canFollow, following, onFollow,
   request,
   onRequestConsumed,
-  onTitle
+  onTitle, onClose
 }: {
   active: boolean
+  canFollow: boolean
+  following: boolean
+  onFollow: (value: boolean) => void
   request: BrowserRequest | null
   onRequestConsumed: () => void
   onTitle?: (title: string) => void
+  onClose: () => void
 }): ReactNode {
   const t = useTranslation()
   const { actions } = useApp()
@@ -56,7 +60,12 @@ export function BrowserTab({
   const surfaceRef = useRef<HTMLDivElement>(null)
   const lastDownload = useRef<string | null>(null)
 
-  useEffect(() => window.pi.onBrowserState(setBrowser), [])
+  useEffect(() => {
+    let fresh = true
+    const unsubscribe = window.pi.onBrowserState(value => { fresh = false; setBrowser(value) })
+    void window.pi.browserCurrent?.().then(value => { if (fresh) setBrowser(value) }).catch(() => {})
+    return () => { fresh = false; unsubscribe() }
+  }, [])
 
   useEffect(() => {
     if (!editing) setAddress(browser.url)
@@ -69,20 +78,21 @@ export function BrowserTab({
   useEffect(() => {
     if (!request || !active) return
     onRequestConsumed()
+    onFollow(false)
     void window.pi
-      .browserOpen(request.url)
+      .browserOpen(request.url, canFollow)
       .then(setBrowser)
       .catch((error: unknown) => setNotice(error instanceof Error ? error.message : String(error)))
   }, [request, active, onRequestConsumed])
 
   useEffect(() => {
     if (!browser.download) return
-    const key = `${browser.download.filename}:${browser.download.state}`
+    const key = browser.download.id
     if (lastDownload.current === key) return
     lastDownload.current = key
     actions.notify(
-      browser.download.state === 'completed' ? 'success' : 'error',
-      browser.download.state === 'completed' ? t("下载完成") : t("下载未完成"),
+      browser.download.state === 'completed' ? 'success' : browser.download.state === 'cancelled' ? 'info' : 'error',
+      t(browser.download.state === 'completed' ? '下载完成' : browser.download.state === 'cancelled' ? '下载已取消' : '下载未完成'),
       browser.download.filename
     )
   }, [actions, browser.download])
@@ -134,7 +144,7 @@ export function BrowserTab({
     setEditing(false)
     setNotice(null)
     void window.pi
-      .browserNavigate(next)
+      .browserNavigate(next, canFollow)
       .then(setBrowser)
       .catch((error: unknown) => setNotice(error instanceof Error ? error.message : String(error)))
   }
@@ -145,10 +155,12 @@ export function BrowserTab({
 
   return (
     <div className="browser-tab" hidden={!active}>
+      {canFollow && <div className="browser-follow"><button aria-pressed={following} onClick={() => onFollow(!following)}
+        title={t(following ? '固定当前网页' : '跟随 Pi 切换网页')}>{t(following ? '正在跟随 Pi' : '跟随 Pi')}</button></div>}
       <div className="browser-toolbar">
         <button
           className="browser-icon"
-          onClick={() => window.pi.browserBack()}
+          onClick={() => { onFollow(false); void window.pi.browserBack() }}
           disabled={!browser.canGoBack}
           aria-label={t("后退")}
           title={t("后退")}
@@ -157,7 +169,7 @@ export function BrowserTab({
         </button>
         <button
           className="browser-icon"
-          onClick={() => window.pi.browserForward()}
+          onClick={() => { onFollow(false); void window.pi.browserForward() }}
           disabled={!browser.canGoForward}
           aria-label={t("前进")}
           title={t("前进")}
@@ -183,6 +195,7 @@ export function BrowserTab({
             value={address}
             onChange={(event) => setAddress(event.target.value)}
             onFocus={(event) => {
+              onFollow(false)
               setEditing(true)
               event.currentTarget.select()
             }}
@@ -212,7 +225,7 @@ export function BrowserTab({
         </button>
         <button
           className="browser-icon"
-          onClick={() => void window.pi.browserClose()}
+          onClick={onClose}
           aria-label={t("关闭浏览器")}
           title={t("关闭浏览器")}
         >
@@ -250,7 +263,7 @@ export function BrowserTab({
               </div>
               <div className="browser-guide-item">
                 <span className="browser-guide-index">3</span>
-                <span>{t("密码框不会返回值；点击、提交和敏感操作仍需要你确认。")}</span>
+                <span>{t("密码框的值不会返回；操作是否需要确认取决于审批设置。")}</span>
               </div>
             </div>
           </div>

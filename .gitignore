@@ -5,3 +5,6 @@ output/
 dist/
 .DS_Store
 *.log
+build/pi-seed/
+
+build/srt-cli.cjs

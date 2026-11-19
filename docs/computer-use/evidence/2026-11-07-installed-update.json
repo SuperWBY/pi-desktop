@@ -1,0 +1,12 @@
+{
+  "date": "2026-11-07",
+  "environment": "installed Pi Desktop on macOS, updated with the same locally configured signing identity",
+  "checks": {
+    "signatureRequirementMatchedPreviousInstall": true,
+    "installedAsarComputerUseFilesMatchedSource": true,
+    "accessibilityPreflight": "granted",
+    "screenRecordingPreflight": "granted",
+    "packagedRuntimeOcclusionProbe": {"rejected":true,"reason":"target_obscured","fixtureClickOccurred":false,"pendingActionsAfter":0,"runnerRecordsAfter":0}
+  },
+  "limitations": ["permission checks are preliminary", "occlusion probe calls packaged runtime handlers from a local scripted command, not a model or normal tool card", "no full autonomous long task or real window movement tested", "single macOS machine; Windows guarded desktop actions remain unsupported"]
+}

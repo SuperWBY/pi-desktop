@@ -1,0 +1,14 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>本地业务后台测试</title>
+<body><main><h1>本地业务后台测试</h1><p>测试账号：测试商家 A</p>
+<label>订单编号 <input id="query" autocomplete="off"></label><button id="search">查询订单</button>
+<section aria-live="polite"><h2>查询结果</h2><div id="results"></div></section>
+<a href="/report.csv" download>下载订单报表</a>
+<section><h2>上传资料</h2><p id="selected">尚未选择订单</p><label>选择 CSV 文件 <input id="file" type="file" accept=".csv,text/csv"></label><button id="upload" disabled>上传资料</button><p id="uploadStatus" aria-live="polite"></p></section>
+<section><h2>提交订单</h2><button id="submit" disabled>提交订单</button><p id="submitStatus" aria-live="polite"></p></section>
+</main><script>
+let selected=null, uploaded=null
+const $=id=>document.getElementById(id)
+$('search').onclick=async()=>{ selected=null;uploaded=null;$('selected').textContent='尚未选择订单';$('upload').disabled=true;$('submit').disabled=true;$('uploadStatus').textContent='';$('submitStatus').textContent='';$('results').textContent='正在查询…';const response=await fetch('/api/records?q='+encodeURIComponent($('query').value));const records=await response.json();$('results').replaceChildren();for(const record of records){const button=document.createElement('button');button.textContent=record.id+' '+record.name+' '+record.status;button.onclick=()=>{selected=record.id;uploaded=null;$('selected').textContent='已选择订单：'+selected;$('upload').disabled=false;$('submit').disabled=true};$('results').append(button)}if(!records.length)$('results').textContent='没有找到订单'}
+$('upload').onclick=async()=>{const file=$('file').files[0];if(!selected||!file){$('uploadStatus').textContent='请选择订单和文件';return}const response=await fetch('/api/upload',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({recordId:selected,name:file.name,content:await file.text()})});const data=await response.json();if(!response.ok){$('uploadStatus').textContent='上传失败：'+data.error;return}uploaded=data;$('uploadStatus').textContent='上传成功：'+data.name+' · '+data.recordId;$('submit').disabled=false}
+$('submit').onclick=async()=>{if(!selected||!uploaded)return;const response=await fetch('/api/submit',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({recordId:selected,sha256:uploaded.sha256})});const data=await response.json();$('submitStatus').textContent=response.ok?'已提交：'+data.recordId:'提交失败：'+data.error;if(response.ok)$('submit').disabled=true}
+</script></body></html>

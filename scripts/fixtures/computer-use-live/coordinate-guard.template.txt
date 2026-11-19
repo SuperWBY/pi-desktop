@@ -1,0 +1,30 @@
+import { execFile as callbackExecFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { readFile, writeFile } from 'node:fs/promises'
+const execFile=promisify(callbackExecFile)
+const helper=__HELPER_PATH__
+const fixture=process.cwd()+'/fixture-evidence.txt'
+const result=process.cwd()+'/native-guard-result.json'
+async function invoke(args:string[]) { const {stdout}=await execFile(helper,args,{timeout:15000}); return JSON.parse(stdout) }
+export default function(pi:any) {
+ pi.registerCommand('pi-coordinate-probe',{description:'Test guarded coordinates in an isolated native window',handler:async(_args:any,ctx:any)=>{
+  try {
+   await invoke(['activate','--app','dev.pi.desktop.cua-fixture'])
+   const observation=await invoke(['observe','--app','dev.pi.desktop.cua-fixture'])
+   const s=observation.snapshot
+   const button=s.elements.find((e:any)=>e.title==='Pi Fixture Start')
+   if(!button?.bounds || !s.windowId || !s.windowBounds) throw Error('Missing native window or test button')
+   const x=button.bounds.x+button.bounds.width/2, y=button.bounds.y+button.bounds.height/2
+   const expected={app:s.app,bundleId:s.bundleId,windowId:s.windowId,bounds:s.windowBounds}
+   const wrong={...expected,bounds:{...expected.bounds,x:expected.bounds.x+1}}
+   let rejected=false
+   try {await invoke(['click','--x',String(x),'--y',String(y),'--expected-window',JSON.stringify(wrong)])}catch(e:any){try {const value=JSON.parse(String(e.stdout??'')); rejected=value.ok===false && value.code==='PI_COORDINATE_GUARD' && value.reason==='window_changed'} catch {}}
+   let before='';try{before=await readFile(fixture,'utf8')}catch{}
+   if(!rejected || before) throw Error('Mismatch was not rejected before any click')
+   await invoke(['click','--x',String(x),'--y',String(y),'--expected-window',JSON.stringify(expected)])
+   let contents=''; for(let i=0;i<40;i++){try{contents=await readFile(fixture,'utf8');break}catch{await new Promise(r=>setTimeout(r,50))}}; if(!contents) throw Error('Fixture did not update within two seconds'); const clicks=contents.trim().split('\n').length
+   await writeFile(result,JSON.stringify({ok:clicks===1,mismatchRejected:rejected,clicks,windowIdPresent:true}))
+   ctx.ui.notify('原生坐标验证完成','info')
+  } catch(e:any) { await writeFile(result,JSON.stringify({ok:false,error:String(e),stdout:String(e.stdout??'')})); ctx.ui.notify('原生坐标验证未通过','error') }
+ }})
+}

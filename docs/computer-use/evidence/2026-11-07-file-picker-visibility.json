@@ -1,0 +1,8 @@
+{
+  "date":"2026-11-07",
+  "environment":"macOS installed Pi Desktop; local mock page and scripted Pi runtime command",
+  "beforeFix":{"panelCollapsed":"no visible macOS file picker after confirmed action","panelExpanded":"macOS Open panel appeared"},
+  "afterFix":{"initialPanelCollapsed":true,"panelAutomaticallyExpanded":true,"nativeOpenPanelObserved":true,"chooserCancelled":true,"uploads":0,"submissions":0,"pendingBrowserActions":0},
+  "automatedChecks":{"hiddenPanelRevealedBeforeChooser":true,"unavailableViewRejectedWithoutChooserEvent":true,"e2eBrowserChecks":"36/36","e2ePermissionChecks":"18/18","testHomeIsolation":true},
+  "limitations":["single local macOS system and test page","script invokes runtime handlers; no autonomous model in this retest","system file picker was cancelled, no real upload in the retest","a minimized, background or otherwise obstructed host and nonstandard file pickers remain unverified","a later fallback-button tab selection refinement was validated in isolated Electron and installed, but not separately rechecked in the native dialog"]
+}

@@ -1,0 +1,10 @@
+{
+  "scenario":"installed-model-inapp-local-order-lookup-with-input-preview",
+  "date":"2026-11-07",
+  "model":"opencode-go/deepseek-v4.1-flash",
+  "scope":"one local read-only mock-backend run after the approval preview update",
+  "result":{"recordId":"ORD-2026-002","product":"青木测试商品","status":"待处理","displayedTime":"1m 25s","displayedToolOperations":9,"displayedUiErrors":1,"approvalCount":2,"serverUploadAttempts":0,"serverSubmitAttempts":0,"serverUploads":0,"serverSubmissions":0},
+  "approvalEvidence":"The installed app's browser confirmation displayed target 订单编号 and input preview \"ORD-2026-002\" before the operator approved the local test action.",
+  "errorEvidence":"The first read after an action returned Observe the browser before reading page text. The model observed again and obtained the correct answer.",
+  "limits":["One run; no success-rate or comparative performance claim.","The test operator approved two local browser actions; no real platform or upload.","Displayed timing and operation counts are UI values, not independently measured latency or billing."]
+}

@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { Check, ChevronDown, FolderOpen, MessageCircle, Plus, Search } from 'lucide-react'
 import { useApp } from '../store'
 import { useTranslation } from '../i18n'
-import { baseName, shortenPath } from '../lib/format'
+import { projectName, shortenPath } from '../lib/format'
 import { Popover } from './ui'
 
 /**
@@ -34,13 +34,13 @@ export function ProjectPicker(): ReactNode {
     const needle = query.trim().toLowerCase()
     if (!needle) return projects
     return projects.filter(
-      (path) => baseName(path).toLowerCase().includes(needle) || path.toLowerCase().includes(needle)
+      (path) => projectName(state.settings.workspaceNames, path).toLowerCase().includes(needle) || path.toLowerCase().includes(needle)
     )
-  }, [projects, query])
+  }, [projects, query, state.settings.workspaceNames])
 
   const currentLabel = state.scratchWorkspace
     ? t('选择项目')
-    : baseName(state.workspace) || t('选择项目')
+    : projectName(state.settings.workspaceNames, state.workspace) || t('选择项目')
 
   return (
     <Popover
@@ -49,6 +49,7 @@ export function ProjectPicker(): ReactNode {
         <button
           className={`project-picker-trigger composer-project-tab${state.scratchWorkspace ? '' : ' active'}`}
           onClick={toggle}
+          disabled={state.status === 'starting'}
           title={state.scratchWorkspace ? t('不关联项目') : state.workspace ?? ''}
           {...expanded}
         >
@@ -83,7 +84,7 @@ export function ProjectPicker(): ReactNode {
                 >
                   <FolderOpen size={15} />
                   <span className="project-picker-main">
-                    <span className="project-picker-name">{baseName(path)}</span>
+                    <span className="project-picker-name">{projectName(state.settings.workspaceNames, path)}</span>
                     <span className="project-picker-path">
                       {shortenPath(path, state.boot?.home)}
                     </span>
@@ -98,7 +99,7 @@ export function ProjectPicker(): ReactNode {
             className="project-picker-item"
             onClick={() => {
               close()
-              void actions.pickFolder()
+              actions.openAddProject(true)
             }}
           >
             <Plus size={15} />

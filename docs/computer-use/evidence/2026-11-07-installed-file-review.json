@@ -1,0 +1,26 @@
+{
+  "recordedAt": "2026-11-07T07:24:46.986438+00:00",
+  "scenario": "installed-pi-local-file-selection-human-confirmation",
+  "scope": "isolated local fixture",
+  "runner": "temporary trusted project command invoked packaged computer-use code from Pi Desktop process; Codex operated real confirmation and macOS file chooser",
+  "selection": {
+    "name": "pi-live-upload.csv",
+    "size": 43,
+    "contentHashVerified": false,
+    "humanConfirmationDisplayed": true,
+    "humanConfirmationAccepted": true
+  },
+  "result": {
+    "selectionConfirmed": true,
+    "uploadAttempts": 0,
+    "submitAttempts": 0
+  },
+  "sourceIndexSha256": "110f5f760b4e39e3d86281588f7392e4cbfcbb6446e8622de5ff9262f2fcac28",
+  "limitations": [
+    "One local scripted run; not autonomous model planning",
+    "No upload or submission was performed",
+    "Codex acted as the user; no real user validation",
+    "No same-metadata replacement was injected in this installed run",
+    "Temporary test command incorrectly displayed an upload-success toast despite only verifying file selection"
+  ]
+}

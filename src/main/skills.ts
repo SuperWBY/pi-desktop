@@ -9,6 +9,8 @@ import { agentDir } from './pi-settings'
 interface ParsedSkill {
   name?: string
   description?: string
+  displayName?: string
+  summary?: string
   version?: string
   bins: string[]
 }
@@ -33,11 +35,13 @@ function parseFrontmatter(raw: string): ParsedSkill {
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
-    const key = /^([A-Za-z_]+):\s*(.*)$/.exec(line)
+    const key = /^([A-Za-z_-]+):\s*(.*)$/.exec(line)
     if (!key) continue
     const [, name, value] = key
     const trimmed = value.trim()
     if (name === 'name' && trimmed) result.name = stripQuotes(trimmed)
+    else if ((name === 'displayName' || name === 'display-name') && trimmed) result.displayName = stripQuotes(trimmed)
+    else if (name === 'summary' && trimmed) result.summary = stripQuotes(trimmed)
     else if (name === 'description' && (trimmed === '>' || trimmed === '|')) {
       // Folded/literal YAML block: description spans the indented lines below.
       const block: string[] = []
@@ -128,6 +132,11 @@ export function listConnectors(cwd: string): ConnectorEntry[] {
     entry.installed = Boolean(path)
     entry.path = path
   }
+  for (const name of ['lark-cli', 'gh']) {
+    if (connectors.has(name)) continue
+    const path = resolveBin(name)
+    if (path) connectors.set(name, { name, installed: true, path, usedBy: [] })
+  }
   return Array.from(connectors.values()).sort((a, b) => a.name.localeCompare(b.name))
 }
 
@@ -153,6 +162,8 @@ function readSkill(dir: string, source: SkillEntry['source']): SkillEntry | null
     return {
       name: parsed.name || basename(dir),
       description: parsed.description || '',
+      displayName: parsed.displayName,
+      summary: parsed.summary,
       version: parsed.version,
       path: dir,
       realPath,

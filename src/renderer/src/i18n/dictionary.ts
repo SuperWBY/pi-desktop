@@ -1,6 +1,108 @@
 // Only application-owned UI strings are translated. User content, model output,
 // tool output, paths and provider-supplied labels are always left untouched.
 const pairs: Array<[string, string]> = [
+  ['已连接并验证本机配对。', 'Connected with verified local pairing.'],
+  ['如果之前安装过扩展，更新后请在 Chrome 扩展页点击重新加载。', 'If the extension was already installed, reload it on the Chrome extensions page after an update.'],
+  ['未收到扩展响应。请确认扩展已启用；如刚更新，请在 Chrome 扩展页重新加载，然后点击扩展图标并重试。', 'No response from the extension. Make sure it is enabled; after an update, reload it on the Chrome extensions page, click its icon, and try again.'],
+  ['未收到扩展响应。请确认已启用扩展，点击 Chrome 工具栏的扩展图标后重试。', 'No response from the extension. Make sure it is enabled, click its icon in Chrome, and try again.'],
+  ['网页浏览', 'Web browsing'],
+  ['桌面操作', 'Desktop interaction'],
+  ['使用内置 Computer Use 扩展观察和操作桌面应用；已有扩展配置会继续使用。', 'Use the bundled Computer Use extension to observe and interact with desktop apps. Existing extension configurations are preserved.'],
+  ['macOS 权限', 'macOS permissions'],
+  ['开启桌面操作权限', 'Enable desktop access'],
+  ['允许 Pi 观察和操作桌面应用', 'Allow Pi to observe and interact with desktop apps'],
+  ['仅在执行桌面任务时需要。请在系统设置中开启所需权限，然后返回这里重新检测。', 'These permissions are needed for desktop tasks. Enable them in System Settings, then return here to check again.'],
+  ['辅助功能', 'Accessibility'],
+  ['用于识别并操作应用中的按钮和输入框', 'Recognize and interact with controls in apps'],
+  ['打开辅助功能设置', 'Open Accessibility Settings'],
+  ['已开启', 'Enabled'],
+  ['初步已开启', 'Enabled, pending task check'],
+  ['这是初步检测；任务开始时会复核实际使用的组件。', 'This is a preliminary check. The component used by the task will be checked again when it starts.'],
+  ['屏幕录制', 'Screen Recording'],
+  ['用于查看当前应用窗口，帮助确认操作结果', 'View the current app window and check results'],
+  ['打开屏幕录制设置', 'Open Screen Recording Settings'],
+  ['权限由 macOS 管理。如果开启后仍未生效，请重启 Pi Desktop 再试。', 'macOS manages these permissions. If access is still unavailable after enabling it, restart Pi Desktop and try again.'],
+  ['任务开始时会再次检测实际使用的组件。如果开启后仍未生效，请重启 Pi Desktop 再试。', 'The component used by the task is checked again before it runs. If access is still unavailable, restart Pi Desktop and try again.'],
+  ['重新检测', 'Check Again'],
+  ['启用 Computer Use', 'Enable Computer Use'],
+  ['允许 Pi 观察和操作桌面应用。默认关闭，网页浏览不受影响。', 'Allow Pi to observe and interact with desktop apps. Off by default; web browsing is unaffected.'],
+  ['桌面操作需要辅助功能与屏幕录制权限，可随时检查并前往系统设置。', 'Desktop use needs Accessibility and Screen Recording. Check permissions or open System Settings at any time.'],
+  ['检查权限', 'Check permissions'],
+  ['正在检测权限…', 'Checking permissions…'],
+  ['无法检测权限，请重试。', 'Could not check permissions. Try again.'],
+  ['桌面操作需要辅助功能与屏幕录制权限。可在对话中让 Pi 检查 Computer Use 权限。', 'Desktop interaction requires Accessibility and Screen Recording permissions. Ask Pi to check Computer Use permissions in a chat.'],
+  ['在 Chrome 右上角打开「开发者模式」。', 'Turn on Developer mode in the top right of Chrome.'],
+  ['把扩展拖到 Chrome 页面', 'Drag the extension onto the Chrome page'],
+  ['将 Pi Desktop 和 Chrome 并排放置，按住下方文件夹，拖到 Chrome 扩展页的空白处后松开。', 'Place Pi Desktop and Chrome side by side. Drag the folder below onto an empty area of the Chrome extensions page and release.'],
+  ['拖到页面空白处', 'Drop onto the page'],
+  ['按住这里拖动', 'Drag from here'],
+  ['窗口', 'Window'], ['操作', 'Action'], ['目标', 'Target'], ['取消操作', 'Cancel action'], ['确认执行', 'Confirm action'],
+  ['确认桌面操作', 'Confirm desktop action'], ['点击', 'Click'], ['双击', 'Double-click'], ['右键点击', 'Right-click'], ['悬停', 'Hover'], ['按下控件', 'Press control'], ['填写内容', 'Fill'], ['输入文字', 'Type'], ['按键', 'Key press'], ['滚动', 'Scroll'],
+  ['正在查看桌面', 'Observing desktop'], ['已查看桌面', 'Desktop observed'], ['查看桌面失败', 'Desktop observation failed'], ['查看桌面 {count} 次', 'Observed desktop {count} times'],
+  ['正在操作桌面', 'Acting on desktop'], ['已执行桌面操作', 'Desktop action sent'], ['桌面操作失败', 'Desktop action failed'], ['桌面操作 {count} 次', '{count} desktop actions'],
+  ['正在查看网页', 'Observing page'], ['已查看网页', 'Page observed'], ['查看网页失败', 'Page observation failed'], ['查看网页 {count} 次', 'Observed page {count} times'],
+  ['正在操作网页', 'Acting on page'], ['已执行网页操作', 'Page action sent'], ['网页操作失败', 'Page action failed'], ['网页操作 {count} 次', '{count} page actions'],
+  ['正在等待网页元素', 'Waiting for page element'], ['网页等待结束', 'Page wait finished'], ['网页等待失败', 'Page wait failed'], ['等待网页元素 {count} 次', '{count} page waits'],
+  ['等待人工接管', 'Waiting for your help'], ['人工接管已处理', 'Handoff handled'], ['人工接管中断', 'Handoff interrupted'], ['人工接管 {count} 次', '{count} handoffs'],
+  ['已取消', 'Cancelled'], ['等待人工处理', 'Waiting for your help'], ['目标已出现', 'Target appeared'], ['未等到目标', 'Target not found'],
+  ['选择上传文件', 'Choose a file to upload'], ['已完成选择', 'File selected'], ['等待选择文件', 'Waiting for file selection'], ['取消文件选择', 'Cancel file selection'], ['已取消选择', 'File selection cancelled'],
+  ['如果没有看到系统文件选择窗口，请在网页中点击文件选择按钮。使用应用内浏览器时，可先打开工作面板。', 'If no system file picker appears, click the file selection button on the page. For the in-app browser, open the work panel first.'],
+  ['打开工作面板', 'Open work panel'],
+  ['文件内容摘要已匹配', 'File content hash matched'], ['仅核对文件信息', 'File information checked only'],
+  ['已打开 Chrome 扩展页，请刷新已安装的扩展。', 'Chrome extensions is open. Refresh the installed extension.'],
+  ['Chrome 正在使用旧版扩展。请打开扩展页，找到 Pi Desktop Chrome Bridge，点击卡片上的刷新按钮，然后重新检测。', 'Chrome is using an older extension. Open the extensions page, find Pi Desktop Chrome Bridge, click its refresh button, then check again.'],
+  ['已连接，但无法确认扩展版本。请在 Chrome 扩展页刷新 Pi Desktop Chrome Bridge，然后重新检测。', 'Connected, but the extension version could not be verified. Refresh Pi Desktop Chrome Bridge on the Chrome extensions page, then check again.'],
+  ['正在核对所选文件', 'Checking the selected file'], ['已读取文件信息', 'File information read'], ['文件核对未完成', 'File check incomplete'], ['核对所选文件 {count} 次', 'Checked selected files {count} times'],
+  ['等待取消文件选择', 'Waiting to cancel file selection'], ['文件选择已取消', 'File selection cancelled'], ['取消文件选择未完成', 'File selection cancellation incomplete'], ['取消文件选择 {count} 次', 'Cancelled file selection {count} times'],
+  ['操作结果未知，请核对', 'Action outcome unknown; check before continuing'],
+  ['目标已变化，请重新观察', 'Target changed; observe again'],
+  ['目标被遮挡，请重新观察', 'Target is obscured; observe again'],
+  ['执行结束', 'Execution ended'],
+  ['确认网页操作', 'Confirm browser action'], ['输入预览', 'Input preview'], ['输入内容', 'Input text'],
+  ['独立 Chrome', 'Dedicated Chrome'], ['日常 Chrome', 'Everyday Chrome'],
+  ['页面', 'Page'], ['已选文件', 'Selected files'], ['提示', 'Note'], ['（当前页面可见文件，不一定属于此操作）', ' (visible selections on this page; not necessarily used by this action)'],
+  ['正在读取网页内容', 'Reading page content'], ['已读取网页内容', 'Read page content'], ['读取网页内容失败', 'Page content read failed'], ['读取网页内容 {count} 次', 'Read page content {count} times'],
+  ['下载已取消', 'Download cancelled'],
+  ['正在检查下载记录', 'Checking downloads'], ['已检查下载记录', 'Checked downloads'], ['检查下载记录失败', 'Download check failed'], ['检查下载记录 {count} 次', 'Checked downloads {count} times'],
+  ['按钮', 'Button'], ['输入框', 'Text field'], ['复选框', 'Checkbox'],
+  ['研究一个问题', 'Research a question'], ['整理文件资料', 'Organize files'], ['规划并执行任务', 'Plan a task'], ['了解这个项目', 'Explore this project'],
+  ['帮我研究这个问题，先确认范围，再整理资料、来源和结论：', 'Help me research this question. First confirm the scope, then organize the information, sources, and conclusions:'],
+  ['帮我整理这些文件，先说明发现了什么，再给出整理建议：', 'Help me organize these files. First explain what you find, then suggest how to organize them:'],
+  ['我想完成这个目标，请先拆解步骤、说明需要的信息和验收方式：', 'I want to achieve this goal. First break down the steps, required information, and how to verify the result:'],
+  ['请介绍当前项目的用途、主要内容和建议从哪里开始。', 'Explain the purpose and main contents of this project, and suggest where to start.'],
+  ['告诉 Pi 你想完成什么。它可以协助研究、处理文件、规划任务和编写代码。发出第一条消息后，对话会保存下来。', 'Tell Pi what you want to accomplish. It can help with research, files, planning, and coding. The conversation is saved when you send your first message.'],
+  ['打开一个项目，让 Pi 帮你研究问题、处理文件、规划任务或编写代码。', 'Open a project and let Pi help with research, files, planning, or coding.'],
+  ['界面有变化，结果待核对', 'Interface changed; verify the outcome'], ['未发现变化，结果待核对', 'No change detected; verify the outcome'], ['结果待核对', 'Outcome needs verification'],
+  ['无法检查命令', 'Cannot check commands'],
+  ['暂时无法读取命令列表，请稍后重试。输入内容仍在输入框中。', 'The command list is unavailable. Try again; your input has been kept.'],
+  ['查看排查步骤', 'Troubleshooting'], ['排查项目命令', 'Troubleshoot project commands'],
+  ['命令可能拼写有误、对应扩展未启用，或项目资源因未信任而未加载。', 'The command may be misspelled, its extension disabled, or project resources not loaded because the project is untrusted.'],
+  ['在终端进入项目目录，运行 pi，然后输入 /trust 并自行决定是否信任。', 'In a terminal, enter the project directory, run pi, then enter /trust and decide whether to trust it.'],
+  ['项目信任可能允许该目录中的扩展执行代码。只信任你了解的项目；处理后回到 Pi Desktop 新建会话，再重试原命令。', 'Project trust may allow extensions in this folder to run code. Trust only projects you know; then return to Pi Desktop, start a new session, and retry the command.'],
+  ['当前项目', 'Current project'], ['复制项目路径', 'Copy project path'], ['路径已复制', 'Path copied'],
+  ['复制失败，请手动选择路径。', 'Copy failed; select the path manually.'],
+  ['新建会话前，请先复制并清空输入框中的草稿，以便稍后重试。', 'Before starting a new session, copy and clear the draft so you can retry it later.'],
+  ['命令未找到', 'Command not found'],
+  ['该命令未加载，可能需要信任项目或启用对应扩展。输入内容仍在输入框中。', 'This command is not loaded. You may need to trust the project or enable its extension. Your input has been kept.'],
+  ['权限检查完成。桌面任务开始时会再次检查实际使用的组件。', 'Permission check complete. The component used for a desktop task will be checked when it starts.'],
+  ['仅在执行桌面任务时需要。请在系统设置中开启所需权限，我们会自动检测。', 'Desktop tasks require these permissions. Enable them in System Settings and we will check automatically.'],
+  ['按住拖动 Pi Desktop', 'Drag Pi Desktop'],
+  ['把图标拖到系统设置的权限列表中，然后打开开关。拖动无效时，请点击列表下方的「＋」选择 Pi Desktop。', 'Drag the icon into the permission list in System Settings, then enable it. If dragging does not work, use the + button below the list to select Pi Desktop.'],
+  ['Pi Desktop 扩展文件夹', 'Pi Desktop extension folder'],
+  ['拖不动？试试其他方式', 'Cannot drag? Try another way'],
+  ['在 Finder 中显示文件夹', 'Show folder in Finder'],
+  ['打开 Chrome 扩展页，并开启右上角的开发者模式。', 'Open Chrome extensions and turn on Developer mode in the top right.'],
+  ['将下方的扩展文件夹拖到 Chrome 扩展页中。', 'Drag the extension folder below onto the Chrome extensions page.'],
+  ['返回这里，点击「检测连接」。', 'Return here and select Check connection.'],
+  ['拖动扩展文件夹到 Chrome', 'Drag the extension folder to Chrome'],
+  ['按住拖动到扩展页，然后松开', 'Drag to the extensions page and release'],
+  ['无法拖动？在 Finder 中显示文件夹', 'Cannot drag? Show the folder in Finder'],
+  ['也可在 Chrome 点击「加载未打包的扩展程序」，选择 Finder 中显示的文件夹。', 'Alternatively, select Load unpacked in Chrome and choose the folder shown in Finder.'],
+  ['操作是否需要确认取决于 Computer Use 的审批设置。', 'Whether actions require approval depends on your Computer Use settings.'],
+  ['扩展可读取和操作当前标签页，请只在信任的网站使用。', 'The extension can read and interact with the active tab. Use it only on sites you trust.'],
+  ['先打开文件夹；在 Chrome 点击「加载已解压的扩展程序」，将 Finder 中选中的文件夹拖入选择窗口，再点击「打开」。', 'Open the folder first. In Chrome, click Load unpacked, drag the selected folder from Finder into the file picker, then click Open.'],
+  ['扩展目录由 Pi Desktop 自动准备。', 'Pi Desktop prepares the extension folder automatically.'],
+  ['这是内测安装方式，需要你手动加载扩展。使用扩展桥时，Pi 可以操作当前 Chrome 标签页。', 'This test installation requires you to load the extension manually. The bridge lets Pi interact with the active Chrome tab.'],
   ['无法打开会话', 'Could not open session'], ['没有打开项目', 'No project open'], ['先选择一个文件夹再发送。', 'Choose a folder before sending.'], ['会话正在启动', 'Session is starting'], ['稍等一下再发送。', 'Please wait before sending.'], ['消息未发送', 'Message not sent'], ['pi 没有响应。', 'Pi did not respond.'], ['无法重命名会话', 'Could not rename session'], ['已恢复会话', 'Session restored'], ['恢复失败', 'Restore failed'], ['已删除会话', 'Session deleted'], ['撤销', 'Undo'], ['无法删除会话', 'Could not delete session'], ['无法切换模型', 'Could not switch model'], ['无法修改推理强度', 'Could not change reasoning effort'], ['无法修改 steering 模式', 'Could not change steering mode'], ['无法修改 follow-up 模式', 'Could not change follow-up mode'], ['无法修改自动压缩', 'Could not change automatic compaction'], ['无法修改自动重试', 'Could not change automatic retry'], ['正在压缩上下文…', 'Compacting context…'], ['压缩失败', 'Compaction failed'], ['上下文已压缩', 'Context compacted'],
   ['Not connected', '尚未连接'], ['Wait for the session to finish starting.', '请等待会话启动完成。'], ['Stopped', '已停止'], ['Queued messages were returned to the composer.', '排队的消息已返回输入框。'], ['sending…', '发送中…'],
   ['Show all {count} lines', '展开全部 {count} 行'], ['{count} lines', '{count} 行'], ['change {count}', '修改 {count}'], ['{count} messages', '{count} 条消息'], ['pi needs your input', 'pi 需要你的输入'], ['Compact context ({percent}% used)', '压缩上下文（已使用 {percent}%）'],
@@ -133,7 +235,60 @@ const pairs: Array<[string, string]> = [
   ['一条回答', 'One answer'],
   ['最近对话', 'Recent conversations'],
   ['执行中', 'Running'],
-  ['技能与插件', 'Skills & plugins'], ['技能', 'Skills'], ['插件', 'Plugins'],
+  ['技能与工具', 'Skills & tools'], ['技能', 'Skills'], ['插件', 'Plugins'],
+  ['应用连接', 'Connections'], ['搜索应用连接', 'Search connections'],
+  ['手动添加', 'Add manually'], ['手动添加连接器', 'Add a connector'], ['编辑连接器', 'Edit connector'],
+  ['连接 MCP 服务，让 Pi 在对话中使用它提供的工具。', 'Connect an MCP server to use its tools in chat.'],
+  ['连接名称', 'Connection name'], ['例如：GitHub MCP', 'e.g. GitHub MCP'],
+  ['服务器 URL', 'Server URL'], ['接入方式', 'Connection method'],
+  ['接入方式：MCP（Streamable HTTP）', 'Connection method: MCP (Streamable HTTP)'],
+  ['自定义请求头', 'Custom headers'], ['添加请求头', 'Add header'],
+  ['服务方提供了认证信息时再填写，例如 Authorization。', 'Add these when required by the service, such as Authorization.'],
+  ['请求头名称', 'Header name'], ['请求头值', 'Header value'],
+  ['已保存，填写可替换', 'Enter a new value to replace'], ['移除请求头', 'Remove header'],
+  ['未测试', 'Not tested'], ['测试通过', 'Test passed'], ['正在测试…', 'Testing…'], ['测试连接', 'Test connection'],
+  ['连接失败', 'Connection failed'], ['需要授权', 'Authorization required'], ['当前 Pi 版本无法测试', 'Test unavailable with this Pi version'],
+  ['已连接，发现 {count} 个工具。', 'Connected. Found {count} tools.'],
+  ['服务需要授权，请检查请求头或服务方的登录说明。', 'Authorization required. Check your headers or the service’s sign-in instructions.'],
+  ['当前 Pi 版本无法测试，请检查 Pi 版本。', 'This test is unavailable with your version of Pi.'],
+  ['未能连接，请检查服务器地址和网络。', 'Could not connect. Check the server URL and network.'],
+  ['未安装', 'Not installed'], ['已停用', 'Disabled'],
+  ['无法读取 MCP 连接。', 'Could not read MCP connections.'],
+  ['没有匹配的连接', 'No matching connections'], ['还没有应用连接', 'No connections yet'],
+  ['飞书', 'Feishu'], ['通过飞书访问文档、日程和多维表格', 'Access Feishu docs, calendars and tables'],
+  ['通过 GitHub 访问仓库和拉取请求', 'Access GitHub repositories and pull requests'],
+  ['MCP 服务', 'MCP server'], ['本机 MCP 服务', 'Local MCP server'], ['本机依赖', 'Local dependencies'],
+  ['连接已保存。', 'Connection saved.'], ['连接已移除。', 'Connection removed.'],
+  ['新建或重启会话后生效。', 'Applies when you start or restart a chat.'], ['移除此连接？', 'Remove this connection?'],
+  ['已检测到命令行工具。登录与授权由对应应用管理。', 'The command is installed. Sign-in and authorization are managed by the service.'],
+  ['安装此工具后，即可使用依赖它的技能。', 'Install this tool to use skills that depend on it.'],
+  ['技能标识', 'Skill ID'], ['缺少依赖', 'Missing dependencies'],
+  ['搜索网页与社交平台', 'Search the web and social platforms'], ['搜索帖子、查看评论或读取视频字幕。', 'Find posts, read comments, or fetch video captions.'],
+  ['录制产品演示', 'Record a product demo'], ['录制操作过程，可添加旁白。', 'Capture a workflow and add optional narration.'],
+  ['制作产品宣传片', 'Create a product video'], ['用产品画面和动效介绍应用功能。', 'Present app features with screen footage and motion graphics.'],
+  ['制作数字人口播', 'Create a talking avatar'], ['用照片或数字人形象生成口播视频。', 'Generate a spoken video from a photo or avatar.'],
+  ['生成与编辑图片', 'Generate or edit images'], ['生成封面、海报或剪辑需要的图片。', 'Create covers, posters, and images for videos.'],
+  ['视频口型同步', 'Lip-sync a video'], ['让视频里人物的嘴型匹配新的音频。', 'Match the speaker’s lips to new audio.'],
+  ['制作视频动效', 'Create motion graphics'], ['在剪辑项目中添加动态文字和图形。', 'Add animated text and graphics to a video.'],
+  ['制作字幕样式', 'Create a caption style'], ['创建可在剪辑中重复使用的动态字幕。', 'Create reusable animated captions.'],
+  ['制作音频效果', 'Create audio effects'], ['调整音质，添加音效和转场。', 'Adjust audio, add sound effects, and create transitions.'],
+  ['选择视频角色', 'Cast video characters'], ['为视频场景制作或选择角色形象。', 'Create or select characters for a video scene.'],
+  ['制作画面效果', 'Create visual effects'], ['为视频画面添加遮罩、色彩或特效。', 'Add masks, color treatments, and effects to footage.'],
+  ['排查 ChatCut 问题', 'Troubleshoot ChatCut'], ['诊断连接、项目打开或导出失败。', 'Diagnose connection, project, and export issues.'],
+  ['整理素材与文字稿', 'Organize media and transcripts'], ['整理字幕、文案及音视频素材信息。', 'Organize captions, scripts, and media details.'],
+  ['改进界面设计', 'Improve an interface'], ['检查界面布局与交互，提出具体修改。', 'Review layouts and interactions and identify specific improvements.'],
+  ["Pi 的 MCP 配置格式有误，请检查 mcp.json。", "Pi MCP configuration must contain a valid mcpServers object."],
+  ["请填写连接名称和有效的服务器地址。", "Enter a connector name and a valid URL."],
+  ["连接名称需要 1–80 个字符。", "Enter a connection name of 1–80 characters."],
+  ["请输入包含 https:// 或 http:// 的完整服务器地址。", "Enter a complete server URL, including https:// or http://."],
+  ["远程地址请使用 HTTPS，本机地址可使用 HTTP。请将认证信息填写在请求头里。", "Use HTTPS for remote servers or HTTP on localhost, without embedded credentials or a fragment."],
+  ["请填写有效的请求头名称和值。", "Enter a valid header name and value."],
+  ["请求头名称需有效、互不重复，协议保留的请求头由 Pi 设置。", "Use unique header names and leave protocol headers to Pi."],
+  ["服务器地址已变更，请重新填写请求头。", "Re-enter the saved headers when changing the server URL."],
+  ["保存过的请求头已变更，请重新打开编辑器。", "A saved header changed. Reopen the editor and try again."],
+  ["请填写单行请求头值。命令表达式只能在 Pi 的配置文件里设置。", "Enter a header value using a single line. Command expressions are unavailable here."],
+  ["找不到这个 HTTP 连接。", "This HTTP connector could not be found."],
+  ["请选择要移除的连接。", "Select the connection to remove."],
   ['用户', 'User'], ['全部', 'All'], ['来源', 'Source'], ['需要', 'Requires'], ['缺少', 'missing'],
   ['搜索技能或描述', 'Search skills'], ['搜索插件', 'Search plugins'],
   ['在对话中使用', 'Use in chat'], ['复制路径', 'Copy path'], ['没有描述', 'No description'],
@@ -241,7 +396,7 @@ const pairs: Array<[string, string]> = [
   ['无法引导', 'Could not guide'],
   ['移除插件？', 'Remove plugin?'],
   ['插件会从 pi 设置中移除，技能目录与项目文件不受影响。', 'The plugin is removed from pi settings. Skill folders and project files are untouched.'],
-  ['浏览器', 'Browser'], ['浏览器自动化', 'Browser automation'], ['当前默认', 'Default'], ['可用', 'Available'], ['安装指引', 'Setup guide'], ['打开', 'Open'], ['已打开 Chrome 扩展页，请在那里完成安装。', 'Chrome extensions page opened. Finish installation there.'], ['已打开扩展目录。', 'Extension folder opened.'], ['点击这一行，或手动打开 chrome://extensions。', 'Click this row, or open chrome://extensions manually.'], ['打开文件夹', 'Open folder'], ['检测连接', 'Check connection'], ['检测中…', 'Checking…'], ['已连接，可以开始使用', 'Connected. Ready to use.'], ['未检测到扩展', 'Extension not detected'], ['端口被占用，请关闭其他 Pi 任务后重试', 'Port is busy; close other Pi tasks and retry'], ['无法打开扩展目录，请手动复制上面的路径。', 'Could not open the extension folder; copy the path above.'], ['启用日常 Chrome 登录态', 'Use your everyday Chrome session'], ['只需安装一次扩展，之后 Pi 可以直接操作你当前登录的网页。', 'Install the extension once; then Pi can act on pages you are already signed in to.'], ['直接使用你已登录的网站，不用重新登录。', 'Use sites you are already signed in to; no second login.'], ['只操作当前标签页，密码框不会被读取。', 'Acts on the active tab only; password fields are never read.'], ['点击、提交等敏感动作仍会先请求你的确认。', 'Clicks, submits, and other sensitive actions still ask for your approval.'], ['打开扩展页', 'Open extensions page'], ['点击下方按钮，或手动打开 chrome://extensions。', 'Use the button below, or open chrome://extensions manually.'], ['打开开发者模式', 'Enable Developer mode'], ['打开页面右上角的「开发者模式」开关。', 'Turn on the Developer mode switch in the top-right corner.'], ['加载已解压的扩展', 'Load unpacked'], ['点击「加载已解压的扩展程序」，选择下面的目录。', 'Click Load unpacked and choose the directory below.'], ['正在读取扩展目录…', 'Reading extension path…'], ['复制路径', 'Copy path'], ['已复制', 'Copied'], ['复制失败，请手动选择上面的路径。', 'Copy failed; select the path manually.'], ['无法打开 Chrome，请手动打开 chrome://extensions。', 'Could not open Chrome; open chrome://extensions manually.'], ['稍后再说', 'Later'], ['打开 Chrome 扩展页', 'Open Chrome extensions'], ['Chrome 不允许应用自动安装扩展，这一步需要你亲手确认一次。安装后，Pi 会优先使用当前 Chrome 标签页的登录态。', 'Chrome does not allow apps to install extensions automatically; confirm this once yourself. After installation, Pi uses the active Chrome tab session.'], ['规划中', 'Planned'], ['默认方式。登录状态保留在右侧面板，Agent 读取 DOM 后按元素操作。', 'Default mode. The session stays in the side panel; the agent reads the DOM and acts on elements.'], ['使用专用 Chrome profile，适合隔离任务、并行测试和自动化验证。首次使用需在专用窗口登录。', 'Uses a dedicated Chrome profile for isolated tasks, parallel tests, and automation verification. Sign in once in the dedicated window.'], ['复用日常 Chrome 登录态；在 chrome://extensions 加载 extensions/chrome-bridge。', 'Reuses your everyday Chrome session; load extensions/chrome-bridge from chrome://extensions.'], ['后退', 'Back'], ['前进', 'Forward'], ['停止加载', 'Stop loading'], ['输入网址', 'Enter a URL'], ['网址', 'Address'], ['在系统浏览器中打开', 'Open in system browser'], ['关闭浏览器', 'Close browser'], ['重试', 'Retry'], ['应用内浏览器', 'In-app browser'], ['从对话中点击链接，或在上方输入网址。', 'Click a link in the chat, or type a URL above.'], ['使用前请了解', 'Before you start'], ['在这个面板里登录目标网站，登录状态会保留。', 'Sign in to the target site in this panel; the session is kept.'], ['让 Pi 观察页面时，会读取页面 DOM，而不是猜截图坐标。', 'When Pi observes the page it reads the DOM instead of guessing from pixels.'], ['密码框不会返回值；点击、提交和敏感操作仍需要你确认。', 'Password fields are never returned; clicks, submits, and sensitive actions still need your approval.'], ['下载完成', 'Download complete'], ['下载未完成', 'Download incomplete'],
+  ['浏览器', 'Browser'], ['浏览器自动化', 'Browser automation'], ['当前默认', 'Default'], ['可用', 'Available'], ['安装指引', 'Setup guide'], ['打开', 'Open'], ['已打开 Chrome 扩展页，请在那里完成安装。', 'Chrome extensions page opened. Finish installation there.'], ['已打开扩展目录。', 'Extension folder opened.'], ['点击这一行，或手动打开 chrome://extensions。', 'Click this row, or open chrome://extensions manually.'], ['打开文件夹', 'Open folder'], ['扩展目录已准备好', 'Extension folder is ready'], ['由 Pi Desktop 自动准备；其他用户会使用自己的目录。', 'Prepared by Pi Desktop; other users get their own folder.'], ['高级：复制路径', 'Advanced: copy path'], ['检测连接', 'Check connection'], ['检测中…', 'Checking…'], ['已连接，可以开始使用', 'Connected. Ready to use.'], ['未检测到扩展', 'Extension not detected'], ['端口被占用，请关闭其他 Pi 任务后重试', 'Port is busy; close other Pi tasks and retry'], ['无法打开扩展目录，请手动复制上面的路径。', 'Could not open the extension folder; copy the path above.'], ['启用日常 Chrome 登录态', 'Use your everyday Chrome session'], ['只需安装一次扩展，之后 Pi 可以直接操作你当前登录的网页。', 'Install the extension once; then Pi can act on pages you are already signed in to.'], ['直接使用你已登录的网站，不用重新登录。', 'Use sites you are already signed in to; no second login.'], ['只操作当前标签页，密码框不会被读取。', 'Acts on the active tab only; password fields are never read.'], ['点击、提交等敏感动作仍会先请求你的确认。', 'Clicks, submits, and other sensitive actions still ask for your approval.'], ['打开扩展页', 'Open extensions page'], ['点击下方按钮，或手动打开 chrome://extensions。', 'Use the button below, or open chrome://extensions manually.'], ['打开开发者模式', 'Enable Developer mode'], ['打开页面右上角的「开发者模式」开关。', 'Turn on the Developer mode switch in the top-right corner.'], ['加载已解压的扩展', 'Load unpacked'], ['点击「加载已解压的扩展程序」，选择下面的目录。', 'Click Load unpacked and choose the directory below.'], ['正在读取扩展目录…', 'Reading extension path…'], ['复制路径', 'Copy path'], ['已复制', 'Copied'], ['复制失败，请手动选择上面的路径。', 'Copy failed; select the path manually.'], ['无法打开 Chrome，请手动打开 chrome://extensions。', 'Could not open Chrome; open chrome://extensions manually.'], ['稍后再说', 'Later'], ['打开 Chrome 扩展页', 'Open Chrome extensions'], ['Chrome 不允许应用自动安装扩展，这一步需要你亲手确认一次。安装后，Pi 会优先使用当前 Chrome 标签页的登录态。', 'Chrome does not allow apps to install extensions automatically; confirm this once yourself. After installation, Pi uses the active Chrome tab session.'], ['规划中', 'Planned'], ['默认方式。登录状态保留在右侧面板，Agent 读取 DOM 后按元素操作。', 'Default mode. The session stays in the side panel; the agent reads the DOM and acts on elements.'], ['使用专用 Chrome profile，适合隔离任务、并行测试和自动化验证。首次使用需在专用窗口登录。', 'Uses a dedicated Chrome profile for isolated tasks, parallel tests, and automation verification. Sign in once in the dedicated window.'], ['复用日常 Chrome 登录态；在 chrome://extensions 加载 extensions/chrome-bridge。', 'Reuses your everyday Chrome session; load extensions/chrome-bridge from chrome://extensions.'], ['后退', 'Back'], ['前进', 'Forward'], ['停止加载', 'Stop loading'], ['输入网址', 'Enter a URL'], ['网址', 'Address'], ['在系统浏览器中打开', 'Open in system browser'], ['关闭浏览器', 'Close browser'], ['重试', 'Retry'], ['应用内浏览器', 'In-app browser'], ['从对话中点击链接，或在上方输入网址。', 'Click a link in the chat, or type a URL above.'], ['使用前请了解', 'Before you start'], ['在这个面板里登录目标网站，登录状态会保留。', 'Sign in to the target site in this panel; the session is kept.'], ['让 Pi 观察页面时，会读取页面 DOM，而不是猜截图坐标。', 'When Pi observes the page it reads the DOM instead of guessing from pixels.'], ['密码框的值不会返回；操作是否需要确认取决于审批设置。', 'Password field values are not returned; whether actions require approval depends on your settings.'], ['下载完成', 'Download complete'], ['下载未完成', 'Download incomplete'],
   ['每日趋势', 'Daily trend'], ['按套餐 + 模型', 'Plan + model'], ['套餐', 'Plan'], ['趋势', 'Trend'], ['柱状', 'Bars'], ['图表类型', 'Chart type'], ['趋势指标', 'Trend metric'], ['费用', 'Cost'], ['峰值', 'Peak'], ['每日趋势图表', 'Daily trend chart'], ['次调用', 'requests'], ['Chrome 登录状态', 'Chrome sign-in'], ['只把选中的站点 Cookie 导入内置浏览器；不会导入密码或 Passkey。', 'Import cookies for selected sites only. Passwords and passkeys are never imported.'], ['从 Chrome 导入…', 'Import from Chrome…'], ['从 Chrome 导入登录状态', 'Import sign-in from Chrome'], ['只导入 Cookie，不导入密码、Passkey 或扩展数据。', 'Cookies only. Passwords, passkeys and extension data are not imported.'], ['这会让 Pi Desktop 以你的身份访问所选站点。只导入你信任的站点，导入的数据仅保存在本机。', 'This lets Pi Desktop visit the selected sites as you. Only import sites you trust; data stays on this Mac.'], ['Chrome 配置文件', 'Chrome profile'], ['Google Chrome 正在运行。请退出 Chrome 后再导入。', 'Google Chrome is running. Quit Chrome before importing.'], ['重新检查', 'Check again'], ['搜索站点…', 'Search sites…'], ['全选', 'Select all'], ['取消全选', 'Clear all'], ['已选', 'Selected'], ['个站点', 'sites'], ['正在读取 Chrome 配置…', 'Reading Chrome profiles…'], ['没有匹配的站点。', 'No matching sites.'], ['导入中…', 'Importing…'], ['导入所选站点', 'Import selected sites'], ['已导入', 'Imported'], ['个 Cookie；跳过', 'cookies; skipped'], ['个；失败', '; failed'], ['个。', '.'], ['已导入 Chrome 登录状态', 'Chrome sign-in imported'],
  ]
 
@@ -251,9 +406,234 @@ for (const [left, right] of pairs) {
   if (/[\u3400-\u9fff]/.test(left)) { english.set(left, right); chinese.set(right, left) }
   else { chinese.set(left, right); english.set(right, left) }
 }
+english.set('电脑操作', 'Computer use')
+english.set('高级：运行环境与会话行为', 'Advanced: Runtime and session behavior')
+english.set('启用电脑操作', 'Enable computer use')
+english.set('允许 Pi 查看和操作桌面应用。关闭时不会影响网页浏览。', 'Allow Pi to view and interact with desktop apps. Turning this off does not affect web browsing.')
+english.set('浏览器连接状态', 'Browser connection status')
+english.set('检查应用内浏览器和 Chrome 的连接状态。是否能使用网站还取决于登录状态和权限。', 'Check browser connections. Website access also depends on sign-in and permissions.')
+english.set('在右侧面板打开网页，可在这里登录并让 Pi 操作网页。', 'Open and sign in to websites in the side panel for Pi to use.')
+english.set('独立浏览器', 'Separate browser')
+english.set('使用单独的 Chrome 窗口和登录状态；首次使用时需要在该窗口登录。', 'Uses a separate Chrome window and sign-in. Sign in to that window the first time.')
+english.set('使用我的 Chrome', 'Use my Chrome')
+english.set('连接日常使用的 Chrome，操作已登录的网站。需要先安装扩展。', 'Connect your everyday Chrome to use signed-in websites. Install the extension first.')
+english.set('高级：独立浏览器', 'Advanced: Separate browser')
+english.set('查看可用模型列表', 'View available models')
+english.set('高级：判断服务与内置工具', 'Advanced: Decision service and built-in tools')
+english.set('选择是否显示思考内容，以及默认展开还是收起。', 'Choose whether to show thinking and whether it starts expanded or collapsed.')
+english.set('仅确认高风险命令', 'Confirm high-risk commands only')
+english.set('默认仅对识别出的高风险终端命令请求确认，不能覆盖所有风险。其他操作可能有独立的确认规则。新建会话生效。', 'By default, confirmation is requested only for identified high-risk terminal commands; not all risks are covered. Other actions may have separate approval rules. Applies to new sessions.')
+english.set('沙箱当前未启用，下方文件和网络限制不会生效。', 'The sandbox is off. The file and network restrictions below are not active.')
+english.set('管理 Pi 任务可以修改哪些文件、访问哪些网络。设置修改后，对新建会话生效。', 'Control which files Pi tasks can modify and which networks they can access. Changes apply to new sessions.')
+english.set('运行限制', 'Task restrictions')
+english.set('开启后限制 Pi 任务可以修改的文件和访问的网络。它不能隔离所有电脑操作；开启后可能需要额外允许任务所需的网站。', 'Limit which files Pi tasks can modify and which networks they can access. This does not isolate all desktop operations; you may need to allow websites used by your tasks.')
+english.set('沙箱未开启。下面的文件和网络限制暂不生效，网络代理仍可单独使用。', 'The sandbox is off. File and network restrictions below are inactive; the network proxy can still be used separately.')
+english.set('选择任务能否修改当前项目；会话、日志和临时文件仍可写入。仅在沙箱开启时生效。', 'Choose whether tasks can modify the current project. Sessions, logs, and temporary files remain writable. Applies only when the sandbox is on.')
+english.set('选择沙箱内的任务可以连接哪些服务。完全关闭网络也会阻断在线模型，适合离线任务。', 'Choose which services sandboxed tasks can connect to. Turning networking off also blocks online models and is suitable for offline tasks.')
+english.set('如果任务需要访问其他服务，在这里填写域名；多个域名用逗号或换行分隔。仅在沙箱开启时生效。', 'Enter domains for other services your task needs, separated by commas or new lines. Applies only when the sandbox is on.')
+english.set('网络代理', 'Network proxy')
+english.set('代理地址', 'Proxy address')
+english.set('通常留空。需要通过代理连接时填写地址；此设置主要用于未开启沙箱的 Pi 会话，不代表浏览器也使用该代理。', 'Usually leave blank. Enter a proxy address if needed. This mainly applies to Pi sessions without the sandbox; browsers do not necessarily use it.')
+english.set('不使用代理的地址', 'Addresses bypassing the proxy')
+english.set('通常留空。填写需要直接连接的域名或地址，多个地址用逗号分隔。', 'Usually leave blank. Enter domains or addresses to connect to directly, separated by commas.')
+english.set('运行记录', 'Activity log')
+english.set('沙箱运行记录', 'Sandbox activity')
+english.set('查看沙箱启动、退出以及被拦截的操作，排查任务受限的原因。记录保存在本机。', 'View sandbox starts, exits, and blocked actions to troubleshoot restrictions. Logs are stored locally.')
+english.set('沙箱不是虚拟机：电脑界面、辅助功能权限和部分系统服务仍可能被访问。', 'The sandbox is not a virtual machine: desktop interfaces, accessibility permissions, and some system services may remain accessible.')
+english.set('新会话审批方式', 'Approval for new sessions')
+english.set('新会话', 'New sessions')
+english.set('逐次确认', 'Confirm each tool')
+english.set('高风险命令确认', 'Confirm high-risk commands')
+english.set('工具不确认', 'No tool confirmations')
+english.set('只影响之后新建或重新启动的会话，当前会话保持原样。', 'Applies only to sessions started or restarted later. The current session is unchanged.')
+english.set('每次工具调用都确认', 'Confirm every tool call')
+english.set('执行工具前都需要你确认。', 'Ask you before every tool call.')
+english.set('仅确认高风险命令', 'Confirm high-risk commands only')
+english.set('只对识别出的高风险终端命令询问，并不能识别所有风险。', 'Ask only for identified high-risk terminal commands; not all risks are detected.')
+english.set('工具调用不确认', 'No tool-call confirmations')
+english.set('不再进行这层工具审批，沙箱及浏览器、电脑操作的独立限制仍然生效。', 'Skip this tool approval. Sandbox, browser, and computer-use restrictions still apply.')
+english.set('项目资源尚未启用', 'Project resources are not enabled')
+english.set('此文件夹包含项目配置或扩展。信任后才能加载；这与工具操作的审批方式是两回事。', 'This folder contains project configuration or extensions that require trust. Tool approvals are controlled separately.')
+english.set('信任会允许加载此文件夹里的配置、扩展和技能；其中部分内容可能执行代码。它不会自动改变工具审批或沙箱设置。', 'Trust allows this folder’s configuration, extensions and skills to load; some may run code. It does not change tool approvals or sandbox settings.')
+english.set('始终信任此项目', 'Always trust this project')
+english.set('保存决定，之后打开此文件夹时也会加载项目资源。', 'Save this choice and load project resources when reopening this folder.')
+english.set('范围更广：父目录下的其他项目也可能继承此信任。', 'Broader scope: other projects under the parent folder may inherit this trust.')
+english.set('手动确认', 'Manual')
+english.set('标准', 'Standard')
+english.set('不逐次确认', 'No per-tool prompts')
+english.set('每次工具调用前都询问你。', 'Ask before each tool call.')
+english.set('仅询问识别出的高风险终端命令，不能识别所有风险。', 'Ask only for identified high-risk terminal commands; not all risks are detected.')
+english.set('跳过工具审批；沙箱、浏览器和电脑操作的独立限制仍然生效。', 'Skip tool approvals. Sandbox, browser and computer-use restrictions still apply.')
+english.set('项目资源待确认', 'Project resources need review')
+english.set('项目资源需要信任', 'Project resources require trust')
+english.set('添加项目', 'Add project')
+english.set('项目名称', 'Project name')
+english.set('例如：经营分析', 'e.g. Business analysis')
+english.set('项目文件夹', 'Project folder')
+english.set('选择此电脑上的文件夹', 'Choose a folder on this computer')
+english.set('更换文件夹', 'Change folder')
+english.set('这个文件夹已在项目列表中。', 'This folder is already in Projects.')
+english.set('项目操作', 'Project actions')
+english.set('从列表移除', 'Remove from list')
+english.set('项目信任', 'Project trust')
+english.set('信任此项目？', 'Trust this project?')
+english.set('信任并加载', 'Trust and load')
+english.set('继续，不加载', 'Continue without loading')
+english.set('信任后，Pi 可以加载这个文件夹里的项目设置、技能和连接器。项目扩展也可能执行代码。', 'Trust lets Pi load this folder’s project settings, skills, and connectors. Project extensions may run code.')
+english.set('选择「继续，不加载」后，仍可查看文件和开始对话。之后可以在项目菜单里调整信任。', 'You can view files and start conversations without loading project resources. Change trust later in the project menu.')
+english.set('无法读取项目信任状态。', 'Could not read project trust.')
+english.set('项目扩展未启用', 'Project extensions are off')
+english.set('项目资源将在新建会话时加载。', 'Project resources will load in new conversations.')
+english.set('新建会话时将跳过项目自带的配置和扩展。', 'New conversations will skip this project’s settings and extensions.')
+english.set('检测到项目配置或扩展；信任后可加载。', 'Project configuration or extensions were found; trust this folder to load them.')
+english.set('查看并信任', 'Review trust')
+english.set('收起提示', 'Dismiss notice')
+english.set('检测到的项目资源', 'Detected project resources')
+english.set('更多选项', 'More options')
+english.set('自动', 'Automatic')
+english.set('按规则自动执行；仅对识别出的高风险终端命令询问，不是 AI 逐项审核。', 'Execute using rules; ask only for identified high-risk terminal commands. This is not AI review of each action.')
+english.set('错过时间后补跑', 'Run missed tasks')
+english.set('只补跑尚未开始的任务；运行中断后会暂停并等待核对。', 'Only runs tasks that never started. Interrupted runs are paused for review.')
+english.set('中断 · 待核对', 'Interrupted · Review needed')
+english.set('任务运行时被中断，结果可能已经产生。请先核对实际结果，再决定是否重新运行或启用。', 'The run was interrupted and may have produced results. Check the actual outcome before running again or re-enabling.')
+english.set('附件无法读取', 'Attachment unavailable')
+english.set('附件没有可用路径或文本内容，请重新选择文件。', 'The attachment has no usable path or text. Please choose the file again.')
+english.set('通过路径读取', 'Read from file')
+english.set('无法读取', 'Unavailable')
+english.set('部分内容，需读取文件', 'Partial text; read the file')
+english.set('部分内容，无文件路径', 'Partial text; no file path')
+english.set('已内嵌全文', 'Full text included')
+english.set('当前会话权限', 'Current session permissions')
+english.set('正在准备会话…', 'Preparing conversation…')
+english.set('会话权限', 'Session permissions')
+english.set('询问审批', 'Ask for approval')
+english.set('自动审核', 'Automatic review')
+english.set('完全访问', 'Full access')
+english.set('每次调用工具前询问你。', 'Ask before each tool call.')
+english.set('按本地规则检查终端命令，识别到高风险操作时询问你。', 'Check terminal commands against local rules and ask before detected high-risk actions.')
+english.set('本会话的 Pi 可访问系统允许的文件和网络，工具调用无需审批。', 'Pi can access files and networks allowed by the system. Tool calls run without approval.')
+english.set('正在切换权限…', 'Switching permissions…')
+english.set('无法切换权限', 'Could not change permissions')
+english.set('网络已关闭', 'Network off')
+english.set('联网受限', 'Network restricted')
+english.set('沙箱未开启', 'Sandbox off')
+english.set('权限状态加载中…', 'Loading permissions…')
+english.set('文件与网络', 'Files and network')
+english.set('任务结束后可切换权限。', 'You can change permissions when the task finishes.')
+english.set('在设置中启用完全访问', 'Enable Full access in Settings')
+english.set('允许使用完全访问', 'Allow Full access')
+english.set('为当前会话启用完全访问？', 'Enable Full access for this conversation?')
+english.set('启用完全访问', 'Enable Full access')
+english.set('本会话会关闭 Pi 沙箱并跳过工具审批。Pi 可读写系统允许的文件并联网。浏览器和电脑操作仍由各自的权限设置管理。', 'This disables the Pi sandbox and skips tool approvals for this conversation. Pi can read and write files permitted by your system and use the network. Browser and computer use have their own controls.')
+english.set('新会话的默认权限', 'Default permissions for new conversations')
+english.set('自动审核按本地规则检查终端命令。识别到高风险操作时会询问你。', 'Automatic review checks terminal commands against local rules and asks before detected high-risk actions.')
+english.set('启用后，可以在对话菜单为单个会话选择完全访问。该会话的 Pi 沙箱和工具审批会关闭。', 'Enables Full access in the conversation menu. It turns off the Pi sandbox and tool approvals for the selected conversation.')
+english.set('当前审批', 'Current approval mode')
+english.set('状态不可用', 'Unavailable')
+english.set('无法读取当前会话的权限状态。', 'Could not read the current session permissions.')
 // Distinguish the settings navigation label from the singular session title.
 english.set('会话', 'Sessions')
+english.set('后台任务等待确认', 'Background task needs confirmation')
+english.set('等待核对桌面操作', 'Waiting for desktop action review')
+english.set('桌面操作核对已处理', 'Desktop action review handled')
+english.set('桌面操作核对未完成', 'Desktop action review incomplete')
+english.set('核对桌面操作 {count} 次', 'Reviewed desktop action {count} times')
+english.set('任务在等待确认时中断', 'Task interrupted while awaiting confirmation')
+english.set('请先核对实际结果，再决定是否重新发起。', 'Check the actual outcome before deciding whether to start again.')
+english.set('确认记录不可用，请检查应用数据目录。', 'Confirmation records are unavailable. Check the app data folder.')
+english.set('无法更新中断提示', 'Could not update the interruption notice')
+english.set('查看', 'View')
+
+english.set('操作已结束，结果待核对', 'Operation ended, check the result')
+english.set('等待网页画面', 'Waiting for the page preview')
+english.set('内置网页画面', 'In-app page preview')
+english.set('网页画面', 'Page preview')
+english.set('最近观察的窗口', 'Last observed window')
+english.set('电脑操作预览', 'Computer use preview')
+english.set('查看网页', 'Show page')
+english.set('等待你确认', 'Waiting for confirmation')
+english.set('停止任务', 'Stop task')
+english.set('网页操作', 'Browser activity')
+
+english.set('跟随操作页面', 'Follow active page')
+english.set('选择预览页面', 'Choose preview page')
+english.set('上一页', 'Previous page')
+english.set('下一页', 'Next page')
 
 export function translate(language: 'zh-CN' | 'en', text: string): string {
   return (language === 'en' ? english : chinese).get(text) ?? text
 }
+
+english.set('收起步骤', 'Hide steps')
+english.set('查看步骤', 'View steps')
+english.set('正在处理任务', 'Working on the task')
+english.set('正在连接浏览器', 'Connecting to the browser')
+english.set('浏览器已就绪', 'Browser ready')
+english.set('连接浏览器失败', 'Browser connection failed')
+english.set('正在结束网页操作', 'Finishing browser actions')
+english.set('网页操作已结束', 'Browser actions finished')
+english.set('结束网页操作失败', 'Could not finish browser actions')
+english.set('连接浏览器 {count} 次', 'Connected to the browser {count} times')
+english.set('结束网页操作 {count} 次', 'Finished browser actions {count} times')
+
+english.set('自动模式', 'Auto mode')
+english.set('想让 Pi 帮你做什么？', 'What would you like Pi to do?')
+english.set('例如，帮我比较两个网页的内容…', 'For example, compare two web pages…')
+english.set('新会话权限', 'New chat permissions')
+english.set('识别到高风险终端命令时询问你。', 'Ask when a terminal command is identified as high risk.')
+english.set('跳过工具确认。沙箱和电脑操作权限仍然生效。', 'Skip tool prompts. Sandbox and desktop permissions still apply.')
+english.set('新建或重启会话后生效。', 'Applies to new or restarted chats.')
+english.set('新标签页', 'New tab')
+english.set('搜索文件或输入网址', 'Search files or enter a URL')
+english.set('网页', 'Web page')
+english.set('打开网址', 'Open URL')
+english.set('没有匹配的文件', 'No matching files')
+english.set('正在跟随 Pi', 'Following Pi')
+english.set('跟随 Pi', 'Follow Pi')
+english.set('固定当前网页', 'Pin this page')
+english.set('跟随 Pi 切换网页', 'Follow Pi between pages')
+english.set('本次会话', 'This chat')
+english.set('全部产物', 'All artifacts')
+english.set('恢复右上角位置', 'Return to top right')
+english.set('工具返回的图片', 'Image from tool')
+
+// First-run and settings copy (kept close to the product's actual terms).
+english.set('准备 Pi', 'Prepare Pi')
+english.set('正在准备 Pi…', 'Preparing Pi…')
+english.set('准备失败，请检查网络后重试。', 'Could not prepare Pi. Check your connection and try again.')
+english.set('还没有找到 Pi。请先完成准备，或检查设置里的 Pi 路径。', 'Pi was not found. Finish preparing it, or check the Pi path in Settings.')
+english.set('先选择 AI 模型，再打开项目开始对话。', 'Choose an AI model before opening a project and starting a conversation.')
+english.set('Pi 是这个应用的 AI 引擎，负责理解问题、使用工具和处理文件。首次启动会自动准备，通常不需要你操作。', 'Pi is the AI engine behind this app. It understands requests, uses tools, and works with files. It is prepared automatically on first launch; you usually do not need to do anything.')
+english.set('正在准备…', 'Preparing…')
+english.set('立即准备', 'Prepare now')
+english.set('重试准备', 'Try preparing again')
+english.set('正在自动准备，通常需要一两分钟。请不要关闭窗口。', 'Preparing automatically. This usually takes a minute or two; please keep this window open.')
+english.set('还差一步：选择 AI 模型', 'One more step: choose an AI model')
+english.set('Pi 已准备好。选择一个 AI 服务商并填写 API Key 即可使用。', 'Pi is ready. Choose an AI provider and enter an API Key to get started.')
+english.set('Pi 已安装。选择一个 AI 服务商并填写 API Key 即可使用。', 'Pi is installed. Choose an AI provider and enter an API Key to get started.')
+english.set('选择模型', 'Choose model')
+english.set('限制 Pi 只能修改当前项目、只访问允许的网站。不会影响你电脑上的其他应用。', 'Limit Pi to the current project and the websites you allow. Other apps on your computer are unaffected.')
+english.set('当前平台暂不支持沙箱。', 'The sandbox is not supported on this platform yet.')
+english.set('允许 Pi 修改当前项目，还是只能读取文件？无论哪种，Pi 都可以写会话记录和临时文件。', 'Allow Pi to modify the current project, or only read files? In both cases, Pi can write session records and temporary files.')
+english.set('允许 Pi 连接 AI 服务和指定网站，或完全离线。完全离线时，在线模型也无法使用。', 'Allow Pi to connect to AI services and allowed websites, or work fully offline. Offline mode also blocks online models.')
+english.set('Pi 需要访问其他网站时，在这里填写；多个网站用逗号或换行分隔。', 'Add websites Pi may need, separated by commas or new lines.')
+english.set('公司网络或本机代理需要时填写；普通用户留空。沙箱开启时由安全层管理网络，此项主要用于未开启沙箱的对话。', 'Fill this in only if your network or a local proxy requires it. The sandbox manages networking when it is on; this mainly applies to conversations without the sandbox.')
+english.set('不经过代理的地址，多个用逗号分隔。', 'Addresses that bypass the proxy, separated by commas.')
+english.set('查看 Pi 被允许和阻止了哪些操作。记录保存在本机。', 'See which actions Pi was allowed or blocked from performing. Records stay on this computer.')
+english.set('选择 Pi 在执行操作前是否询问你。修改后新建对话生效。', 'Choose whether Pi asks before performing actions. Changes apply to new conversations.')
+
+// Settings status summaries.
+english.set('当前：执行前确认', 'Current: confirm before actions')
+english.set('每一步操作都会先询问你。', 'Pi asks before every action.')
+english.set('高风险操作会先询问你。', 'Pi asks before high-risk actions.')
+english.set('每一步询问', 'Ask every step')
+english.set('高风险询问', 'Ask for high risk')
+english.set('当前：受保护', 'Current: protected')
+english.set('当前：未开启保护', 'Current: protection off')
+english.set('只能读取项目文件', 'Project files are read-only')
+english.set('可以修改当前项目', 'Can modify the current project')
+english.set('完全离线', 'Fully offline')
+english.set('仅访问 AI 服务和允许的网站', 'Only AI services and allowed websites')
+english.set('Pi 可以修改项目文件并访问网络。开启保护后可以限制文件和网络范围。', 'Pi can modify project files and access the network. Turn on protection to limit files and network access.')
+english.set('已开启', 'On')
+english.set('未开启', 'Off')

@@ -2,19 +2,21 @@ import { useTranslation } from '../i18n'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Clock,
+  ChevronRight,
   FolderOpen,
   MoreHorizontal,
   Plus,
   Search,
   Settings,
+  ShieldCheck,
   Sparkles,
   Trash2,
   X
 } from 'lucide-react'
 import clsx from 'clsx'
-import type { SessionSummary } from '@shared/types'
+import type { SessionSearchMatch, SessionSummary, SessionTreeData, SessionTreeNode } from '@shared/types'
 import { useApp } from '../store'
-import { baseName, relativeTime, shortenPath, truncate } from '../lib/format'
+import { baseName, projectName, relativeTime, shortenPath, truncate } from '../lib/format'
 import { mod } from '../lib/platform'
 import { PiLogo } from './PiLogo'
 import { ContextMenu, Modal, Popover, Spinner } from './ui'
@@ -23,12 +25,18 @@ function SessionMenu({
   session,
   close,
   onRename,
-  onDelete
+  onDelete,
+  onClone,
+  onFork,
+  onTree
 }: {
   session: SessionSummary
   close: () => void
   onRename: (value: string) => void
   onDelete: () => void
+  onClone: () => void
+  onFork: () => void
+  onTree: () => void
 }): ReactNode {
   const t = useTranslation()
   const { actions, state } = useApp()
@@ -49,6 +57,27 @@ function SessionMenu({
         }}
       >{t("在 Finder 中显示")}</button>
       {session.path === state.sessionPath && <><div className="menu-separator" />
+      <button
+        className="menu-item"
+        onClick={() => {
+          close()
+          onClone()
+        }}
+      >{t("复制会话")}</button>
+      <button
+        className="menu-item"
+        onClick={() => {
+          close()
+          onFork()
+        }}
+      >{t("从历史提示分支…")}</button>
+      <button
+        className="menu-item"
+        onClick={() => {
+          close()
+          onTree()
+        }}
+      >{t("查看分支树")}</button>
       <button
         className="menu-item"
         onClick={() => {
@@ -81,6 +110,38 @@ function SessionMenu({
   )
 }
 
+interface FlatTreeRow {
+  node: SessionTreeNode
+  depth: number
+}
+
+function flattenTree(nodes: SessionTreeNode[], depth = 0, rows: FlatTreeRow[] = []): FlatTreeRow[] {
+  for (const node of nodes) {
+    rows.push({ node, depth })
+    flattenTree(node.children ?? [], depth + 1, rows)
+  }
+  return rows
+}
+
+function treeEntryText(entry: SessionTreeNode['entry']): string {
+  const content = entry.message?.content
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((block) => {
+        if (!block || typeof block !== 'object') return ''
+        const value = block as { type?: string; text?: unknown; content?: unknown; name?: unknown }
+        if (value.type === 'text') return String(value.text ?? '')
+        if (value.type === 'tool_use') return `[${String(value.name ?? 'tool')}]`
+        if (value.type === 'tool_result') return String(value.content ?? '')
+        return ''
+      })
+      .filter(Boolean)
+      .join(' ')
+  }
+  return entry.type
+}
+
 export function Sidebar(): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
@@ -88,6 +149,17 @@ export function Sidebar(): ReactNode {
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
+  const [pendingProjectRemoval, setPendingProjectRemoval] = useState<string | null>(null)
+  const [removingProject, setRemovingProject] = useState(false)
+  const [forkTarget, setForkTarget] = useState<SessionSummary | null>(null)
+  const [forkList, setForkList] = useState<{ entryId: string; text: string }[] | null>(null)
+  const [forkBusy, setForkBusy] = useState(false)
+  const [forkSelected, setForkSelected] = useState<{ entryId: string; text: string } | null>(null)
+  const [forkDraft, setForkDraft] = useState('')
+  const [messageResults, setMessageResults] = useState<SessionSearchMatch[] | null>(null)
+  const [treeOpen, setTreeOpen] = useState(false)
+  const [treeData, setTreeData] = useState<SessionTreeData | null>(null)
+  const [treeBusy, setTreeBusy] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ session: SessionSummary; x: number; y: number } | null>(null)
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => new Set())
   const [skillCount, setSkillCount] = useState<number | null>(null)
@@ -168,6 +240,23 @@ export function Sidebar(): ReactNode {
     state.scratchWorkspace || Boolean(workspace && scratchPath && workspace === scratchPath)
 
   const language = state.settings.language ?? 'zh-CN'
+  useEffect(() => {
+    const text = query.trim()
+    if (text.length < 2) {
+      setMessageResults(null)
+      return
+    }
+    let alive = true
+    const timer = window.setTimeout(() => {
+      window.pi.searchSessions(text).then((results) => {
+        if (alive) setMessageResults(results)
+      }).catch(() => {
+        if (alive) setMessageResults([])
+      })
+    }, 220)
+    return () => { alive = false; window.clearTimeout(timer) }
+  }, [query])
+
   const queryText = query.trim().toLowerCase()
 
   // Only actual projects are listed as projects. A session whose folder is not
@@ -291,11 +380,80 @@ export function Sidebar(): ReactNode {
                 setRenameValue(value)
               }}
               onDelete={() => setPendingDelete(session)}
+              onClone={() => void actions.cloneSession()}
+              onFork={() => void openFork(session)}
+              onTree={() => void openTree()}
             />
           )}
         </Popover>
       </div>
     )
+  }
+
+  const openFork = async (session: SessionSummary): Promise<void> => {
+    if (session.path !== state.sessionPath) {
+      const opened = await actions.openSession(session.cwd, session.path)
+      if (!opened) return
+    }
+    setForkTarget(session)
+    setForkList(null)
+    setForkSelected(null)
+    setForkDraft('')
+    try {
+      setForkList(await actions.forkMessages())
+    } catch {
+      setForkList([])
+    }
+  }
+
+  const chooseFork = async (send: boolean): Promise<void> => {
+    if (forkBusy || !forkSelected) return
+    setForkBusy(true)
+    try {
+      const text = forkDraft.trim() || forkSelected.text
+      const result = await actions.forkSession(forkSelected.entryId)
+      if (!result.ok) {
+        actions.notify('error', '创建分支失败', result.error)
+        return
+      }
+      setForkTarget(null)
+      setForkList(null)
+      setForkSelected(null)
+      if (send) await actions.sendMessage(text, [])
+      else actions.fillComposer(text, true)
+    } finally {
+      setForkBusy(false)
+    }
+  }
+
+  const openTree = async (): Promise<void> => {
+    if (treeBusy) return
+    setTreeOpen(true)
+    setTreeBusy(true)
+    try {
+      setTreeData(await actions.sessionTree())
+    } catch {
+      setTreeData(null)
+    } finally {
+      setTreeBusy(false)
+    }
+  }
+
+  const forkFromTree = async (entryId: string): Promise<void> => {
+    if (treeBusy) return
+    setTreeBusy(true)
+    try {
+      const result = await actions.forkSession(entryId)
+      if (!result.ok) {
+        actions.notify('error', '创建分支失败', result.error)
+        return
+      }
+      setTreeOpen(false)
+      setTreeData(null)
+      if (result.text) actions.fillComposer(result.text, true)
+    } finally {
+      setTreeBusy(false)
+    }
   }
 
   return (
@@ -318,8 +476,8 @@ export function Sidebar(): ReactNode {
         </button>
         <button className="skills-entry skills-page-entry" onClick={() => actions.openSkills(true)}>
           <Sparkles size={13} />
-          <span>{t('技能与插件')}</span>
-          <span className="shortcut">{skillCount ?? ''}</span>
+          <span>{t('技能与工具')}</span>
+          <span className="shortcut">{skillCount || ''}</span>
         </button>
         <button
           className="skills-entry schedules-entry"
@@ -333,7 +491,7 @@ export function Sidebar(): ReactNode {
           {runningSchedules.size > 0 ? (
             <span className="schedule-running-dot" title={t('运行中')} />
           ) : (
-            <span className="shortcut">{scheduleCount ?? ''}</span>
+            <span className="shortcut">{scheduleCount || ''}</span>
           )}
           {scheduleUnread > 0 && <span className="schedule-unread-dot" />}
         </button>
@@ -354,15 +512,51 @@ export function Sidebar(): ReactNode {
       </div>
 
       <div className="session-list">
+        {state.interruptedUiError && <div className="interrupted-approval">{t('确认记录不可用，请检查应用数据目录。')}</div>}
+        {state.interruptedUi.map((item) => (
+          <div className="interrupted-approval" key={item.id}>
+            <strong>{t('任务在等待确认时中断')}</strong>
+            <span>{baseName(item.cwd)} · {t('请先核对实际结果，再决定是否重新发起。')}</span>
+            <button onClick={() => { void window.pi.acknowledgeInterruptedUi(item.id).catch(() => actions.notify('error', t('无法更新中断提示'))) }}>{t('知道了')}</button>
+          </div>
+        ))}
+        {state.backgroundUiPending.map((pending) => {
+          const session = state.sessions.find((item) => item.path === pending.path)
+          const name = session?.name || baseName(pending.cwd)
+          return (
+            <button className="background-approval" key={pending.path}
+              onClick={() => void actions.openSession(pending.cwd, pending.path)}>
+              <span>{t('后台任务等待确认')}</span>
+              <span>{truncate(name, 42)} · {t('查看')}</span>
+            </button>
+          )
+        })}
+        {queryText && messageResults && messageResults.length > 0 && (
+          <div className="session-search-results">
+            <div className="recent-label">{t('消息结果')}</div>
+            {messageResults.map((result) => (
+              <button
+                key={result.session.path}
+                className="session-search-hit"
+                onClick={() => void actions.openSession(result.session.cwd, result.session.path)}
+                title={result.session.name}
+              >
+                <span className="session-search-name">{result.session.name}</span>
+                {result.matches[0] && <span className="session-search-snippet">{result.matches[0].text}</span>}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="project-shortcuts-header">
           <span className="project-shortcuts-label">{t('Projects')}</span>
-          <button className="icon-button project-add" onClick={() => void actions.pickFolder()}
-            title={t('打开文件夹…')} aria-label={t('打开文件夹…')}><Plus size={14} /></button>
+          <button className="icon-button project-add" onClick={() => actions.openAddProject(true)}
+            title={t('添加项目')} aria-label={t('添加项目')}><Plus size={14} /></button>
         </div>
         {Boolean(queryText) && matching.length === 0 && (
           <div className="session-empty">{t('没有匹配的会话。')}</div>
         )}
         {workspaces.map((path) => {
+          const name = projectName(state.settings.workspaceNames, path)
           const matches = matching.filter((session) => session.cwd === path)
           if (queryText && matches.length === 0) return null
           const expanded = !collapsedProjects.has(path) || Boolean(queryText)
@@ -373,7 +567,7 @@ export function Sidebar(): ReactNode {
                   className="project-row-main"
                   aria-expanded={expanded}
                   title={shortenPath(path, state.boot?.home)}
-                  aria-label={state.settings.language === 'en' ? `${expanded ? 'Collapse' : 'Expand'} sessions for ${baseName(path)}` : `${expanded ? '收起' : '展开'} ${baseName(path)} 的会话`}
+                  aria-label={state.settings.language === 'en' ? `${expanded ? 'Collapse' : 'Expand'} sessions for ${name}` : `${expanded ? '收起' : '展开'} ${name} 的会话`}
                   onClick={() => setCollapsedProjects((current) => {
                     const next = new Set(current)
                     if (next.has(path)) next.delete(path); else next.add(path)
@@ -381,19 +575,38 @@ export function Sidebar(): ReactNode {
                   })}
                 >
                   <FolderOpen size={13} />
-                  <span>{baseName(path)}</span>
+                  <span>{name}</span>
                 </button>
                 <button
                   className="icon-button project-new-chat"
-                  title={state.settings.language === 'en' ? `New conversation in ${baseName(path)}` : `在 ${baseName(path)} 中新建对话`}
-                  aria-label={state.settings.language === 'en' ? `New conversation in ${baseName(path)}` : `在 ${baseName(path)} 中新建对话`}
+                  title={state.settings.language === 'en' ? `New conversation in ${name}` : `在 ${name} 中新建对话`}
+                  aria-label={state.settings.language === 'en' ? `New conversation in ${name}` : `在 ${name} 中新建对话`}
                   onClick={(event) => {
                     event.stopPropagation()
+                    const draftCheck = new Event('pi:before-new-session', { cancelable: true })
+                    window.dispatchEvent(draftCheck)
+                    if (draftCheck.defaultPrevented) return
                     void actions.openSession(path, null)
                   }}
                 >
                   <Plus size={13} />
                 </button>
+                <Popover width={190} align="right" trigger={(_open, toggle, expanded) => (
+                  <button className="icon-button project-remove" onClick={toggle}
+                    title={t('项目操作')} aria-label={t('项目操作')} {...expanded}>
+                    <MoreHorizontal size={14} />
+                  </button>
+                )}>
+                  {(close) => <div className="menu">
+                    <button className="menu-item" onClick={() => {
+                      close()
+                      window.dispatchEvent(new CustomEvent('pi:manage-project-trust', { detail: path }))
+                    }}><ShieldCheck size={14} />{t('项目信任')}</button>
+                    <button className="menu-item" onClick={() => { close(); setPendingProjectRemoval(path) }}>
+                      <Trash2 size={14} />{t('从列表移除')}
+                    </button>
+                  </div>}
+                </Popover>
               </div>
               {expanded && (
                 <div className="project-tree-sessions">
@@ -448,9 +661,41 @@ export function Sidebar(): ReactNode {
               setRenameValue(value)
             }}
             onDelete={() => setPendingDelete(contextMenu.session)}
+            onClone={() => void actions.cloneSession()}
+            onFork={() => void openFork(contextMenu.session)}
+            onTree={() => void openTree()}
           />
         )}
       </ContextMenu>
+
+      <Modal
+        open={Boolean(pendingProjectRemoval)}
+        title={language === 'en' ? 'Remove project from list?' : '从项目列表移除？'}
+        subtitle={pendingProjectRemoval ?? undefined}
+        onClose={() => { if (!removingProject) setPendingProjectRemoval(null) }}
+        footer={<>
+          <button className="button ghost" disabled={removingProject} onClick={() => setPendingProjectRemoval(null)}>{t('取消')}</button>
+          <button className="button primary" disabled={removingProject || (pendingProjectRemoval === workspace && state.streaming)} onClick={() => {
+            const path = pendingProjectRemoval
+            if (!path) return
+            setRemovingProject(true)
+            void (async () => {
+              try {
+                if (path === workspace && !await actions.newScratchSession()) return
+                await actions.updateSettings({ workspaces: state.settings.workspaces.filter((item) => item !== path) })
+                setPendingProjectRemoval(null)
+              } catch (error) {
+                actions.notify('error', language === 'en' ? 'Could not remove project' : '无法移除项目', String(error))
+              } finally {
+                setRemovingProject(false)
+              }
+            })()
+          }}>{language === 'en' ? 'Remove from list' : '从列表移除'}</button>
+        </>}
+      >
+        <p className="modal-text">{language === 'en' ? 'The folder and its files remain on your computer. Conversations remain in Recent conversations; opening the folder again will add it back to Projects.' : '文件夹和里面的文件仍保留在电脑上；历史对话会显示在「最近对话」。再次打开文件夹时，项目会重新出现在列表中。'}</p>
+        {pendingProjectRemoval === workspace && state.streaming && <p className="modal-text">{language === 'en' ? 'Wait for the current task to finish or stop it before removing this project.' : '当前项目有任务正在执行，请等待完成或停止任务后再移除。'}</p>}
+      </Modal>
 
       <Modal
         open={Boolean(pendingDelete)}
@@ -475,6 +720,93 @@ export function Sidebar(): ReactNode {
           <code>{shortenPath(state.boot?.sessionsRoot)}/.trash</code>
           {state.settings.language === 'en' ? '. You can undo this from the notification within 24 hours. Files changed by pi are not affected.' : '，24 小时内可在提示条里「撤销」。pi 在磁盘上改过的文件不受影响。'}
         </p>
+      </Modal>
+      <Modal
+        open={forkTarget !== null}
+        title={t('从历史提示分支')}
+        subtitle={forkTarget?.name}
+        width={560}
+        onClose={() => (forkBusy ? undefined : setForkTarget(null))}
+        footer={
+          <>
+            <button className="button ghost" disabled={forkBusy} onClick={() => setForkTarget(null)}>{t('取消')}</button>
+            <button className="button ghost" disabled={forkBusy || !forkSelected} onClick={() => void chooseFork(false)}>{t('分支并编辑')}</button>
+            <button className="button primary" disabled={forkBusy || !forkSelected} onClick={() => void chooseFork(true)}>{t('分支并发送')}</button>
+          </>
+        }
+      >
+        {forkList === null ? <p className="settings-note">{t('正在读取历史提示…')}</p> : forkList.length === 0 ? <p className="settings-note">{t('没有可以分支的用户提示。')}</p> : (
+          <>
+            <div className="fork-message-list">
+              {forkList.map((item) => (
+                <button
+                  key={item.entryId}
+                  className={clsx('fork-message-item', forkSelected?.entryId === item.entryId && 'selected')}
+                  disabled={forkBusy}
+                  onClick={() => { setForkSelected(item); setForkDraft(item.text) }}
+                >
+                  <span>{item.text}</span>
+                  <ChevronRight size={14} />
+                </button>
+              ))}
+            </div>
+            {forkSelected && (
+              <label className="form-field fork-edit-field">
+                <span>{t('编辑要重新发送的提示')}</span>
+                <textarea rows={4} value={forkDraft} onChange={(event) => setForkDraft(event.target.value)} />
+              </label>
+            )}
+          </>
+        )}
+      </Modal>
+      <Modal
+        open={treeOpen}
+        title={t('分支树')}
+        subtitle={treeData ? `${treeData.tree.length} ${t('个根节点')}` : undefined}
+        width={620}
+        onClose={() => (treeBusy ? undefined : setTreeOpen(false))}
+        footer={
+          <>
+            <button className="button ghost" disabled={treeBusy} onClick={() => void openTree()}>{t('刷新')}</button>
+            <button className="button primary" disabled={treeBusy} onClick={() => setTreeOpen(false)}>{t('关闭')}</button>
+          </>
+        }
+      >
+        {treeBusy ? <p className="settings-note">{t('正在读取分支树…')}</p> : !treeData ? <p className="settings-note">{t('这个会话还没有分支记录。')}</p> : treeData.tree.length === 0 ? <p className="settings-note">{t('这个会话还没有消息。')}</p> : (() => {
+          const rows = flattenTree(treeData.tree)
+          const byId = new Map(rows.map((row) => [row.node.entry.id, row.node]))
+          const active = new Set<string>()
+          let cursor = treeData.leafId
+          while (cursor) {
+            if (active.has(cursor)) break
+            active.add(cursor)
+            cursor = byId.get(cursor)?.entry.parentId ?? null
+          }
+          return (
+            <div className="tree-list">
+              {rows.map(({ node, depth }) => {
+                const entry = node.entry
+                const role = entry.message?.role ?? entry.type
+                const isUser = entry.message?.role === 'user'
+                return (
+                  <button
+                    key={entry.id}
+                    className={clsx('tree-row', active.has(entry.id) && 'active', isUser && 'clickable')}
+                    style={{ paddingLeft: 10 + depth * 18 }}
+                    disabled={treeBusy || !isUser}
+                    title={isUser ? t('从此处分叉') : undefined}
+                    onClick={() => void forkFromTree(entry.id)}
+                  >
+                    <span className="tree-connector">{depth > 0 ? '└' : '●'}</span>
+                    <span className={clsx('tree-role', role)}>{role}</span>
+                    <span className="tree-text">{treeEntryText(entry)}</span>
+                    {entry.id === treeData.leafId && <span className="tree-current">{t('当前')}</span>}
+                  </button>
+                )
+              })}
+            </div>
+          )
+        })()}
       </Modal>
     </aside>
   )

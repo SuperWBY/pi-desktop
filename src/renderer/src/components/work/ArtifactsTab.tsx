@@ -17,14 +17,15 @@ interface Artifact {
 
 const PREVIEW_EXT = new Set(['html', 'htm', 'svg', 'md'])
 
-export function ArtifactsTab(): ReactNode {
+export function ArtifactsTab({ suggested = false }: { suggested?: boolean } = {}): ReactNode {
   const t = useTranslation()
   const { state } = useApp()
   const [html, setHtml] = useState<{ path: string; text: string } | null>(null)
 
   const artifacts = useMemo(() => {
     const list: Artifact[] = []
-    for (const message of state.messages) {
+    const written = new Set(state.messages.flatMap(message => message.role === 'toolResult' && !message.isError ? [message.toolCallId] : []))
+    for (const [messageIndex, message] of state.messages.entries()) {
       if (message.role === 'user') {
         const content = (message as UserMessage).content
         if (Array.isArray(content)) {
@@ -40,11 +41,16 @@ export function ArtifactsTab(): ReactNode {
           })
         }
       }
+      if (message.role === 'toolResult' && !message.isError && !message.toolName.startsWith('computer_use_')) {
+        message.content.forEach((block, index) => {
+          if (block.type === 'image') list.push({key: 'result-' + message.toolCallId + '-' + index, label: t('工具返回的图片'), kind: 'image', src: 'data:' + block.mimeType + ';base64,' + block.data})
+        })
+      }
       if (message.role === 'assistant') {
-        for (const block of (message as AssistantMessage).content ?? []) {
+        for (const [index, block] of ((message as AssistantMessage).content ?? []).entries()) {
           if (block.type === 'image') {
             list.push({
-              key: `a-${block.data.slice(0, 12)}`,
+              key: `a-${messageIndex}-${index}`,
               label: t('生成的图片'),
               kind: 'image',
               src: `data:${block.mimeType};base64,${block.data}`
@@ -52,7 +58,7 @@ export function ArtifactsTab(): ReactNode {
           }
           if (block.type === 'toolCall') {
             const call = block as ToolCallBlock
-            if (call.name !== 'write') continue
+            if (call.name !== 'write' || (suggested && !written.has(call.id))) continue
             const path = String((call.arguments as { path?: unknown })?.path ?? '')
             if (!path) continue
             const ext = path.split('.').pop()?.toLowerCase() ?? ''
@@ -60,14 +66,14 @@ export function ArtifactsTab(): ReactNode {
               key: `w-${call.id}`,
               label: baseName(path),
               kind: PREVIEW_EXT.has(ext) ? 'html' : 'file',
-              path
+              path: /^(?:\/|[A-Za-z]:[\\/])/.test(path) || !state.workspace ? path : state.workspace + '/' + path
             })
           }
         }
       }
     }
-    return list
-  }, [state.messages, t])
+    return suggested ? list.slice(-4).reverse() : list
+  }, [state.messages, state.workspace, suggested, t])
 
   useEffect(() => {
     if (!html) return
@@ -84,6 +90,7 @@ export function ArtifactsTab(): ReactNode {
     setHtml({ path, text: result.content })
   }
 
+  if (suggested && !artifacts.length) return null
   if (artifacts.length === 0) {
     return (
       <div className="work-empty">

@@ -1,0 +1,28 @@
+{
+  "recordedAt": "2026-11-07T03:56:07.034Z",
+  "scenario": "model-driven-installed-inapp-local-upload",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "piVersion": "1.5.0",
+  "scope": "single local mock backend run",
+  "method": "Natural-language task. Pi selected and invoked browser tools; Codex approved browser actions, selected a local test CSV and confirmed handoff. Backend state checked independently.",
+  "result": {
+    "recordId": "ORD-2026-002",
+    "uploads": 1,
+    "submissions": 1,
+    "sha256Matched": true,
+    "elapsedDisplayed": "3m 38s",
+    "toolCallsDisplayed": 29,
+    "uiReportedErrors": 3
+  },
+  "issues": [
+    "One action and one page read were attempted without a fresh observation and rejected; model recovered.",
+    "Takeover resolved the selection; a subsequent verify_file call failed because no selection was pending. The model then relied on visible filename and size.",
+    "Fixture returned stale pending status on re-query despite a successful server submission; model explicitly reported the discrepancy in its final answer and did not repeat the submission."
+  ],
+  "limitations": [
+    "One run, no reliability or speed estimate",
+    "Local fixture, not real platform or anti-bot test",
+    "File selection and action confirmations performed by Codex",
+    "No independent content/path verification by the model"
+  ]
+}

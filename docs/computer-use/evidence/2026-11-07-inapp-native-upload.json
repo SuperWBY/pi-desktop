@@ -1,0 +1,26 @@
+{
+  "recordedAt": "2026-11-07T03:25:48.853Z",
+  "scenario": "installed-inapp-native-file-chooser-and-local-backoffice",
+  "scope": "isolated local fixture",
+  "browser": "installed Pi Desktop in-app WebContentsView",
+  "fileSelection": "macOS Open dialog operated by Codex Computer Use",
+  "automation": "test script called the authenticated local browser bridge directly; no Pi agent or model; action confirmations and browser journal were not exercised",
+  "file": {
+    "name": "pi-upload-check.csv",
+    "size": 40,
+    "type": "text/csv"
+  },
+  "result": {
+    "recordId": "ORD-2026-002",
+    "uploads": 1,
+    "submissions": 1,
+    "serverFileSha256Matched": true
+  },
+  "limits": [
+    "test user and local server only",
+    "not a production website",
+    "no autonomous agent run",
+    "no verification of approval or journal path",
+    "one run only"
+  ]
+}

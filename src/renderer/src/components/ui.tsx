@@ -283,7 +283,7 @@ export function Modal({
 
   if (!open) return null
 
-  return (
+  return createPortal(
     <div
       className="modal-overlay"
       onMouseDown={onClose}
@@ -308,7 +308,8 @@ export function Modal({
         <div className="modal-body">{children}</div>
         {footer && <div className="modal-foot">{footer}</div>}
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 

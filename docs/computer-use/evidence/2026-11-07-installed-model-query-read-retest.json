@@ -1,0 +1,9 @@
+{
+  "scenario":"installed-model-inapp-local-order-lookup-after-read-fix",
+  "date":"2026-11-07",
+  "model":"opencode-go/deepseek-v4.1-flash",
+  "scope":"one local read-only mock-backend run through the installed Pi Desktop UI",
+  "result":{"recordId":"ORD-2026-002","product":"青木测试商品","status":"待处理","displayedTime":"1m 12s","displayedToolOperations":9,"displayedUiErrors":0,"approvalCount":2,"serverUploadAttempts":0,"serverSubmitAttempts":0,"serverUploads":0,"serverSubmissions":0},
+  "observation":"After the query click, Pi read the bound page successfully and its final answer matched independent local server readback.",
+  "limits":["One run; no success-rate or comparative performance claim.","The test operator approved two local browser actions; no real platform or upload.","Displayed timing and operation counts are UI values, not independently measured latency or billing."]
+}

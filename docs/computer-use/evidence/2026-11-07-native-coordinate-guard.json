@@ -1,0 +1,8 @@
+{
+  "date": "2026-11-07",
+  "environment": "installed Pi Desktop launches a Pi process that invokes the current source-tree macOS helper in an isolated test project",
+  "test": "observe a local fixture, intentionally change the expected window bounds, then click the correct coordinate and wait for the fixture result",
+  "result": {"wrongBoundsRejectedBeforeClick": true, "correctCoordinateRecordedClicks": 1},
+  "initialFinding": "A full-screen Dock and another overlay appeared above the fixture in the window list and caused a false rejection; the guard now combines ordinary-window order with accessibility hit-test process identity.",
+  "limitations": ["scripted direct helper call; Pi tool approval and journal were not exercised", "no real occlusion or window movement was injected; incorrect expected bounds simulated a mismatch", "one local run only", "input delivery and application state can change between checks", "non-accessible and unusually layered windows may be blocked or misidentified", "source-tree helper, not an installed update"]
+}

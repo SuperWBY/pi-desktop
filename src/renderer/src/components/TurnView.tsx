@@ -10,7 +10,7 @@ import { AnswerOnly, AssistantMessageView, CustomMessageView, UserMessageView } 
 import { ToolCard } from './ToolCard'
 import { ToolGroup } from './ToolGroup'
 import { buildProcessSteps } from '../lib/process-steps'
-import { contentText } from '../lib/tools'
+import { browserActionResultUnknown, computerUseOutcome, contentText, toolPhrases } from '../lib/tools'
 import { collectSessionChanges } from '../lib/session-changes'
 import { requestReview } from '../lib/review-focus'
 import { useApp } from '../store'
@@ -61,11 +61,12 @@ export function TurnSummary({
   const elapsed = stats.startedAt && (turn.streaming || stats.endedAt)
     ? formatDuration(Math.max(0, (turn.streaming ? Date.now() : stats.endedAt!) - stats.startedAt))
     : ''
-  const parts: string[] = [turn.streaming ? t('执行中') : turn.failed ? t('过程有错误') : t('已完成')]
+  const hasComputerUse = Object.keys(stats.tools).some((name) => name.startsWith('computer_use_'))
+  const parts: string[] = [turn.streaming ? t('执行中') : turn.failed ? t('过程有错误') : t(hasComputerUse ? '执行结束' : '已完成')]
   const toolCount = Object.values(stats.tools).reduce((total, count) => total + count, 0)
   if (toolCount) parts.push(t('{count} 次操作').replace('{count}', String(toolCount)))
   if (stats.files.length) parts.push(t('{count} files').replace('{count}', String(stats.files.length)))
-  if (elapsed) parts.push(turn.streaming ? `${t('running')} ${elapsed}` : elapsed)
+  if (elapsed) parts.push(turn.streaming ? `${t('运行中')} ${elapsed}` : elapsed)
   if (!turn.streaming && stats.tokens) parts.push(`${formatTokens(stats.tokens)} tokens`)
   if (!turn.streaming && stats.cost) parts.push(formatCost(stats.cost))
 
@@ -88,7 +89,7 @@ export function TurnSummary({
         aria-expanded={level === 0}
       >
         {level === 0 ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        <span className="turn-summary-text">{parts.join(' · ')}</span>
+        <span className="turn-summary-text">{hasComputerUse && !turn.failed ? t(level === 0 ? '收起步骤' : '查看步骤') : parts.join(' · ')}</span>
         {stats.errors > 0 && (
           <span className="turn-summary-error">
             <AlertTriangle size={11} /> {stats.errors}
@@ -141,6 +142,57 @@ function callIds(turn: Turn): Set<string> {
   return ids
 }
 
+function ComputerProgress({ turn, toolRuns, results, expanded, toggle, waiting }: {
+  turn: Turn
+  toolRuns: Record<string, ToolRun>
+  results: Record<string, ToolResultMessage>
+  expanded: boolean
+  toggle: () => void
+  waiting: boolean
+}): ReactNode {
+  const t = useTranslation()
+  let page = ''
+  let lastRead = ''
+  let headline = t('正在处理任务')
+  let error = false
+  for (const item of turn.items) {
+    if (item.role !== 'assistant') continue
+    for (const block of (item as AssistantMessage).content ?? []) {
+      if (block.type !== 'toolCall') continue
+      const call = block as ToolCallBlock
+      const run = toolRuns[call.id]
+      const result = results[call.id]
+      const details = run?.resultDetails ?? result?.details
+      const info = details as { url?: string; windowTitle?: string } | undefined
+      const done = run?.status === 'done' || !!result
+      error = run?.status === 'error' || result?.isError === true
+      const browser = call.name.startsWith('computer_use_session_')
+      if (call.name === 'computer_use_session_open') page = ''
+      if (call.name === 'computer_use_session_observe' || (call.name === 'computer_use_session_read' && info?.url)) {
+        const url = info?.url ?? call.arguments?.url
+        try { page = new URL(String(url)).hostname } catch { page = '' }
+      }
+      const target = browser ? page : info?.windowTitle ?? ''
+      const phrases = toolPhrases(call.name)
+      const outcome = done && !error ? computerUseOutcome(call.name, details) : null
+      const unknown = browserActionResultUnknown(call.name, error, run?.resultText ?? contentText(result))
+      const label = unknown ? '操作结果未知，请核对' : error ? phrases.failed : outcome || (done ? phrases.done : phrases.running)
+      headline = [t(label), target].filter(Boolean).join(' · ')
+      if (call.name === 'computer_use_session_read' && done && !error && page) lastRead = page
+      if (call.name === 'computer_use_session_close') page = ''
+    }
+  }
+  if (waiting) headline = t('等待你确认')
+  const previous = lastRead && !headline.endsWith(' · ' + lastRead) ? t('已读取') + ' ' + lastRead : ''
+  return <div className="computer-progress">
+    <div className="computer-progress-title" role="status" data-error={error}><span />{headline}</div>
+    {previous && <div className="computer-progress-previous">{previous}</div>}
+    <button className="computer-progress-steps" onClick={toggle} aria-expanded={expanded}>
+      {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}{t(expanded ? '收起步骤' : '查看步骤')}
+    </button>
+  </div>
+}
+
 function ProcessCalls({ calls, toolRuns, results }: {
   calls: ToolCallBlock[]
   toolRuns: Record<string, ToolRun>
@@ -176,6 +228,7 @@ export function TurnView({
   busy?: boolean
 }): ReactNode {
   const { state } = useApp()
+  const computerLive = turn.streaming && Object.keys(turn.stats.tools).some(name => name.startsWith('computer_use_'))
   const rendered = callIds(turn)
   // Same-name tool calls merge across messages so a turn reads as a few steps
   // instead of one card per call.
@@ -207,7 +260,10 @@ export function TurnView({
         <UserMessageView message={turn.user as UserMessage} />
       ) : null}
 
-      {(hasProcess || level === 2) && (
+      {computerLive ? (
+        <ComputerProgress turn={turn} toolRuns={toolRuns} results={results} waiting={state.uiRequests.length > 0}
+          expanded={level === 0} toggle={() => onLevel(level === 0 ? 1 : 0)} />
+      ) : (hasProcess || level === 2) && (
         <TurnSummary
           turn={turn}
           level={level}

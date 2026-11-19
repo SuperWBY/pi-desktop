@@ -7,9 +7,11 @@ import {
   Check,
   ChevronDown,
   FolderSearch,
+  Globe,
   Info,
   Keyboard,
   MessagesSquare,
+  Monitor,
   Palette,
   Plus,
   RefreshCw,
@@ -19,6 +21,7 @@ import {
   Sparkles,
   Trash2,
   Wrench,
+  Shield,
   X
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -28,15 +31,22 @@ import type {
   PiModelRow,
   PiSettings,
   ThinkingLevel,
+  BrowserRouterStatus,
+  JevStatus,
+  SandboxStatus,
+  UpdateInfo,
   UsageRange,
   UsageSummary
 } from '@shared/types'
 import { useApp } from '../store'
 import { formatCost, formatTokens, shortenPath } from '../lib/format'
 import { shortcutKeys } from '../lib/platform'
-import { Popover } from './ui'
+import { Modal, Popover } from './ui'
 import { ChromeImportDialog } from './ChromeImportDialog'
 import { ChromeBridgeDialog } from './ChromeBridgeDialog'
+import { DesktopPermissionSettings } from './DesktopPermissionSettings'
+import { ProviderAuthDialog } from './ProviderAuthDialog'
+import { ProviderOAuthDialog } from './ProviderOAuthDialog'
 
 const SHORTCUTS: { keys: string; label: string }[] = [
   { keys: '⌘N', label: '新建会话' },
@@ -120,6 +130,30 @@ const PRESETS: ProviderPreset[] = [
     apiKey: ''
   },
   {
+    key: 'openai',
+    label: 'OpenAI',
+    provider: 'openai',
+    api: 'openai-responses',
+    baseUrl: 'https://api.openai.com/v1',
+    apiKey: '$OPENAI_API_KEY'
+  },
+  {
+    key: 'anthropic-official',
+    label: 'Anthropic',
+    provider: 'anthropic',
+    api: 'anthropic-messages',
+    baseUrl: 'https://api.anthropic.com',
+    apiKey: '$ANTHROPIC_API_KEY'
+  },
+  {
+    key: 'google-official',
+    label: 'Google Gemini',
+    provider: 'google',
+    api: 'google-generative-ai',
+    baseUrl: 'https://generativelanguage.googleapis.com',
+    apiKey: '$GEMINI_API_KEY'
+  },
+  {
     key: 'openrouter',
     label: 'OpenRouter',
     provider: 'openrouter',
@@ -197,7 +231,7 @@ function draftToEntry(draft: ProviderDraft, existing?: CustomProviderEntry): Cus
   return entry
 }
 
-type CategoryId = 'general' | 'models' | 'tools' | 'appearance' | 'sessions' | 'usage' | 'shortcuts' | 'about'
+type CategoryId = 'general' | 'models' | 'tools' | 'network' | 'appearance' | 'sessions' | 'computer-use' | 'browser' | 'usage' | 'shortcuts' | 'about'
 
 const NAV: {
   group: string
@@ -210,7 +244,7 @@ const NAV: {
         id: 'general',
         label: '常规',
         icon: SlidersHorizontal,
-        keywords: ['pi', '路径', '版本', '重启', 'steering', 'follow', '压缩', '重试', '自动', '运行时', '语言', 'language', 'chrome', 'cookie', '登录', '浏览器', '导入']
+        keywords: ['pi', '路径', '可执行文件', '版本', '重启', 'steering', 'follow', '压缩', '重试', '自动', '运行时', '语言', 'language']
       },
       {
         id: 'models',
@@ -240,7 +274,7 @@ const NAV: {
         id: 'tools',
         label: '工具与技能',
         icon: Wrench,
-        keywords: ['工具', 'bash', 'read', 'edit', 'write', 'grep', 'find', 'ls', '技能', '工具卡', '跟随']
+        keywords: ['工具', 'bash', 'read', 'edit', 'write', 'grep', 'find', 'ls', '技能', '工具卡', '跟随', 'jev', '判断', '审批', '权限', '完全访问', '自动审核', '安全']
       },
       {
         id: 'appearance',
@@ -259,6 +293,24 @@ const NAV: {
   {
     group: '应用',
     items: [
+      {
+        id: 'computer-use',
+        label: '电脑操作',
+        icon: Monitor,
+        keywords: ['computer use', 'computer-use', '桌面操作', '桌面应用', '辅助功能', '屏幕录制', 'accessibility', 'screen recording']
+      },
+      {
+        id: 'browser',
+        label: '网页浏览',
+        icon: Globe,
+        keywords: ['网页', '浏览器', '独立', 'browser', 'chrome', 'cdp', 'cookie', '登录', '导入', '链接', '扩展', '自动化']
+      },
+      {
+        id: 'network',
+        label: '网络与沙箱',
+        icon: Shield,
+        keywords: ['网络', '网关', '代理', 'proxy', 'http_proxy', 'no_proxy', '沙箱', 'sandbox', '隔离', '域名', '审计', 'audit', '防火墙', '网络访问']
+      },
       {
         id: 'usage',
         label: '使用情况与费用',
@@ -451,7 +503,81 @@ export function SettingsPage(): ReactNode {
   const [usageNonce, setUsageNonce] = useState(0)
   const [chromeOpen, setChromeOpen] = useState(false)
   const [chromeBridgeOpen, setChromeBridgeOpen] = useState(false)
+  const [routerStatus, setRouterStatus] = useState<BrowserRouterStatus | null>(null)
+  const [routerBusy, setRouterBusy] = useState(false)
+  const [routerMessage, setRouterMessage] = useState<string | null>(null)
+  const [jev, setJev] = useState<JevStatus | null>(null)
+  const [jevKey, setJevKey] = useState('')
+  const [jevBusy, setJevBusy] = useState(false)
+  const [sandbox, setSandbox] = useState<SandboxStatus | null>(null)
+  const [sandboxDomains, setSandboxDomains] = useState((state.settings.sandboxAllowedDomains ?? []).join(', '))
+  const [networkProxy, setNetworkProxy] = useState(state.settings.networkProxy ?? '')
+  const [networkNoProxy, setNetworkNoProxy] = useState(state.settings.networkNoProxy ?? '')
+  const [auditOpen, setAuditOpen] = useState(false)
+  const [auditLines, setAuditLines] = useState<string[]>([])
+
+  const refreshRouter = async (): Promise<void> => {
+    setRouterBusy(true)
+    try {
+      setRouterStatus(await window.pi.browserRouterStatus())
+    } catch (error) {
+      setRouterMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRouterBusy(false)
+    }
+  }
+
+  const loadJev = async (): Promise<void> => {
+    try { setJev(await window.pi.getJevStatus()) } catch { setJev(null) }
+  }
+
+  const saveJev = async (patch: { enabled?: boolean; provider?: 'typesafe' | 'opencode-free'; model?: string; key?: string; sharePageText?: boolean }): Promise<void> => {
+    if (jevBusy) return
+    setJevBusy(true)
+    try {
+      const next = await window.pi.saveJevSettings(patch)
+      setJev(next)
+      if (patch.key !== undefined) setJevKey('')
+      actions.notify('success', t('Jev 设置已保存'), t('重启会话后生效。'), {
+        label: t('重启会话'),
+        run: () => void actions.restartSession()
+      })
+    } finally {
+      setJevBusy(false)
+    }
+  }
+
+  useEffect(() => { void loadJev() }, [])
+  useEffect(() => {
+    void window.pi.sandboxStatus().then(setSandbox).catch(() => setSandbox({ available: false, reason: '无法读取 sandbox 状态。' }))
+  }, [])
+
+  const saveSandbox = async (patch: Partial<{ sandboxEnabled: boolean; sandboxMode: 'workspace-write' | 'read-only'; sandboxNetwork: 'model' | 'off'; sandboxAllowedDomains: string[] }>): Promise<void> => {
+    await actions.updateSettings(patch)
+    actions.notify('success', t('沙箱设置已保存'), t('新会话生效。'), {
+      label: t('重启会话'),
+      run: () => void actions.restartSession()
+    })
+  }
+
+
+  useEffect(() => {
+    void refreshRouter()
+    // The status is a snapshot; the manual refresh button updates it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [authOpen, setAuthOpen] = useState(false)
+  const [oauthOpen, setOauthOpen] = useState(false)
+  const [updateBusy, setUpdateBusy] = useState(false)
+  const [updateDownloading, setUpdateDownloading] = useState(false)
+  const [updateProgress, setUpdateProgress] = useState<{ received?: number; total?: number; message: string } | null>(null)
   const contentRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => window.pi.onUpdateProgress((progress) => {
+    setUpdateProgress({ received: progress.received, total: progress.total, message: progress.message })
+    if (progress.phase === 'error') setUpdateDownloading(false)
+  }), [])
 
   useEffect(() => {
     if (!open || active !== 'usage') return
@@ -503,7 +629,18 @@ export function SettingsPage(): ReactNode {
   }, [active])
 
   useEffect(() => {
-    if (!open) setQuery('')
+    const openSection = (event: Event): void => {
+      const section = (event as CustomEvent<string>).detail
+      if (NAV.some((group) => group.items.some((item) => item.id === section))) {
+        setActive(section as CategoryId)
+      }
+    }
+    window.addEventListener('pi:settings-section', openSection)
+    return () => window.removeEventListener('pi:settings-section', openSection)
+  }, [])
+
+  useEffect(() => {
+    if (!open) { setQuery('') }
   }, [open])
 
   const loadModels = useMemo(
@@ -673,6 +810,8 @@ export function SettingsPage(): ReactNode {
           />
         </Row>
       </Block>
+      <details className="settings-advanced" open>
+        <summary>{t("高级：运行环境与会话行为")}</summary>
       <Block title={t("Pi 运行时")} query={query} terms={['路径', '版本', '重启', '可执行文件']}>
         <Row
           title={t("Pi 可执行文件")}
@@ -749,12 +888,35 @@ export function SettingsPage(): ReactNode {
           />
         </Row>
       </Block>
+      </details>
 
-      <Block title={t("链接")} query={query} terms={['浏览器', '链接', 'browser', '外链', '网址']}>
+    </>
+  )
+
+  const renderComputerUse = (): ReactNode => {
+    const computerQuery = matches(query, 'computer use', 'computer-use', '桌面操作', t('桌面操作')) ? '' : query
+    return <>
+      <Block title={t('桌面操作')} query={computerQuery} terms={['computer use', 'computer-use', '桌面应用', '辅助功能', '屏幕录制', 'accessibility', 'screen recording']}>
+        <Row title={t('启用电脑操作')} desc={t('允许 Pi 查看和操作桌面应用。关闭时不会影响网页浏览。')} query={computerQuery}>
+          <Switch label={t('启用 Computer Use')} checked={state.settings.computerUseEnabled === true} onChange={(enabled) => {
+            void actions.updateSettings({ computerUseEnabled: enabled }).then(() => {
+              if (!enabled) window.pi.desktopPermissionGuideClose()
+            }).catch((error: unknown) => actions.notify('error', t('保存失败'), error instanceof Error ? error.message : String(error)))
+          }} />
+        </Row>
+        <DesktopPermissionSettings />
+      </Block>
+    </>
+  }
+
+  const renderBrowser = (): ReactNode => {
+    const browserQuery = matches(query, '网页浏览', t('网页浏览'), '浏览器', 'browser') ? '' : query
+    return <>
+      <Block title={t("链接")} query={browserQuery} terms={['浏览器', '链接', 'browser', '外链', '网址', 'chrome', 'cookie', '登录', '导入']}>
         <Row
           title={t("对话中的链接")}
           desc={t("默认在右侧应用内浏览器打开；按住 ⌘/Ctrl 点击可改用系统浏览器。")}
-          query={query}
+          query={browserQuery}
         >
           <Select
             label={t("链接打开方式")}
@@ -771,7 +933,7 @@ export function SettingsPage(): ReactNode {
         <Row
           title={t("Chrome 登录状态")}
           desc={t("只把选中的站点 Cookie 导入内置浏览器；不会导入密码或 Passkey。")}
-          query={query}
+          query={browserQuery}
         >
           <button className="settings-button" onClick={() => setChromeOpen(true)}>
             {t("从 Chrome 导入…")}
@@ -779,33 +941,92 @@ export function SettingsPage(): ReactNode {
         </Row>
       </Block>
 
-      <Block title={t("浏览器自动化")} query={query} terms={['浏览器', '自动化', 'browser', 'cdp', '扩展']}>
+      <Block title={t("浏览器自动化")} query={browserQuery} terms={['浏览器', '独立', '自动化', 'browser', 'chrome', 'cdp', '扩展']}>
         <Row
-          title={t("应用内浏览器")}
-          desc={t("默认方式。登录状态保留在右侧面板，Agent 读取 DOM 后按元素操作。")}
-          query={query}
+          title={t("浏览器连接状态")}
+          desc={t("检查应用内浏览器和 Chrome 的连接状态。是否能使用网站还取决于登录状态和权限。")}
+          query={browserQuery}
         >
-          <span className="settings-pill ok">{t("当前默认")}</span>
-        </Row>
-        <Row
-          title={t("独立 Chrome（CDP）")}
-          desc={t("使用专用 Chrome profile，适合隔离任务、并行测试和自动化验证。首次使用需在专用窗口登录。")}
-          query={query}
-        >
-          <span className="settings-pill ok">{t("可用")}</span>
-        </Row>
-        <Row
-          title={t("Chrome 扩展桥")}
-          desc={t("复用日常 Chrome 登录态；安装扩展后，Pi 可以直接操作当前网页。")}
-          query={query}
-        >
-          <button className="settings-button" onClick={() => setChromeBridgeOpen(true)}>
-            {t("安装指引")}
+          <button className="settings-button browser-router-refresh" disabled={routerBusy} onClick={() => void refreshRouter()}>
+            {routerBusy ? t("检测中…") : t("重新检测")}
           </button>
         </Row>
+        <Row
+          title={t("应用内浏览器")}
+          desc={t("在右侧面板打开网页，可在这里登录并让 Pi 操作网页。")}
+          query={browserQuery}
+        >
+          <div className="settings-row-actions">
+            <span className={clsx('settings-pill', routerStatus?.backends.find((item) => item.backend === 'inapp')?.connected ? 'ok' : 'muted')}>
+              {routerStatus?.backends.find((item) => item.backend === 'inapp')?.connected ? t('已打开') : t('未打开')}
+            </span>
+            <button className="settings-button" onClick={() => actions.openBrowser('https://www.google.com/')}>
+              {t("打开面板")}
+            </button>
+          </div>
+        </Row>
+        <Row
+          title={t("使用我的 Chrome")}
+          desc={t("连接日常使用的 Chrome，操作已登录的网站。需要先安装扩展。")}
+          query={browserQuery}
+        >
+          <div className="settings-row-actions">
+            <span className={clsx('settings-pill', routerStatus?.backends.find((item) => item.backend === 'extension')?.connected ? 'ok' : 'muted')}>
+              {routerStatus?.backends.find((item) => item.backend === 'extension')?.connected ? t('已连接') : t('未连接')}
+            </span>
+            <button className="settings-button" onClick={() => setChromeBridgeOpen(true)}>
+              {t("安装指引")}
+            </button>
+          </div>
+        </Row>
+        <details className="settings-advanced settings-advanced-in-card" open>
+          <summary>{t("高级：独立浏览器")}</summary>
+        <Row
+          title={t("独立浏览器")}
+          desc={t("使用单独的 Chrome 窗口和登录状态；首次使用时需要在该窗口登录。")}
+          query={matches(browserQuery, 'cdp', '独立浏览器') ? '' : browserQuery}
+        >
+          <div className="settings-row-actions">
+            <span className={clsx('settings-pill', routerStatus?.backends.find((item) => item.backend === 'cdp')?.connected ? 'ok' : 'muted')}>
+              {routerStatus?.backends.find((item) => item.backend === 'cdp')?.connected ? t('已连接') : t('未连接')}
+            </span>
+            <button
+              className="settings-button"
+              disabled={routerBusy}
+              onClick={() => {
+                setRouterBusy(true)
+                setRouterMessage(null)
+                window.pi.startCdpBrowser().then((result) => {
+                  setRouterMessage(result.detail)
+                  actions.notify(result.ok ? 'success' : 'warning', result.ok ? t('CDP 已就绪') : t('CDP 未就绪'), result.detail)
+                  return refreshRouter()
+                }).catch((error: unknown) => {
+                  setRouterMessage(error instanceof Error ? error.message : String(error))
+                  setRouterBusy(false)
+                })
+              }}
+            >
+              {t("启动专用 Chrome")}
+            </button>
+          </div>
+        </Row>
+        </details>
+        {routerMessage && <p className="settings-note">{routerMessage}</p>}
+        {routerStatus && (
+          <p className="settings-note">
+            {routerStatus.backends.map((item) => `${item.backend}: ${item.detail}`).join(' · ')}
+          </p>
+        )}
       </Block>
     </>
-  )
+  }
+
+  const openAddProvider = (): void => {
+    setEditingProvider(null)
+    setChoosingProvider(true)
+    setShowAdd(true)
+    requestAnimationFrame(() => contentRef.current?.querySelector('.provider-form')?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
+  }
 
   const renderModels = (): ReactNode => {
     const customEntries = Object.entries(customConfig?.providers ?? {})
@@ -816,8 +1037,24 @@ export function SettingsPage(): ReactNode {
     const providers = new Set((piModels ?? []).map((row) => row.provider))
     const current = state.piState?.model
 
+    const emptySetup = piModels !== null && rows.length === 0 && customEntries.length === 0
     return (
       <>
+        {emptySetup && (
+          <div className="model-setup-empty">
+            <div className="model-setup-empty-copy">
+              <strong>{t('还没有可用模型')}</strong>
+              <p>{t('Pi 只显示已经配置好凭证的模型。添加一个服务商，或先在 pi 中完成登录，然后重新读取。')}</p>
+            </div>
+            <div className="model-setup-empty-actions">
+              <button className="settings-button primary" onClick={() => setOauthOpen(true)}>{t('使用账号登录')}</button>
+              <button className="settings-button" onClick={() => setAuthOpen(true)}>{t('使用 API Key')}</button>
+              <button className="settings-button" onClick={openAddProvider}>{t('自定义服务商')}</button>
+              <button className="settings-button" disabled={modelsBusy} onClick={() => void loadModels()}>
+                <RefreshCw size={12} />{t('重新读取')}</button>
+            </div>
+          </div>
+        )}
         <Block title={t("新会话默认值")} query={query} terms={['默认模型', '推理强度', 'thinking']}>
         <Row
           title={t("默认模型")}
@@ -864,6 +1101,8 @@ export function SettingsPage(): ReactNode {
         </Row>
       </Block>
 
+      <details className="settings-advanced" open>
+        <summary>{t("查看可用模型列表")}</summary>
       <Block title={t("pi 支持的模型")} query={query} terms={['模型列表', '目录', '刷新', '可用']}>
         <div className="model-catalog-head">
           <div className="settings-search model-search">
@@ -916,6 +1155,7 @@ export function SettingsPage(): ReactNode {
         </div>
       </Block>
 
+      </details>
       <Block
         title={t("自定义服务商与模型")}
         query={query}
@@ -1124,8 +1364,269 @@ export function SettingsPage(): ReactNode {
   )
   }
 
+  const renderNetwork = (): ReactNode => (
+    <>
+      <div className={clsx('settings-status-summary', state.settings.sandboxEnabled === true ? 'is-protected' : 'is-open')}>
+        <span className="settings-status-icon"><Shield size={16} /></span>
+        <div className="settings-status-copy">
+          <strong>{t(state.settings.sandboxEnabled === true ? '当前：受保护' : '当前：未开启保护')}</strong>
+          <span>
+            {state.settings.sandboxEnabled === true
+              ? `${t(state.settings.sandboxMode === 'read-only' ? '只能读取项目文件' : '可以修改当前项目')} · ${t(state.settings.sandboxNetwork === 'off' ? '完全离线' : '仅访问 AI 服务和允许的网站')}`
+              : t('Pi 可以修改项目文件并访问网络。开启保护后可以限制文件和网络范围。')}
+          </span>
+        </div>
+        <span className={clsx('settings-status-pill', state.settings.sandboxEnabled === true && 'ok')}>
+          {t(state.settings.sandboxEnabled === true ? '已开启' : '未开启')}
+        </span>
+      </div>
+      <p className="settings-section-lead">
+        {t("管理 Pi 任务可以修改哪些文件、访问哪些网络。设置修改后，对新建会话生效。")}
+      </p>
+<Block
+  title={t("运行限制")}
+  query={query}
+  terms={['sandbox', '沙箱', '网络', 'network', 'proxy', '域名', '隔离']}
+>
+  <Row
+    title={t("启用沙箱")}
+    desc={sandbox?.available
+      ? t("限制 Pi 只能修改当前项目、只访问允许的网站。不会影响你电脑上的其他应用。")
+      : (sandbox?.reason ?? t("当前平台暂不支持沙箱。"))}
+    query={query}
+  >
+    <Switch
+      label={t("启用沙箱")}
+      checked={state.settings.sandboxEnabled === true}
+      onChange={(enabled) => void saveSandbox({ sandboxEnabled: enabled })}
+    />
+  </Row>
+  {state.settings.sandboxEnabled !== true && <p className="settings-note settings-inactive-note">{t('沙箱未开启。下面的文件和网络限制暂不生效，网络代理仍可单独使用。')}</p>}
+  <Row
+    title={t("文件写入范围")}
+    desc={t("允许 Pi 修改当前项目，还是只能读取文件？无论哪种，Pi 都可以写会话记录和临时文件。")}
+    query={query}
+  >
+    <Select
+      label={t("文件写入范围")}
+      value={state.settings.sandboxMode ?? 'workspace-write'}
+      onChange={(mode) => void saveSandbox({ sandboxMode: mode as 'workspace-write' | 'read-only' })}
+      options={[
+        { value: 'workspace-write', label: t('项目可写') },
+        { value: 'read-only', label: t('项目只读') }
+      ]}
+    />
+  </Row>
+  <Row
+    title={t("网络访问")}
+    desc={t("允许 Pi 连接 AI 服务和指定网站，或完全离线。完全离线时，在线模型也无法使用。")}
+    query={query}
+  >
+    <Select
+      label={t("网络访问")}
+      value={state.settings.sandboxNetwork ?? 'model'}
+      onChange={(network) => void saveSandbox({ sandboxNetwork: network as 'model' | 'off' })}
+      options={[
+        { value: 'model', label: t('仅模型域名') },
+        { value: 'off', label: t('完全关闭') }
+      ]}
+    />
+  </Row>
+  <Row
+    title={t("额外允许的域名")}
+    desc={t("Pi 需要访问其他网站时，在这里填写；多个网站用逗号或换行分隔。")}
+    query={query}
+  >
+    <input
+      className="rename-input sandbox-domains"
+      value={sandboxDomains}
+      placeholder="registry.npmjs.org, api.example.com"
+      onChange={(event) => setSandboxDomains(event.target.value)}
+      onBlur={() => void saveSandbox({ sandboxAllowedDomains: sandboxDomains.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean) })}
+    />
+  </Row>
+</Block>
+<Block title={t("网络代理")} query={query} terms={['网络', '代理', '网关', 'proxy', 'no_proxy']}>
+  <Row
+    title={t("代理地址")}
+    desc={t("公司网络或本机代理需要时填写；普通用户留空。沙箱开启时由安全层管理网络，此项主要用于未开启沙箱的对话。")}
+    query={query}
+  >
+    <input
+      className="rename-input sandbox-domains"
+      value={networkProxy}
+      placeholder="http://127.0.0.1:7890"
+      onChange={(event) => setNetworkProxy(event.target.value)}
+      onBlur={() => void actions.updateSettings({ networkProxy: networkProxy.trim() || undefined })}
+    />
+  </Row>
+  <Row
+    title={t("不使用代理的地址")}
+    desc={t("不经过代理的地址，多个用逗号分隔。")}
+    query={query}
+  >
+    <input
+      className="rename-input sandbox-domains"
+      value={networkNoProxy}
+      placeholder="localhost,127.0.0.1,.local"
+      onChange={(event) => setNetworkNoProxy(event.target.value)}
+      onBlur={() => void actions.updateSettings({ networkNoProxy: networkNoProxy.trim() || undefined })}
+    />
+  </Row>
+</Block>
+<Block title={t("运行记录")} query={query} terms={['沙箱', '日志', '审计', 'audit']}>
+  <Row
+    title={t("沙箱运行记录")}
+    desc={t("查看 Pi 被允许和阻止了哪些操作。记录保存在本机。")}
+    query={query}
+  >
+    <button
+      className="settings-button"
+      onClick={() => {
+        void window.pi.sandboxAudit().then((lines) => {
+          setAuditLines(lines)
+          setAuditOpen(true)
+        })
+      }}
+    >
+      {t("查看日志")}
+    </button>
+  </Row>
+  <p className="settings-note">{t("沙箱不是虚拟机：电脑界面、辅助功能权限和部分系统服务仍可能被访问。")}</p>
+  <Modal
+    open={auditOpen}
+    title={t("沙箱审计日志")}
+    subtitle={t("最近 200 条事件")}
+    width={720}
+    onClose={() => setAuditOpen(false)}
+    footer={<button className="button ghost" onClick={() => setAuditOpen(false)}>{t("关闭")}</button>}
+  >
+    <pre className="sandbox-audit-log">{auditLines.length ? auditLines.join('\n') : t("还没有沙箱审计记录。")}</pre>
+  </Modal>
+</Block>
+
+    </>
+  )
+
   const renderTools = (): ReactNode => (
     <>
+      <div className={'settings-status-summary'}>
+        <span className="settings-status-icon"><Shield size={16} /></span>
+        <div className="settings-status-copy">
+          <strong>{t('当前：执行前确认')}</strong>
+          <span>{t(state.settings.toolApprovalMode === 'all' ? '每一步操作都会先询问你。' : '高风险操作会先询问你。')}</span>
+        </div>
+        <span className="settings-status-pill">{t(state.settings.toolApprovalMode === 'all' ? '每一步询问' : '高风险询问')}</span>
+      </div>
+      <Block title={t('会话权限')} query={query} terms={['审批', '确认', '危险', '权限', '完全访问', '自动审核', 'tool approval', 'security']}>
+        <Row
+          title={t('新会话的默认权限')}
+          desc={t('选择 Pi 在执行操作前是否询问你。修改后新建对话生效。')}
+          query={query}
+        >
+          <Select
+            label={t('新会话的默认权限')}
+            value={state.settings.toolApprovalMode ?? 'dangerous'}
+            onChange={(value) => void actions.updateSettings({ toolApprovalMode: value === 'all' ? 'all' : 'dangerous' })}
+            options={[
+              { value: 'dangerous', label: t('自动审核') },
+              { value: 'all', label: t('询问审批') }
+            ]}
+          />
+        </Row>
+        <Row
+          title={t('允许使用完全访问')}
+          desc={t('启用后，可以在对话菜单为单个会话选择完全访问。该会话的 Pi 沙箱和工具审批会关闭。')}
+          query={query}
+        >
+          <Switch
+            label={t('允许使用完全访问')}
+            checked={state.settings.allowFullAccess === true}
+            onChange={(allowed) => void actions.updateSettings({ allowFullAccess: allowed })}
+          />
+        </Row>
+      </Block>
+      <details className="settings-advanced" open>
+        <summary>{t("高级：判断服务与内置工具")}</summary>
+      <Block
+        title={t("Jev 判断层")}
+        query={query}
+        terms={['jev', '判断', '风险', 'target', 'typesafe', 'opencode', '安全']}
+      >
+        <Row
+          title={t("启用 Jev")}
+          desc={t("可选的只读判断层：给浏览器动作提供风险分，给目标选择提供建议。它不能执行工具、不能绕过审批；没有 Key 时保持关闭。")}
+          query={query}
+        >
+          <Switch
+            label={t("启用 Jev")}
+            checked={jev?.enabled === true}
+            onChange={(enabled) => void saveJev({ enabled })}
+          />
+        </Row>
+        <Row
+          title={t("服务商")}
+          desc={t("TypeSafe 使用 TYPESAFE_API_KEY；OpenCode Console 使用 OPENCODE_CONSOLE_API_KEY。")}
+          query={query}
+        >
+          <Select
+            label={t("Jev 服务商")}
+            value={jev?.provider ?? 'typesafe'}
+            onChange={(provider) => void saveJev({ provider: provider as 'typesafe' | 'opencode-free' })}
+            options={[
+              { value: 'typesafe', label: 'TypeSafe' },
+              { value: 'opencode-free', label: 'OpenCode Console（free）' }
+            ]}
+          />
+        </Row>
+        <Row
+          title={t("模型")}
+          desc={t("留空使用服务商默认值；OpenCode 只接受 jev-1.13-free。")}
+          query={query}
+        >
+          <input
+            className="rename-input jev-input"
+            value={jev?.model ?? ''}
+            placeholder={jev?.provider === 'opencode-free' ? 'jev-1.13-free' : 'jev-latest'}
+            onChange={(event) => setJev((current) => current ? { ...current, model: event.target.value } : current)}
+            onBlur={() => void saveJev({ model: jev?.model ?? '' })}
+          />
+        </Row>
+        <Row
+          title={t("API Key")}
+          desc={jev?.keyConfigured ? t("Key 已配置（{source}），不会回传到渲染进程。").replace('{source}', jev.keySource === 'env' ? t('环境变量') : t('本地文件')) : t("保存在 ~/.pi/agent/jev.json，权限 0600；不会显示在界面上。")}
+          query={query}
+        >
+          <div className="settings-row-actions">
+            <span className={clsx('settings-pill', jev?.keyConfigured ? 'ok' : 'muted')}>
+              {jev?.keyConfigured ? t('已配置') : t('未配置')}
+            </span>
+            <input
+              className="rename-input jev-input"
+              type="password"
+              value={jevKey}
+              placeholder={jev?.keyConfigured ? t('输入新 Key 替换…') : t('粘贴 API Key…')}
+              onChange={(event) => setJevKey(event.target.value)}
+            />
+            <button className="settings-button" disabled={jevBusy || !jevKey.trim()} onClick={() => void saveJev({ key: jevKey })}>
+              {t('保存 Key')}
+            </button>
+          </div>
+        </Row>
+        <Row
+          title={t("允许目标建议")}
+          desc={t("额外发送 goal 和不含值的候选标签给 Jev，用于建议目标；默认关闭。字段值、URL 和页面正文不会发送。")}
+          query={query}
+        >
+          <Switch
+            label={t("允许目标建议")}
+            checked={jev?.sharePageText === true}
+            onChange={(sharePageText) => void saveJev({ sharePageText })}
+          />
+        </Row>
+        <p className="settings-note">{t("Jev 是弱 advisory，不是安全判定；审批和人工确认仍然生效。")}</p>
+      </Block>
+
       <Block
         title={t("内置工具")}
         query={query}
@@ -1152,6 +1653,7 @@ export function SettingsPage(): ReactNode {
           : t("当前使用 pi 默认工具集；修改后会写入 pi 设置，重启会话生效。")}
       </p>
 
+      </details>
       <Block
         title={t("桌面显示")}
         query={query}
@@ -1224,7 +1726,7 @@ export function SettingsPage(): ReactNode {
         </Row>
         <Row
           title={t("思考内容")}
-          desc={t("summary 折叠成一行，full 直接展开，off 完全不显示。")}
+          desc={t("选择是否显示思考内容，以及默认展开还是收起。")}
           query={query}
         >
           <Select
@@ -1309,7 +1811,7 @@ export function SettingsPage(): ReactNode {
           desc={t("新会话会在这个目录下运行 pi。")}
           query={query}
         >
-          <button className="settings-button" onClick={() => void actions.pickFolder()}>{t("更改")}</button>
+          <button className="settings-button" onClick={() => actions.openAddProject(true)}>{t("更改")}</button>
         </Row>
         <Row
           title={t("当前会话")}
@@ -1337,6 +1839,37 @@ export function SettingsPage(): ReactNode {
       ))}
     </Block>
   )
+
+  const checkUpdate = async (): Promise<void> => {
+    if (updateBusy) return
+    setUpdateBusy(true)
+    setUpdateProgress(null)
+    try {
+      setUpdateInfo(await window.pi.checkUpdate())
+    } catch (error) {
+      actions.notify('error', t('检查更新失败'), error instanceof Error ? error.message : String(error))
+    } finally {
+      setUpdateBusy(false)
+    }
+  }
+
+  const downloadUpdate = async (): Promise<void> => {
+    if (updateDownloading) return
+    setUpdateDownloading(true)
+    setUpdateProgress({ message: t('准备下载…') })
+    try {
+      const result = await window.pi.downloadUpdate()
+      if (result.ok) {
+        actions.notify('success', t('安装包已下载'), result.path)
+      } else {
+        actions.notify('error', t('更新失败'), result.error)
+      }
+    } catch (error) {
+      actions.notify('error', t('更新失败'), error instanceof Error ? error.message : String(error))
+    } finally {
+      setUpdateDownloading(false)
+    }
+  }
 
   const renderAbout = (): ReactNode => (
     <>
@@ -1366,6 +1899,48 @@ export function SettingsPage(): ReactNode {
             onClick={() => state.boot?.piSettingsFile && actions.revealSession(state.boot.piSettingsFile)}
           >
             <FolderSearch size={12} />{t("显示")}</button>
+        </Row>
+      </Block>
+
+      <Block title={t("更新")} query={query} terms={['更新', '版本', 'update', 'release']}>
+        <Row
+          title={t("启动时检查更新")}
+          desc={t("启动后静默检查一次 GitHub Releases；发现新版本只提示，不会自动下载。")}
+          query={query}
+        >
+          <Switch
+            label={t("启动时检查更新")}
+            checked={state.settings.autoCheckUpdates !== false}
+            onChange={(checked) => void actions.updateSettings({ autoCheckUpdates: checked })}
+          />
+        </Row>
+        <Row
+          title={t("检查更新")}
+          desc={updateProgress?.message ?? (updateInfo
+            ? updateInfo.error
+              ? t('无法连接更新服务，请稍后重试。')
+              : updateInfo.hasUpdate
+                ? t('发现新版本 {version}').replace('{version}', updateInfo.latest ?? '')
+                : t('当前已是最新版本。')
+            : t('从 GitHub Releases 检查新版本；下载需要你明确确认。'))}
+          query={query}
+        >
+          <div className="settings-update-actions">
+            {updateInfo?.hasUpdate && updateInfo.url && (
+              <button className="settings-link" onClick={() => void window.pi.openReleasePage(updateInfo.url as string)}>
+                {t('查看 v{version}').replace('{version}', updateInfo.latest ?? '')} <ArrowUpRight size={13} />
+              </button>
+            )}
+            {updateInfo?.hasUpdate && updateInfo.asset && (
+              <button className="settings-button primary" disabled={updateDownloading} onClick={() => void downloadUpdate()}>
+                {updateDownloading ? t('下载中…') : t('下载并安装')}
+              </button>
+            )}
+            <button className="settings-button" disabled={updateBusy || updateDownloading} onClick={() => void checkUpdate()}>
+              <RefreshCw size={12} className={updateBusy ? 'spin' : undefined} />
+              {updateBusy ? t('检查中…') : t('检查更新')}
+            </button>
+          </div>
         </Row>
       </Block>
 
@@ -1755,8 +2330,11 @@ export function SettingsPage(): ReactNode {
 
   const CONTENT: Record<CategoryId, { title: string; render: () => ReactNode }> = {
     general: { title: '常规', render: renderGeneral },
+    'computer-use': { title: '电脑操作', render: renderComputerUse },
+    browser: { title: '网页浏览', render: renderBrowser },
     models: { title: '模型', render: renderModels },
     tools: { title: '工具与技能', render: renderTools },
+    network: { title: '网络与沙箱', render: renderNetwork },
     appearance: { title: '外观', render: renderAppearance },
     sessions: { title: '会话', render: renderSessions },
     usage: { title: '使用情况与费用', render: renderUsage },
@@ -1835,6 +2413,8 @@ export function SettingsPage(): ReactNode {
       </main>
       <ChromeImportDialog open={chromeOpen} onClose={() => setChromeOpen(false)} />
       <ChromeBridgeDialog open={chromeBridgeOpen} onClose={() => setChromeBridgeOpen(false)} />
+      <ProviderAuthDialog open={authOpen} onClose={() => setAuthOpen(false)} onSaved={() => { void loadModels(); void refreshCatalog().catch(() => undefined) }} />
+      <ProviderOAuthDialog open={oauthOpen} onClose={() => setOauthOpen(false)} onSaved={() => { void loadModels(); void refreshCatalog().catch(() => undefined) }} />
     </div>
   )
 }

@@ -1,0 +1,44 @@
+import computerUse from __COMPUTER_USE_MODULE__;
+import { writeFile } from 'node:fs/promises';
+const fixtureUrl = __FIXTURE_URL__;
+const expectedHash = __EXPECTED_HASH__;
+const progressPath = __PROGRESS_PATH__;
+const resultPath = __RESULT_PATH__;
+export default function(pi) {
+ pi.registerCommand('pi-live-upload-fixture', { description:'Run isolated local upload verification', handler: async (_args,ctx) => {
+  const tools={}; const proxy={registerTool:t=>tools[t.name]=t,on:()=>{}};
+  const progress=async step=>writeFile(progressPath,JSON.stringify({step}));
+  const invoke=async(name,params={})=>tools[name].execute('local-test',params,undefined,undefined,ctx);
+  const observe=async(url)=>JSON.parse((await invoke('computer_use_session_observe',url?{url}:{})).content[0].text);
+  const act=async(name,type='click',text)=>{const o=await observe();const hits=o.candidates.filter(c=>c.name===name);if(hits.length!==1)throw Error('Expected unique candidate: '+name);await progress('confirm '+name);const out=await invoke('computer_use_session_act',{candidateId:hits[0].id,type,...(text?{text}:{})});if(out.details?.cancelled)throw Error('Action cancelled: '+name);return out};
+  const waitText=async expected=>{for(let i=0;i<50;i++){await observe();const out=await invoke('computer_use_session_read');if(out.content[0].text.includes(expected))return;await new Promise(r=>setTimeout(r,100))}throw Error('Status not found: '+expected)};
+  try {
+   computerUse(proxy);
+   await invoke('computer_use_session_open',{backend:'inapp'});
+   await observe(fixtureUrl+'/');
+   await act('订单编号','type','ORD-2026-002');
+   await act('查询订单');
+   const found=await invoke('computer_use_session_wait',{name:'ORD-2026-002 青木测试商品 待处理',timeoutMs:5000});
+   if(!found.details?.matched)throw Error('Test order did not appear');
+   await progress('confirm order selection');
+   const selection=await invoke('computer_use_session_act',{candidateId:found.details.candidate.id,type:'click'});
+   if(selection.details?.cancelled)throw Error('Order selection cancelled');
+   const chooser=await act('选择 CSV 文件');
+   if(chooser.details?.verification?.reason!=='file_selection')throw Error('File chooser did not pause');
+   await progress('choose file');
+   if(!await ctx.ui.confirm('本地上传验收','请在系统文件选择窗口中选择 pi-live-upload.csv，然后确认继续。'))throw Error('File selection cancelled');
+   const file=await invoke('computer_use_session_verify_file',{expectedName:'pi-live-upload.csv',expectedSha256:expectedHash});
+   if(file.details?.file?.name!=='pi-live-upload.csv' || file.details?.contentVerified!==true)throw Error('Selected file did not match');
+   await act('上传资料');
+   await waitText('上传成功：pi-live-upload.csv · ORD-2026-002');
+   await act('提交订单');
+   await waitText('已提交：ORD-2026-002');
+   const state=await (await fetch(fixtureUrl+'/api/state')).json();
+   const ok=state.uploads.length===1 && state.submissions.length===1 && state.uploads[0].recordId==='ORD-2026-002' && state.uploads[0].sha256===expectedHash && state.submissions[0].sha256===expectedHash;
+   await writeFile(resultPath,JSON.stringify({ok,uploadCount:state.uploads.length,submissionCount:state.submissions.length,recordId:state.submissions[0]?.recordId,hashMatched:ok}));
+   await invoke('computer_use_session_close');
+   await progress('complete');
+   ctx.ui.notify(ok?'本地上传验收通过':'本地上传验收未通过',ok?'info':'error');
+  } catch(error) { await writeFile(resultPath,JSON.stringify({ok:false,error:String(error)}));await progress('failed');ctx.ui.notify('本地上传验收失败：'+String(error),'error'); }
+ }});
+}

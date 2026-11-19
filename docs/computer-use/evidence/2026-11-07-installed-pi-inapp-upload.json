@@ -1,0 +1,24 @@
+{
+  "recordedAt": "2026-11-07T03:49:24.266Z",
+  "scenario": "installed-pi-scripted-inapp-upload",
+  "scope": "isolated local fixture",
+  "browser": "installed Pi Desktop in-app WebContentsView",
+  "automation": "A trusted temporary project slash command invoked the packaged computer-use tools in the Pi process; Codex confirmed the six displayed actions and selected the file in the macOS dialog. The model did not plan or execute the workflow.",
+  "file": {
+    "name": "pi-live-upload.csv",
+    "size": 43,
+    "sha256": "0499ce0ddae4f39df0293bf6429a75f5cc3e630228345adb15845962353cbf1b"
+  },
+  "result": {
+    "recordId": "ORD-2026-002",
+    "uploads": 1,
+    "submissions": 1,
+    "serverFileSha256Matched": true
+  },
+  "limits": [
+    "local fixture only",
+    "scripted tool calls, not an autonomous model-driven task",
+    "one run only",
+    "no production website or anti-bot measurement"
+  ]
+}

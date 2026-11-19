@@ -16,9 +16,14 @@
     "test:cadence": "node --experimental-strip-types scripts/test-cadence.mjs",
     "test:computer-use": "node scripts/test-computer-use.mjs",
     "e2e": "node scripts/e2e.mjs",
-    "pack": "npm run build && npx electron-packager . \"Pi Desktop\" --out=release --overwrite --icon=build/icon.icns --app-bundle-id=dev.pi.desktop --app-version=$(node -p \"require('./package.json').version\") --darwin-dark-mode-support --ignore=\"^/(src|scripts|output|release)\" && node scripts/fix-icon.mjs",
-    "pack:win": "npm run build && npx electron-packager . \"Pi Desktop\" --platform=win32 --arch=x64 --out=release --overwrite --icon=build/icon.ico --app-version=$(node -p \"require('./package.json').version\") --ignore=\"^/(src|scripts|output|release)\"",
-    "dmg": "npm run pack && node scripts/make-dmg.mjs"
+    "prepare:pi-seed": "node scripts/prepare-pi-seed.mjs",
+    "prepare:sandbox": "node scripts/prepare-sandbox.mjs",
+    "pack": "export ELECTRON_MIRROR=${ELECTRON_MIRROR:-https://npmmirror.com/mirrors/electron/}; npm run build && npm run prepare:sandbox && npx electron-packager . \"Pi Desktop\" --out=release --overwrite --icon=build/icon.icns --app-bundle-id=dev.pi.desktop --app-version=$(node -p \"require('./package.json').version\") --darwin-dark-mode-support --ignore=\"^/(src|scripts|output|release|build/pi-seed|build/srt-cli.cjs)\" && node scripts/prepare-pi-seed.mjs --embed=\"release/Pi Desktop-darwin-arm64/Pi Desktop.app\" && node scripts/prepare-sandbox.mjs --embed=\"release/Pi Desktop-darwin-arm64/Pi Desktop.app\" && node scripts/prepare-auth-helper.mjs --app=\"release/Pi Desktop-darwin-arm64/Pi Desktop.app\" && node scripts/fix-icon.mjs",
+    "pack:win": "npm run build && npm run prepare:sandbox && npx electron-packager . \"Pi Desktop\" --platform=win32 --arch=x64 --out=release --overwrite --icon=build/icon.ico --app-version=$(node -p \"require('./package.json').version\") --ignore=\"^/(src|scripts|output|release|build/pi-seed)\" && node scripts/prepare-sandbox.mjs --embed=\"release/Pi Desktop-win32-x64\" && node scripts/prepare-auth-helper.mjs --app=\"release/Pi Desktop-win32-x64\"",
+    "dmg": "npm run pack && node scripts/make-dmg.mjs",
+    "release:mac": "bash scripts/release-mac.sh",
+    "package:chrome": "node scripts/package-chrome-extension.mjs",
+    "check:win": "node scripts/check-win-package.mjs"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
@@ -31,6 +36,7 @@
     "diff": "^9.0.0",
     "electron": "^45.1.0",
     "electron-vite": "^6.0.0",
+    "esbuild": "^0.28.2",
     "highlight.js": "^11.12.0",
     "lucide-react": "^1.62.0",
     "playwright": "^1.64.1",
@@ -45,6 +51,7 @@
   "productName": "Pi Desktop",
   "author": "Pi Desktop",
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "^0.0.81",
     "remark-breaks": "^4.0.0"
   }
 }

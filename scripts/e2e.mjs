@@ -12,6 +12,12 @@ import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { randomUUID, createHash } from 'node:crypto'
+import { stripTypeScriptTypes } from 'node:module'
+import { runInNewContext } from 'node:vm'
+import { BrowserRouter } from '../extensions/computer-use/src/browser-router.ts'
+import { BrowserActionJournal } from '../extensions/computer-use/src/browser-action-journal.ts'
+import { judgeWithJev } from '../extensions/computer-use/src/jev.ts'
 
 const root = resolve(import.meta.dirname, '..')
 const tmpRoot = join(root, 'output', 'e2e')
@@ -30,7 +36,7 @@ function newestSourceMtime(dir) {
 }
 
 const outMain = join(root, 'out', 'main', 'index.js')
-if (!existsSync(outMain) || newestSourceMtime(join(root, 'src')) > statSync(outMain).mtimeMs) {
+if (!existsSync(outMain) || Math.max(newestSourceMtime(join(root, 'src')), newestSourceMtime(join(root, 'extensions', 'computer-use', 'src'))) > statSync(outMain).mtimeMs) {
   console.log('sources changed — building before e2e…')
   execFileSync('npm', ['run', 'build'], { cwd: root, stdio: 'inherit' })
 }
@@ -87,15 +93,20 @@ function seedSession(sessionsDir, id, name, turns = 1, cwd = root) {
 }
 
 async function launch(dirs, scenario = 'default', extraEnv = {}) {
+  const executablePath = process.env.PI_E2E_APP
   const app = await electron.launch({
-    args: ['.', `--user-data-dir=${dirs.userData}`],
+    executablePath,
+    args: [...(executablePath ? [] : ['.']), `--user-data-dir=${dirs.userData}`],
     cwd: root,
     env: {
       ...process.env,
+      HOME: dirs.base,
       PI_DESKTOP_PI_PATH: mockPi,
       PI_CODING_AGENT_DIR: dirs.agent,
       PI_CODING_AGENT_SESSION_DIR: dirs.sessions,
       MOCK_SCENARIO: scenario,
+      PI_CHROME_BRIDGE_SECRET_FILE: join(dirs.base, 'chrome-bridge-secret.json'),
+      PI_DESKTOP_SKIP_AUTO_INSTALL: '1',
       ...extraEnv
     }
   })
@@ -193,6 +204,11 @@ async function caseWorkPanel() {
   await page.keyboard.press('Meta+Shift+E')
   await page.waitForSelector('.work-panel')
   check('⌘⇧E 打开右侧工作面板', closed)
+  const panelMotion = await page.locator('.work-panel').evaluate((el) => getComputedStyle(el).transitionDuration)
+  check('右侧工作面板有平滑过渡', panelMotion.includes('0.2s'), panelMotion)
+  const toolChevron = page.locator('.tool-chevron').first()
+  const toolChevronOpacity = (await toolChevron.count()) ? Number(await toolChevron.evaluate((el) => getComputedStyle(el).opacity)) : null
+  check('工具展开箭头默认可见，不再只靠 hover', toolChevronOpacity !== null && toolChevronOpacity > 0, String(toolChevronOpacity))
 
   const changes = await page.evaluate(() => ({
     files: document.querySelectorAll('.work-file').length,
@@ -260,6 +276,81 @@ async function caseWorkPanel() {
   await dragHandle(600)
   check('拖到最窄再放手会收起面板', !(await page.locator('.work-panel').isVisible()))
   await app.close()
+}
+
+async function caseWorkPanelLanding() {
+  const dirs = freshDirs('panel-landing')
+  const settingsFile = join(dirs.userData, 'settings.json')
+  const settings = { theme: 'dark', workspaces: [dirs.base], lastWorkspace: dirs.base, workPanelOpen: false, autoCheckUpdates: false }
+  const server = createServer((_request, response) => {
+    response.setHeader('Content-Type', 'text/html')
+    response.end('<title>Work panel test</title><p>Work panel test</p>')
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${server.address().port}/`
+  try {
+    const workspaceFile = join(dirs.base, 'panel-example.txt')
+    writeFileSync(workspaceFile, 'An open file should stay active.')
+    for (const saved of [
+      { workPanelTabs: [], workPanelTab: 'files' },
+      { workPanelTabs: ['files'], workPanelTab: 'files', workPanelOpen: true },
+      { workPanelTabs: ['browser'], workPanelTab: 'browser' }
+    ]) {
+      let app
+      try {
+        writeFileSync(settingsFile, JSON.stringify({ ...settings, ...saved }))
+        const launched = await launch(dirs)
+        app = launched.app
+        const { page } = launched
+        const toggle = page.getByRole('button', { name: '工作面板', exact: true })
+        const landing = page.getByRole('textbox', { name: '搜索文件或输入网址' })
+        const selectedTab = () => page.locator('.work-tabs [aria-selected="true"]').innerText()
+        const setPanel = async (open) => {
+          const pressed = (await toggle.getAttribute('aria-pressed')) === 'true'
+          if (pressed !== open) await toggle.click()
+          await page.waitForFunction((want) => {
+            const el = document.querySelector('.work-panel')
+            const width = el?.getBoundingClientRect().width ?? 0
+            return want ? width > 100 : width < 1
+          }, open, { timeout: 6000 })
+          await page.waitForTimeout(220)
+        }
+        await setPanel(true)
+        await landing.waitFor({ timeout: 6000 })
+        check('无页面时打开右栏进入新标签页', (await selectedTab()) === '新标签页', JSON.stringify(saved))
+        await page.locator('.work-home').getByRole('button', { name: '文件', exact: true }).click()
+        await page.getByText('panel-example.txt', { exact: true }).click()
+        await page.getByRole('tab', { name: 'panel-example.txt', exact: true, selected: true }).waitFor()
+        await setPanel(false)
+        await setPanel(true)
+        check('再次打开右栏保留正在查看的文件', (await selectedTab()) === 'panel-example.txt')
+        await page.getByRole('button', { name: '关闭panel-example.txt标签', exact: true }).click()
+        await setPanel(false)
+        await setPanel(true)
+        await landing.waitFor({ timeout: 6000 })
+        check('仅剩目录树时再次打开右栏显示新标签页', (await selectedTab()) === '新标签页')
+        await page.getByRole('button', { name: '关闭文件标签', exact: true }).click()
+        await landing.waitFor({ timeout: 6000 })
+        check('关闭最后一个文件页后显示新标签页', (await selectedTab()) === '新标签页')
+        await page.locator('.work-home').getByRole('button', { name: '网页', exact: true }).click()
+        const address = page.getByRole('textbox', { name: '网址', exact: true })
+        await address.fill(url)
+        await address.press('Enter')
+        await page.waitForFunction(async (expected) => (await window.pi.browserCurrent()).url === expected, url, { timeout: 8000 })
+        await setPanel(false)
+        await setPanel(true)
+        check('再次打开右栏保留已加载网页', (await selectedTab()) !== '新标签页' && (await address.inputValue()) === url)
+        await page.getByRole('button', { name: '关闭浏览器', exact: true }).click()
+        await landing.waitFor({ timeout: 6000 })
+        check('关闭最后一个网页后显示新标签页', (await selectedTab()) === '新标签页')
+      } finally {
+        await app?.close()
+      }
+    }
+  } finally {
+    server.closeAllConnections()
+    await new Promise((resolve) => server.close(resolve))
+  }
 }
 
 async function caseUsageTrend() {
@@ -331,6 +422,23 @@ async function caseUsageTrend() {
   await app.close()
 }
 
+async function caseNetworkSettings() {
+  const dirs = freshDirs('network-settings')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root }))
+  const { app, page } = await launch(dirs, 'default')
+  try {
+    await page.keyboard.press('Meta+,')
+    await page.waitForSelector('.settings-page')
+    await page.getByRole('button', { name: '网络与沙箱', exact: true }).click()
+    await page.waitForSelector('.settings-section-lead')
+    const pageText = await page.locator('.settings-content').innerText()
+    check('网络与沙箱是独立设置页', /启用沙箱/.test(pageText) && /代理地址/.test(pageText) && /不使用代理的地址/.test(pageText))
+    check('安全设置显示当前保护状态摘要', (await page.locator('.settings-status-summary').count()) === 1 && /当前：/.test(await page.locator('.settings-status-summary').innerText()))
+    check('网络设置包含域名白名单', (await page.locator('.sandbox-domains').count()) >= 3)
+    check('网络设置包含审计日志入口', (await page.getByRole('button', { name: '查看日志' }).count()) === 1)
+  } finally { await app.close() }
+}
+
 async function caseChromeImport() {
   const dirs = freshDirs('chrome-import')
   const chromeRoot = join(dirs.base, 'chrome')
@@ -370,6 +478,7 @@ async function caseChromeImport() {
 
   await page.keyboard.press('Meta+,')
   await page.waitForSelector('.settings-page')
+  await page.getByRole('button', { name: '网页浏览', exact: true }).click()
   await page.getByRole('button', { name: '从 Chrome 导入…' }).click()
   await page.waitForSelector('.chrome-domain-row')
   check('设置里能打开 Chrome 导入弹窗', (await page.locator('.chrome-domain-row').count()) === 1)
@@ -383,7 +492,7 @@ async function caseChromeImport() {
 async function caseBrowser() {
   const server = createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    res.end('<!doctype html><title>Browser Fixture</title><h1>browser ok</h1>')
+    res.end('<!doctype html><script>globalThis.__piDocumentIdentity=\"forged\"</script><title>Browser Fixture</title><h1>browser ok</h1><p>上传成功：订单 002</p><div style="display:none">hidden-secret</div><label>登录码<textarea autocomplete="one-time-code">otp-secret</textarea></label><button id=go onclick="this.textContent=\'clicked\'">Go</button>')
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const port = server.address().port
@@ -400,7 +509,7 @@ async function caseBrowser() {
   )
   let app
   try {
-    const launched = await launch(dirs, 'default')
+    const launched = await launch(dirs, 'default', { HOME: dirs.base })
     app = launched.app
     const page = launched.page
 
@@ -408,6 +517,7 @@ async function caseBrowser() {
     await page.waitForSelector('.browser-toolbar')
     check('⌘⇧B 打开右侧浏览器', await page.locator('.browser-toolbar').isVisible())
     check('空白浏览器显示空状态', (await page.locator('.browser-empty').count()) === 1)
+    check('浏览器说明不承诺所有操作都需要确认', (await page.locator('.browser-guide').innerText()).includes('操作是否需要确认取决于审批设置'))
 
     await page.locator('.browser-address input').fill(`http://127.0.0.1:${port}/`)
     await page.keyboard.press('Enter')
@@ -432,6 +542,227 @@ async function caseBrowser() {
       return { count: children.length, bounds: view?.getBounds?.() ?? null, visible: view?.getVisibility?.() ?? null }
     })
     check('浏览器原生视图有有效 bounds', Boolean(native.bounds && native.bounds.width > 100 && native.bounds.height > 100), JSON.stringify(native))
+
+    const bridgePath = await app.evaluate(() => process.env.PI_DESKTOP_BROWSER_BRIDGE_FILE)
+    const bridge = JSON.parse(readFileSync(bridgePath, 'utf8'))
+    const request = async (path, body) => {
+      const response = await fetch(`http://127.0.0.1:${bridge.port}${path}`, { method: 'POST', headers: { authorization: `Bearer ${bridge.token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return { status: response.status, body: await response.json() }
+    }
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view = BrowserWindow.getAllWindows()[0].contentView.children.find((child) => child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("const label=document.createElement('label');label.id='order-label';label.innerHTML='订单编号 <input>';document.body.append(label)")
+    })
+    const labeledObservation = (await request('/observe', {})).body
+    const invalidRead = await request('/read-text',{snapshotId:labeledObservation.snapshotId,expectedUrl:'http://invalid.test/'})
+    check('读取网页文本拒绝地址不一致', invalidRead.status === 400 && /changed/i.test(invalidRead.body.error))
+    const labeled = labeledObservation.candidates.find((item) => item.name === '订单编号')
+    check('应用内浏览器识别关联的输入框标签', Boolean(labeled))
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view = BrowserWindow.getAllWindows()[0].contentView.children.find((child) => child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("document.querySelector('#order-label').firstChild.textContent='其他编号 '")
+    })
+    const changedLabel = labeled && await request('/act', {candidateId:labeled.id,type:'type',text:'example',snapshotId:labeledObservation.snapshotId,expectedUrl:labeledObservation.state.url})
+    check('应用内浏览器拒绝标签已改变的输入框', changedLabel?.status === 400)
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view = BrowserWindow.getAllWindows()[0].contentView.children.find((child) => child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("document.querySelector('#order-label').remove()")
+    })
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("const input=document.createElement('input');input.id='test-upload';input.type='file';document.body.append(input)")
+    })
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView'))
+      view.webContents.debugger.attach('1.3')
+      globalThis.__chooserEvents=[]
+      view.webContents.debugger.on('message', (_event, method) => { if (method === 'Page.fileChooserOpened') globalThis.__chooserEvents.push(Date.now()) })
+      await view.webContents.debugger.sendCommand('Page.enable')
+      await view.webContents.debugger.sendCommand('Page.setInterceptFileChooserDialog',{enabled:true})
+    })
+    const chooserProbe=async visible=>{
+      await app.evaluate(({BrowserWindow},value)=>{const v=BrowserWindow.getAllWindows()[0].contentView.children.find(c=>c.constructor?.name?.includes('WebContentsView'));v.setVisible(value);globalThis.__chooserEvents=[]},visible)
+      const obs=(await request('/observe',{})).body
+      const file=obs.candidates.find(item=>item.type==='file')
+      const result=file && await request('/act',{candidateId:file.id,type:'click',snapshotId:obs.snapshotId,expectedUrl:obs.state.url})
+      await page.waitForTimeout(400)
+      const events=await app.evaluate(()=>globalThis.__chooserEvents.length)
+      const actualVisible=await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].contentView.children.find(c=>c.constructor?.name?.includes('WebContentsView')).getVisible())
+      return {visible,file:!!file,status:result?.status,events,actualVisible}
+    }
+    const visibleProbe=await chooserProbe(true)
+    await page.locator('[aria-label="工作面板"]').click()
+    await page.waitForFunction(()=>document.querySelector('[aria-label="工作面板"]')?.getAttribute('aria-pressed')==='false')
+    const hiddenProbe=await chooserProbe(false)
+    console.log('  chooser diagnostic',JSON.stringify({visibleProbe,hiddenProbe}))
+    check('隐藏面板的文件选择前自动展示浏览器',hiddenProbe.actualVisible && hiddenProbe.events===1)
+    await page.keyboard.press('Meta+,')
+    await page.getByRole('heading',{name:'设置',exact:true}).waitFor()
+    const blockedProbe=await chooserProbe(false)
+    check('浏览器不能显示时安全拒绝且不打开选择器',blockedProbe.status===400 && blockedProbe.events===0,JSON.stringify(blockedProbe))
+    await page.getByRole('button',{name:'返回对话'}).click()
+    await app.evaluate(async ({BrowserWindow})=>{const v=BrowserWindow.getAllWindows()[0].contentView.children.find(c=>c.constructor?.name?.includes('WebContentsView'));await v.webContents.debugger.sendCommand('Page.setInterceptFileChooserDialog',{enabled:false});v.webContents.debugger.detach();v.setVisible(true)})
+    const beforeFile=(await request('/observe',{})).body
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("const dt=new DataTransfer();dt.items.add(new File(['abc'],'fixture.csv',{type:'text/csv'}));document.querySelector('#test-upload').files=dt.files;void 0")
+    })
+    const staleFile=await request('/act',{candidateId:beforeFile.candidates.find(item=>item.name==='Go').id,type:'click',snapshotId:beforeFile.snapshotId,expectedUrl:beforeFile.state.url})
+    check('文件选择变化后禁止使用旧观察执行按钮',staleFile.status===400 && /observe again/i.test(staleFile.body.error))
+    const afterFile=(await request('/observe',{})).body
+    const selectedFile=afterFile.candidates.find(item=>item.type==='file')
+    check('文件候选返回文件名大小而非路径',selectedFile?.value==='' && selectedFile.files?.[0]?.name==='fixture.csv' && selectedFile.files[0].size===3)
+    const fileReference = await request('/check-file', {snapshotId:afterFile.snapshotId,expectedUrl:afterFile.state.url,documentId:afterFile.documentId,candidateId:selectedFile.id})
+    check('确认前保留的文件对象可核对',fileReference.status===200)
+    const hashFile = await request('/hash-file', {snapshotId:afterFile.snapshotId,expectedUrl:afterFile.state.url,documentId:afterFile.documentId,candidateId:selectedFile.id})
+    check('应用内浏览器对选中文件计算摘要',hashFile.status===200 && hashFile.body.sha256===createHash('sha256').update('abc').digest('hex') && hashFile.body.size===3,JSON.stringify(hashFile))
+    const wrongDocument = await request('/hash-file', {snapshotId:afterFile.snapshotId,expectedUrl:afterFile.state.url,documentId:'wrong',candidateId:selectedFile.id})
+    check('文件摘要拒绝错误文档',wrongDocument.status!==200)
+
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("(() => {const input=document.querySelector('#test-upload');const previous=input.files[0];const dt=new DataTransfer();dt.items.add(new File(['xyz'],previous.name,{type:previous.type,lastModified:previous.lastModified}));input.files=dt.files})()")
+    })
+    const changedReference = await request('/check-file', {snapshotId:afterFile.snapshotId,expectedUrl:afterFile.state.url,documentId:afterFile.documentId,candidateId:selectedFile.id})
+    check('同名同大小文件替换后拒绝确认',changedReference.status!==200)
+    const staleHash = await request('/hash-file', {snapshotId:afterFile.snapshotId,expectedUrl:afterFile.state.url,documentId:afterFile.documentId,candidateId:selectedFile.id})
+    check('文件变化后拒绝旧摘要观察',staleHash.status!==200)
+    const sameMetadata=await request('/act',{candidateId:afterFile.candidates.find(item=>item.name==='Go').id,type:'click',snapshotId:afterFile.snapshotId,expectedUrl:afterFile.state.url})
+    check('同名同大小的不同文件也要求重新观察',sameMetadata.status===400 && /observe again/i.test(sameMetadata.body.error))
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("document.querySelector('#test-upload').remove()")
+    })
+    const observation = (await request('/observe', {})).body
+    const button = observation.candidates.find((item) => item.name === 'Go')
+    check('会话观察返回页面及候选绑定', Boolean(observation.snapshotId && observation.state.url.includes('127.0.0.1') && button))
+    const unguarded = await request('/act', { candidateId: button.id, type: 'click' })
+    const partialGuards = await Promise.all([
+      request('/act', { candidateId: button.id, type: 'click', snapshotId: observation.snapshotId }),
+      request('/act', { candidateId: button.id, type: 'click', expectedUrl: observation.state.url }),
+      request('/act', { candidateId: button.id, type: 'click', snapshotId: '', expectedUrl: observation.state.url })
+    ])
+    check('应用内浏览器拒绝不完整的观察绑定', partialGuards.every((response) => response.status === 400))
+    const afterUnguarded = await app.evaluate(async ({ BrowserWindow }) => {
+      const view = BrowserWindow.getAllWindows()[0].contentView.children.find((child) => child.constructor?.name?.includes('WebContentsView'))
+      return view.webContents.executeJavaScript("document.querySelector('#go').textContent")
+    })
+    check('应用内浏览器拒绝无观察绑定的动作', unguarded.status === 400 && afterUnguarded === 'Go', JSON.stringify({ status: unguarded.status, afterUnguarded }))
+    if (afterUnguarded !== 'Go') await app.evaluate(async ({ BrowserWindow }) => {
+      const view = BrowserWindow.getAllWindows()[0].contentView.children.find((child) => child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("document.querySelector('#go').textContent = 'Go'")
+    })
+    const action = { candidateId: button.id, type: 'click', snapshotId: observation.snapshotId, expectedUrl: observation.state.url }
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view = BrowserWindow.getAllWindows()[0].contentView.children.find((child) => child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("document.querySelector('#go').textContent = 'Delete'")
+    })
+    const staleTarget = await request('/act', action)
+    check('应用内浏览器拒绝已变更的目标', staleTarget.status === 400 && /target changed|observe again/i.test(staleTarget.body.error), JSON.stringify(staleTarget))
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view = BrowserWindow.getAllWindows()[0].contentView.children.find((child) => child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("document.querySelector('#go').textContent = 'Go'")
+    })
+    const refreshed = (await request('/observe', {})).body
+    action.snapshotId = refreshed.snapshotId
+    const firstAction = await request('/act', action)
+    check('应用内浏览器执行已绑定动作', firstAction.status === 200 && firstAction.body.result.ok === true)
+    const replay = await request('/act', action)
+    check('应用内浏览器拒绝重复使用观察', replay.status === 400 && /observe again/i.test(replay.body.error), JSON.stringify(replay))
+    const again = (await request('/observe', {})).body
+    const changed = await request('/act', { ...action, snapshotId: again.snapshotId, expectedUrl: 'http://invalid.test/' })
+    check('应用内浏览器拒绝地址不一致的动作', changed.status === 400 && /changed/i.test(changed.body.error), JSON.stringify(changed))
+
+    const extensionSource = readFileSync(join(root, 'extensions/computer-use/index.ts'), 'utf8')
+    const registrationStart = extensionSource.indexOf('export default function computerUse(')
+    const registrationEnd = extensionSource.indexOf("  pi.registerTool({\n    name: 'computer_use_apps'", registrationStart)
+    const code = stripTypeScriptTypes(extensionSource.slice(registrationStart, registrationEnd).replace('export default function', 'function') + '\n}')
+    const tools = new Map()
+    const Type = new Proxy({}, { get: () => (...args) => ({ args }) })
+    let dropGuardReply = false
+    const bridgeRequest = async (path, body) => {
+      const response = await fetch(`http://127.0.0.1:${bridge.port}${path}`, { method: body ? 'POST' : 'GET', headers: { authorization: `Bearer ${bridge.token}`, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined })
+      const result = await response.json()
+      if (dropGuardReply && path === '/act' && result.code === 'PI_GUARD_REJECTED') { dropGuardReply = false; throw new Error('simulated lost bridge response') }
+      if (path === '/act' && result.code === 'PI_GUARD_REJECTED' && ['page_changed','human','target_changed'].includes(result.reason)) return { result: { __piGuardRejected: result.reason } }
+      if (!response.ok || result.ok === false) throw new Error(result.error)
+      return result
+    }
+    const journal = new BrowserActionJournal(join(dirs.base,'browser-test-journal.sqlite'))
+    const factory = runInNewContext(`${code}\ncomputerUse`, { BrowserRouter, judgeWithJev, Type, createBrowserActionJournal: () => journal, bridgeRequest, randomUUID, URL, setTimeout, process: { env: {} }, approvalMode: 'always', audit: async () => {} })
+    factory({ registerTool: (definition) => tools.set(definition.name, definition), on: () => {} })
+    const invoke = async (name, params = {}) => tools.get(name).execute('test', params, undefined, undefined, { ui: { confirm: async () => true } })
+    await invoke('computer_use_session_open', { backend: 'inapp' })
+    let observed = JSON.parse((await invoke('computer_use_session_observe', { url: `http://127.0.0.1:${port}/` })).content[0].text)
+    const changeButton = async text => app.evaluate(async ({ BrowserWindow }, value) => { const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView')); await view.webContents.executeJavaScript(`document.querySelector('#go').textContent=${JSON.stringify(value)}`) }, text)
+    await app.evaluate(async ({ BrowserWindow }) => { const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView')); await view.webContents.executeJavaScript("window.__testClicks=0;document.querySelector('#go').addEventListener('click',()=>window.__testClicks++)") })
+    const clickCount = () => app.evaluate(async ({ BrowserWindow }) => { const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView')); return view.webContents.executeJavaScript('window.__testClicks') })
+    const originalButton=observed.candidates.find(item=>item.name==='Go')
+    await changeButton('Changed')
+    let rejected=false
+    try { await invoke('computer_use_session_act',{candidateId:originalButton.id,type:'click'}) } catch(error) { rejected=/target changed/i.test(String(error)) }
+    check('应用内明确拒绝后无需人工解除记录',rejected && journal.pending('inapp')===null && await clickCount()===0)
+    await changeButton('Go')
+    observed=JSON.parse((await invoke('computer_use_session_observe')).content[0].text)
+    await changeButton('Changed')
+    dropGuardReply=true
+    let unknown=false
+    try { await invoke('computer_use_session_act',{candidateId:observed.candidates.find(item=>item.name==='Go').id,type:'click'}) } catch(error) { unknown=/result is unknown/i.test(String(error)) }
+    check('应用内拒绝响应丢失时保留待核对记录',unknown && !dropGuardReply && !!journal.pending('inapp') && await clickCount()===0)
+    await invoke('computer_use_session_takeover',{reason:'核对动作结果'})
+    await changeButton('Go')
+    observed=JSON.parse((await invoke('computer_use_session_observe')).content[0].text)
+    await app.evaluate(async ({ BrowserWindow }) => { const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView')); await view.webContents.executeJavaScript("(() => {const frame=document.createElement('iframe');frame.id='guard-challenge';frame.title='reCAPTCHA challenge';document.body.append(frame)})()") })
+    let challengeRejected=false
+    try { await invoke('computer_use_session_act',{candidateId:observed.candidates.find(item=>item.name==='Go').id,type:'click'}) } catch(error) { challengeRejected=/human verification/i.test(String(error)) }
+    check('应用内人机验证拒绝不保留未知动作记录',challengeRejected && journal.pending('inapp')===null && await clickCount()===0)
+    await app.evaluate(async ({ BrowserWindow }) => { const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView')); await view.webContents.executeJavaScript("document.querySelector('#guard-challenge').remove()") })
+    await invoke('computer_use_session_takeover',{reason:'完成人机验证'})
+    observed=JSON.parse((await invoke('computer_use_session_observe')).content[0].text)
+    const read = await invoke('computer_use_session_read')
+    check('读取可见业务状态但不读取隐藏内容或输入值', read.content[0].text.includes('上传成功：订单 002') && !read.content[0].text.includes('hidden-secret') && !read.content[0].text.includes('otp-secret'))
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("const p=document.createElement('p');p.id='long-page-text';p.textContent='x'.repeat(9000);document.body.append(p)")
+    })
+    const limited = await invoke('computer_use_session_read')
+    check('长网页文本有上限并提示截断', limited.details.length <= 8000 && limited.details.truncated === true)
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("document.querySelector('#long-page-text').remove()")
+    })
+    const unifiedButton = observed.candidates.find((item) => item.name === 'Go')
+    const unifiedAction = await invoke('computer_use_session_act', { candidateId: unifiedButton.id, type: 'click' })
+    check('统一会话可导航、观察并操作应用内浏览器', unifiedAction.details.result.result.ok === true)
+    const afterActionRead = await invoke('computer_use_session_read')
+    check('动作后可读取绑定页面但仍需观察才能再次操作', afterActionRead.content[0].text.includes('clicked') && await tools.get('computer_use_session_act').execute('test',{candidateId:unifiedButton.id,type:'click'},undefined,undefined,{ui:{confirm:async()=>true}}).then(()=>false,error=>/observe/i.test(String(error))))
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view = BrowserWindow.getAllWindows()[0].contentView.children.find((child) => child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("setTimeout(() => { const button = document.createElement('button'); button.textContent = '模拟后台已就绪'; document.body.append(button) }, 350)")
+    })
+    const ready = await invoke('computer_use_session_wait', {name:'模拟后台已就绪',role:'button',timeoutMs:4000})
+    check('统一会话等待动态后台控件并获得新观察', ready.details.matched === true && ready.details.candidate?.name === '模拟后台已就绪', JSON.stringify(ready.details))
+    const beforeChallenge = JSON.parse((await invoke('computer_use_session_observe')).content[0].text)
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const view = BrowserWindow.getAllWindows()[0].contentView.children.find((child) => child.constructor?.name?.includes('WebContentsView'))
+      await view.webContents.executeJavaScript("const frame = document.createElement('iframe'); frame.title = 'reCAPTCHA challenge'; document.body.append(frame)")
+    })
+    let readBlocked=false
+    try { await invoke('computer_use_session_read') } catch (error) { readBlocked=/human verification/i.test(String(error)) }
+    check('读取页面时遇到验证立即暂停', readBlocked)
+    let blocked = false
+    try { await invoke('computer_use_session_act', { candidateId: beforeChallenge.candidates[0].id, type: 'click' }) } catch (error) { blocked = /human (?:verification|action)/i.test(String(error)) }
+    check('应用内浏览器阻止验证出现后的动作', blocked)
+    let paused = false
+    try { await invoke('computer_use_session_observe') } catch (error) { paused = /human/i.test(String(error)) }
+    check('验证出现后暂停并等待人工接管', paused)
+    await invoke('computer_use_session_close')
+    journal.close()
+    const beforeReloadIdentity=(await request('/observe',{})).body.documentId
+    const sameDocumentIdentity=(await request('/observe',{})).body.documentId
+    await app.evaluate(async ({BrowserWindow})=>{const view=BrowserWindow.getAllWindows()[0].contentView.children.find(c=>c.constructor?.name?.includes('WebContentsView'));await new Promise(resolve=>{view.webContents.once('did-finish-load',resolve);view.webContents.reload()})})
+    const afterReloadIdentity=(await request('/observe',{})).body.documentId
+    check('应用内文档标识在同页稳定且重载后改变',typeof beforeReloadIdentity==='string' && beforeReloadIdentity===sameDocumentIdentity && beforeReloadIdentity!==afterReloadIdentity)
 
     await page.locator('.browser-address input').fill('javascript:alert(1)')
     await page.keyboard.press('Enter')
@@ -938,6 +1269,25 @@ async function waitForScheduleRun(page, id, timeout = 20_000) {
   throw new Error(`scheduled run did not finish: ${id}`)
 }
 
+async function caseProjectRemoval() {
+  const dirs = freshDirs('project-removal')
+  const session = seedSession(dirs.sessions, 'removal', '保留的会话', 1)
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root, lastSessionPath: session }))
+  const { app, page } = await launch(dirs)
+  await page.locator('.project-row.active').waitFor()
+  await page.locator('.project-row.active').hover()
+  await page.locator('.project-row.active .project-remove').click()
+  await page.getByRole('menuitem', { name: '从列表移除', exact: true }).click()
+  check('移除项目时说明文件和对话保留', await page.getByText(/文件夹和里面的文件仍保留/).isVisible())
+  await page.getByRole('button', { name: '从列表移除', exact: true }).click()
+  await page.waitForFunction(() => document.querySelectorAll('.project-row').length === 0)
+  await page.waitForFunction(() => [...document.querySelectorAll('.recent-sessions .session-title')].some((item) => item.textContent === '保留的会话'))
+  check('移除当前项目后历史对话仍在且文件未删除', existsSync(root) && existsSync(session))
+  const settings = JSON.parse(readFileSync(join(dirs.userData, 'settings.json'), 'utf8'))
+  check('项目从持久化列表移除', !settings.workspaces.includes(root))
+  await app.close()
+}
+
 async function caseSchedules() {
   const dirs = freshDirs('schedules')
   writeFileSync(
@@ -999,7 +1349,8 @@ async function caseSchedules() {
     selects: document.querySelectorAll('.schedule-advanced select').length,
     switches: document.querySelectorAll('.schedule-advanced .switch').length
   }))
-  check('更多选项包含时区 / 运行方式 / 补跑 / 通知', advanced.selects === 2 && advanced.switches === 2, JSON.stringify(advanced))
+  check('更多选项包含时区 / 运行方式 / 通知', advanced.selects === 2 && advanced.switches === 1, JSON.stringify(advanced))
+  check('补跑默认关闭并在表单直接展示', await page.getByRole('switch', { name: '错过时间后补跑' }).getAttribute('aria-checked') === 'false')
   const backgroundStatus = await page.evaluate(() => window.pi.getBackgroundScheduler())
   check('系统级调度状态可读取', backgroundStatus.supported === true, JSON.stringify(backgroundStatus))
 
@@ -1108,15 +1459,62 @@ async function caseScheduleInterrupted() {
   await first.app.close()
 
   const { app, page } = await launch(dirs, 'default', { MOCK_SCHEDULE_DELAY: '100' })
-  const detail = await waitForScheduleRun(page, task.id)
+  await page.waitForTimeout(2200)
+  const detail = await page.evaluate((id) => window.pi.getSchedule(id), task.id)
   const interrupted = detail?.runs.filter((run) => run.status === 'interrupted') ?? []
   const success = detail?.runs.filter((run) => run.status === 'success') ?? []
   check(
-    '运行中退出会标记中断并补跑',
-    interrupted.length === 1 && success.length === 1,
-    JSON.stringify(detail?.runs.map((run) => run.status))
+    '运行中退出后暂停并等待核对，不自动补跑',
+    interrupted.length === 1 && success.length === 0 && detail?.task.enabled === false,
+    JSON.stringify({ runs: detail?.runs.map((run) => run.status), enabled: detail?.task.enabled })
   )
   await app.close()
+}
+
+async function caseSessionSecurity() {
+  const dirs = freshDirs('session-security')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', toolApprovalMode: 'dangerous', workspaces: [dirs.base], lastWorkspace: dirs.base }))
+  const { app, page } = await launch(dirs)
+  try {
+    const first = await page.evaluate((cwd) => window.pi.openSession({ cwd }), dirs.base)
+    const firstMode = await page.evaluate((path) => window.pi.sessionSecurity(path), first.sessionPath)
+    await page.evaluate(() => window.pi.updateSettings({ toolApprovalMode: 'all' }))
+    const stillFirst = await page.evaluate((path) => window.pi.sessionSecurity(path), first.sessionPath)
+    const second = await page.evaluate((cwd) => window.pi.openSession({ cwd }), dirs.base)
+    const secondMode = await page.evaluate((path) => window.pi.sessionSecurity(path), second.sessionPath)
+    const stale = await page.evaluate((path) => window.pi.sessionSecurity(path), first.sessionPath)
+    check('当前会话使用启动时的审批方式，新会话采用新默认值', firstMode?.mode === 'dangerous' && stillFirst?.mode === 'dangerous' && secondMode?.mode === 'all' && stale === null, JSON.stringify({ firstMode, stillFirst, secondMode, stale }))
+  } finally { await app.close() }
+}
+
+async function caseScheduleMissingProject() {
+  const dirs = freshDirs('schedule-missing-project')
+  const project = join(dirs.base, 'project')
+  mkdirSync(project, { recursive: true })
+  const { app, page } = await launch(dirs, 'default', { MOCK_SCHEDULE_DELAY: '30' })
+  const task = await page.evaluate((projectPath) => window.pi.createSchedule({
+    name: 'Missing project', prompt: 'must not run', projectPath,
+    cadence: { type: 'daily', time: '09:00' }, notifications: false
+  }), project)
+  rmSync(project, { recursive: true })
+  const run = await page.evaluate((id) => window.pi.runScheduleNow(id), task.id)
+  const detail = await page.evaluate((id) => window.pi.getSchedule(id), task.id)
+  check('项目目录不存在时暂停且不执行', run?.status === 'failed' && /项目/.test(run?.error || '') && detail?.task.enabled === false, JSON.stringify({ run, task: detail?.task }))
+  await app.close()
+}
+
+async function caseScheduleSandbox() {
+  const dirs = freshDirs('schedule-sandbox')
+  const project = join(dirs.base, 'project')
+  const outside = join(dirs.base, 'outside.txt')
+  mkdirSync(project, { recursive: true })
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', sandboxEnabled: true, sandboxNetwork: 'off', workspaces: [project], lastWorkspace: project }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_SCHEDULE_PROBE_OUTSIDE: outside })
+  try {
+    const task = await page.evaluate((projectPath) => window.pi.createSchedule({ name: 'sandbox', prompt: 'test', projectPath, cadence: { type: 'daily', time: '09:00' }, notifications: false }), project)
+    const run = await page.evaluate((id) => window.pi.runScheduleNow(id), task.id)
+    check('启用沙箱的定时任务阻止项目外写入', run?.status === 'success' && !existsSync(outside) && (run.summary || '').includes('outside-write-denied'), JSON.stringify({status:run?.status, error:run?.error, summary:run?.summary}))
+  } finally { await app.close() }
 }
 
 async function caseScheduleHeadlessTick() {
@@ -1462,6 +1860,68 @@ async function caseScratchChat() {
   await app.close()
 }
 
+async function caseScratchStartup() {
+  const dirs = freshDirs('scratch-startup')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({
+    theme: 'dark', language: 'zh-CN', workspaces: [dirs.base], lastWorkspace: dirs.base, autoCheckUpdates: false
+  }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_SCRATCH_START_DELAY: '1600' })
+  try {
+    await page.locator('.new-session').click()
+    await page.locator('.status-dot.is-starting').waitFor()
+    const input = page.locator('.composer-input')
+    const focused = await page.evaluate(() => document.activeElement?.classList.contains('composer-input'))
+    check('新建对话直接打开输入页，不经过欢迎页', !await page.locator('.welcome').count() && await input.isVisible() && await page.locator('.main.new-chat .empty-title').isVisible() && focused)
+    if (!await input.isVisible()) return
+    await input.fill('启动期间输入的草稿')
+    check('启动期间可以输入，发送按钮等待会话就绪', await page.locator('.send-button').isDisabled())
+    await input.press('Enter')
+    await page.locator('.status-dot.is-ready').waitFor()
+    check('启动完成后草稿保持原样', await input.inputValue() === '启动期间输入的草稿')
+    await input.press('Enter')
+    await page.locator('.user-message').getByText('启动期间输入的草稿', { exact: true }).waitFor()
+    check('启动后可以发送原草稿', true)
+  } finally {
+    await app.close()
+  }
+}
+
+async function caseScratchRestoreTrust() {
+  const dirs = freshDirs('scratch-restore-trust')
+  const project = join(dirs.base, 'project')
+  const scratch = join(dirs.userData, 'scratch')
+  mkdirSync(scratch, { recursive: true })
+  mkdirSync(join(project, '.pi'), { recursive: true })
+  writeFileSync(join(project, '.pi', 'settings.json'), '{}')
+  const last = seedSession(dirs.sessions, 'saved-scratch', '已保存的临时对话', 1, scratch)
+  const settingsPath = join(dirs.userData, 'settings.json')
+  for (const lastWorkspace of [project, undefined]) {
+    writeFileSync(settingsPath, JSON.stringify({
+      theme: 'dark', language: 'zh-CN', autoCheckUpdates: false,
+      workspaces: lastWorkspace ? [lastWorkspace] : [],
+      lastWorkspace, lastSessionPath: last
+    }))
+    const { app, page } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1' })
+    try {
+      const title = await page.locator('.topbar-path').innerText()
+      const banner = await page.locator('.project-trust-banner, .project-trust-collapsed').count()
+      const restored = await page.evaluate(async () => (await window.pi.command({ type: 'get_state' })).data?.sessionFile)
+      const messagesRestored = await page.locator('.user-message').getByText('已保存的临时对话 question 0', { exact: true }).count() === 1
+      check('临时对话按自身目录恢复，无项目横幅', title === '临时对话' && banner === 0 && restored === last && messagesRestored,
+        JSON.stringify({ hasLastProject: !!lastWorkspace, title, banner, sameSession: restored === last, messagesRestored }))
+      if (lastWorkspace) {
+        await page.getByRole('button', { name: '在 project 中新建对话' }).click()
+        await page.locator('.project-trust-banner').waitFor()
+        await page.locator('.new-session').click()
+        await page.locator('.topbar-path').getByText('临时对话', { exact: true }).waitFor()
+        check('从项目切换到新临时对话时清除项目横幅', !await page.locator('.project-trust-banner, .project-trust-collapsed').count())
+      }
+    } finally {
+      await app.close()
+    }
+  }
+}
+
 async function caseSkillsPage() {
   const dirs = freshDirs('skills')
   const writeSkill = (name, description, bins) => {
@@ -1628,6 +2088,259 @@ async function caseSkillsPage() {
   check('Esc 关闭安装对话框', (await page.locator('.modal').count()) === 0)
 
   await app.close()
+}
+
+async function caseUpdateDownload() {
+  const dirs = freshDirs('update-download')
+  const { app, page } = await launch(dirs)
+  try {
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('app:check-update')
+      ipcMain.handle('app:check-update', () => ({
+        current: '0.7.7',
+        latest: '0.8.0',
+        hasUpdate: true,
+        url: 'https://github.com/SuperWBY/pi-desktop/releases/tag/v0.8.0',
+        notes: 'test release',
+        publishedAt: null,
+        asset: { name: 'Pi-Desktop-0.8.0-arm64.dmg', url: 'https://example.invalid/app.dmg', size: 1000 }
+      }))
+      ipcMain.removeHandler('app:download-update')
+      ipcMain.handle('app:download-update', () => ({ ok: true, path: '/tmp/Pi-Desktop-0.8.0-arm64.dmg' }))
+    })
+    await page.keyboard.press('Meta+,')
+    await page.getByRole('button', { name: '关于', exact: true }).click()
+    await page.getByRole('button', { name: '检查更新', exact: true }).click()
+    await page.getByText('发现新版本 0.8.0').waitFor({ timeout: 5000 })
+    await page.getByRole('button', { name: '下载并安装', exact: true }).click()
+    await page.waitForTimeout(500)
+    check('有安装包时提供下载并安装入口', await page.getByRole('button', { name: '下载并安装', exact: true }).isVisible())
+    await page.getByRole('switch', { name: '启动时检查更新' }).click()
+    await page.waitForTimeout(200)
+    const saved = JSON.parse(readFileSync(join(dirs.userData, 'settings.json'), 'utf8'))
+    check('可以关闭启动时自动检查更新', saved.autoCheckUpdates === false, JSON.stringify(saved))
+  } finally { await app.close() }
+}
+
+async function caseUpdateDownloadReal() {
+  const dirs = freshDirs('update-download-real')
+  const payload = Buffer.from('mock dmg payload')
+  const digest = createHash('sha256').update(payload).digest('hex')
+  const server = createServer((req, res) => {
+    if (req.url === '/release') {
+      const body = JSON.stringify({
+        tag_name: 'v9.9.9',
+        html_url: 'https://github.com/SuperWBY/pi-desktop/releases/tag/v9.9.9',
+        body: 'local update fixture',
+        published_at: null,
+        assets: [{ name: 'Pi-Desktop-9.9.9-arm64.dmg', browser_download_url: `http://127.0.0.1:${server.address().port}/app.dmg`, size: payload.length, digest: `sha256:${digest}` }]
+      })
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) })
+      res.end(body)
+      return
+    }
+    if (req.url === '/app.dmg') {
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': payload.length })
+      res.end(payload)
+      return
+    }
+    res.writeHead(404).end()
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const { app, page } = await launch(dirs, 'default', {
+      PI_UPDATE_API_URL: `http://127.0.0.1:${server.address().port}/release`,
+      PI_DESKTOP_SKIP_UPDATE_OPEN: '1'
+    })
+    try {
+      const result = await page.evaluate(() => window.pi.downloadUpdate())
+      check('真实下载链路可以完成并校验摘要', result.ok === true && typeof result.path === 'string', JSON.stringify(result))
+      const saved = readFileSync(result.path)
+      check('下载内容与 Release 一致', createHash('sha256').update(saved).digest('hex') === digest)
+      check('下载文件权限不会放宽', (statSync(result.path).mode & 0o777) === 0o600)
+    } finally { await app.close() }
+  } finally { server.close() }
+}
+
+async function caseJevSettings() {
+  const dirs = freshDirs('jev-settings')
+  const { app, page } = await launch(dirs)
+  try {
+    const status = await page.evaluate(() => window.pi.saveJevSettings({ enabled: true, provider: 'typesafe', model: 'jev-latest', key: 'jev-test-key' }))
+    check('Jev 状态不回传密钥', status.enabled === true && status.keyConfigured === true && !JSON.stringify(status).includes('jev-test-key'), JSON.stringify(status))
+    const file = join(dirs.agent, 'jev.json')
+    const stored = JSON.parse(readFileSync(file, 'utf8'))
+    check('Jev 设置写入本地文件', stored.key === 'jev-test-key' && stored.enabled === true && stored.model === 'jev-latest', JSON.stringify(stored))
+    check('Jev 配置文件权限为 0600', (statSync(file).mode & 0o777) === 0o600)
+    await page.keyboard.press('Meta+,')
+    await page.getByRole('button', { name: '工具与技能', exact: true }).click()
+    await page.getByText('Jev 判断层', { exact: true }).waitFor({ timeout: 5000 })
+    check('设置页显示 Jev 判断层', await page.getByText('Jev 判断层', { exact: true }).isVisible())
+  } finally { await app.close() }
+}
+
+async function caseJevEnv() {
+  const dirs = freshDirs('jev-env')
+  writeFileSync(join(dirs.agent, 'jev.json'), JSON.stringify({ enabled: true, provider: 'typesafe', model: 'jev-latest', key: 'jev-env-key' }))
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [dirs.base], lastWorkspace: dirs.base }))
+  const envFile = join(dirs.base, 'jev-child-env.json')
+  const { app } = await launch(dirs, 'default', { MOCK_ENV_FILE: envFile })
+  try {
+    const deadline = Date.now() + 8000
+    while (!existsSync(envFile) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100))
+    const env = JSON.parse(readFileSync(envFile, 'utf8'))
+    check('Jev 开关和密钥传递给 pi 子进程', env.jev === '1' && env.provider === 'typesafe' && env.key === 'jev-env-key' && env.model === 'jev-latest', JSON.stringify(env))
+  } finally { await app.close() }
+}
+
+async function casePackageCatalog() {
+  const dirs = freshDirs('package-catalog')
+  const { app, page } = await launch(dirs)
+  try {
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('packages:catalog')
+      ipcMain.handle('packages:catalog', () => ({
+        entries: [{
+          name: 'pi-demo-plugin',
+          version: '1.2.0',
+          description: 'Demo package from the catalog',
+          publishedAt: null,
+          publisher: 'demo',
+          keywords: ['pi-extension'],
+          npmUrl: 'https://www.npmjs.com/package/pi-demo-plugin',
+          repositoryUrl: null,
+          source: 'npm:pi-demo-plugin'
+        }]
+      }))
+    })
+    await page.locator('.skills-page-entry').click()
+    await page.waitForSelector('.skills-tab')
+    await page.locator('.skills-tab', { hasText: '插件' }).click()
+    await page.getByRole('button', { name: '浏览目录', exact: true }).click()
+    await page.getByRole('heading', { name: '插件目录', exact: true }).waitFor()
+    await page.locator('.catalog-entry').waitFor({ timeout: 5000 })
+    check('插件目录显示 npm 搜索结果', await page.getByText('pi-demo-plugin', { exact: true }).isVisible())
+    await page.getByRole('button', { name: '检查并安装', exact: true }).click()
+    await page.locator('.install-input').waitFor()
+    check('从目录选择会打开安装预览', await page.locator('.install-input').inputValue() === 'npm:pi-demo-plugin')
+  } finally { await app.close() }
+}
+
+async function caseSandbox() {
+  const dirs = freshDirs('sandbox')
+  const project = join(dirs.base, 'sandbox-project')
+  mkdirSync(project, { recursive: true })
+  const envFile = join(project, 'sandbox-child-env.json')
+  const outside = join(dirs.base, 'outside.txt')
+  const inside = join(project, 'inside.txt')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({
+    theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project,
+    sandboxEnabled: true, sandboxMode: 'workspace-write', sandboxNetwork: 'off'
+  }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_ENV_FILE: envFile, MOCK_SANDBOX_PROBE: '1' })
+  try {
+    await page.waitForTimeout(3000)
+    const env = JSON.parse(readFileSync(envFile, 'utf8'))
+    check('sandbox 子进程标记已传递', env.sandbox === '1', JSON.stringify(env))
+    const audit = await page.evaluate(() => window.pi.sandboxAudit())
+    check('沙箱启动会写入审计日志', audit.some((line) => line.includes('"type":"start"')), JSON.stringify(audit.slice(-2)))
+    const result = await page.evaluate(([outsidePath, insidePath]) => window.pi.command({ type: 'bash', command: `echo allowed > ${insidePath}; echo blocked > ${outsidePath}` }), [outside, inside])
+    check('sandbox 内命令可以启动', result.success === true, JSON.stringify(result))
+    check('sandbox 允许写入项目目录', existsSync(inside))
+    check('sandbox 阻止写入项目外路径', !existsSync(outside))
+    await page.evaluate(() => window.pi.command({ type: 'bash', command: 'curl -sS --max-time 2 https://example.com' }))
+    await page.waitForTimeout(600)
+    const networkAudit = await page.evaluate(() => window.pi.sandboxAudit())
+    check('沙箱记录被拒绝的网络请求', networkAudit.some((line) => line.includes('"type":"network_denied"')), JSON.stringify(networkAudit.slice(-3)))
+  } finally { await app.close() }
+}
+
+async function caseProxyEnv() {
+  const dirs = freshDirs('proxy-env')
+  const project = join(dirs.base, 'proxy-project')
+  mkdirSync(project, { recursive: true })
+  const envFile = join(dirs.base, 'proxy-child-env.json')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({
+    theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project,
+    networkProxy: 'http://127.0.0.1:7890', networkNoProxy: 'localhost,127.0.0.1'
+  }))
+  const { app } = await launch(dirs, 'default', { MOCK_ENV_FILE: envFile })
+  try {
+    const deadline = Date.now() + 8000
+    while (!existsSync(envFile) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100))
+    const env = JSON.parse(readFileSync(envFile, 'utf8'))
+    check('统一代理传递给 pi 子进程', env.proxy === 'http://127.0.0.1:7890' && env.noProxy === 'localhost,127.0.0.1', JSON.stringify(env))
+  } finally { await app.close() }
+}
+
+async function casePackageInspection() {
+  const dirs = freshDirs('package-inspection')
+  const plugin = join(dirs.base, 'inspect-plugin')
+  mkdirSync(join(plugin, 'skills', 'local'), { recursive: true })
+  mkdirSync(join(plugin, 'extensions'), { recursive: true })
+  writeFileSync(join(plugin, 'package.json'), JSON.stringify({
+    name: 'inspect-plugin',
+    version: '1.2.3',
+    description: 'inspection fixture',
+    main: 'index.js',
+    scripts: { postinstall: 'node install.js' },
+    pi: { extensions: ['index.js'] }
+  }))
+  writeFileSync(join(plugin, 'skills', 'local', 'SKILL.md'), '---\nname: local\n---\n')
+  writeFileSync(join(plugin, 'extensions', 'index.js'), 'export default 1\n')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [dirs.base], lastWorkspace: dirs.base }))
+  const { app, page } = await launch(dirs)
+  try {
+    const inspection = await page.evaluate((source) => window.pi.inspectPackage(source, source), plugin)
+    check('检查本地插件识别为本地来源', inspection.kind === 'local', JSON.stringify(inspection))
+    check('检查本地插件识别安装脚本', inspection.scripts.some((script) => script.name === 'postinstall'))
+    check('包含扩展和技能时标记高风险', inspection.risk === 'high' && inspection.resources.extensions === 1 && inspection.resources.skills === 1, JSON.stringify(inspection.resources))
+    await page.locator('.skills-page-entry').click()
+    await page.waitForSelector('.skills-tab')
+    await page.locator('.skills-tab', { hasText: '插件' }).click()
+    await page.waitForSelector('.skills-toolbar')
+    await page.locator('.skills-toolbar .button.primary').click()
+    await page.locator('.install-input').fill(plugin)
+    await page.getByRole('button', { name: '检查来源' }).click()
+    await page.locator('.package-inspection').waitFor({ timeout: 10000 })
+    check('安装前显示权限预览', await page.locator('.package-risk.high').isVisible())
+    check('预览列出安装脚本', await page.getByText('postinstall: node install.js', { exact: true }).isVisible())
+    check('预览后按钮变为确认安装', await page.getByRole('button', { name: '确认安装' }).isVisible())
+  } finally { await app.close() }
+}
+
+async function caseWorkEditCommit() {
+  const dirs = freshDirs('work-edit-commit')
+  const project = join(dirs.base, 'edit-project')
+  mkdirSync(project, { recursive: true })
+  const file = join(project, 'edit-me.txt')
+  writeFileSync(file, 'before\n')
+  execFileSync('git', ['init'], { cwd: project })
+  execFileSync('git', ['config', 'user.email', 'e2e@example.com'], { cwd: project })
+  execFileSync('git', ['config', 'user.name', 'E2E'], { cwd: project })
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project, workPanelTabs: ['files', 'changes'] }))
+  const { app, page } = await launch(dirs)
+  try {
+    await page.keyboard.press('Meta+Shift+E')
+    await page.waitForSelector('.work-panel')
+    await page.locator('.work-tab-button', { hasText: '文件' }).click()
+    await page.locator('.tree-row', { hasText: 'edit-me.txt' }).click()
+    await page.locator('.file-preview-editor').waitFor({ timeout: 5000 }).catch(() => undefined)
+    await page.locator('[aria-label="编辑"]').click()
+    await page.locator('.file-preview-editor').fill('after edit\nsecond line\n')
+    await page.locator('[aria-label="保存"]').click()
+    await page.waitForTimeout(500)
+    check('工作面板可以编辑并保存文件', readFileSync(file, 'utf8') === 'after edit\nsecond line\n', readFileSync(file, 'utf8'))
+    await page.locator('.work-tab-button', { hasText: '变更' }).click()
+    await page.getByRole('button', { name: '工作区', exact: true }).click()
+    await page.locator('.work-file').first().waitFor({ timeout: 5000 })
+    check('工作区模式列出 git 改动', await page.locator('.work-file').count() >= 1)
+    await page.locator('.git-commit-bar input').fill('e2e edit commit')
+    await page.getByRole('button', { name: '提交 1', exact: true }).click()
+    await page.waitForTimeout(1000)
+    const log = execFileSync('git', ['log', '--oneline', '-1'], { cwd: project, encoding: 'utf8' })
+    check('可以从工作面板提交 git commit', log.includes('e2e edit commit'), log)
+  } finally { await app.close() }
 }
 
 async function caseComposerLayout() {
@@ -1859,6 +2572,7 @@ async function caseStreamingGuard() {
   check('流式输出中模型 / 强度不可切换', disabled.every(Boolean), JSON.stringify(disabled))
   await page.locator('.new-session').click()
   await page.waitForSelector('.project-picker-trigger')
+  check('项目选择器位于输入框外', await page.locator('.composer-wrap > .composer-project-row .project-picker-trigger').count() === 1)
   check('新建会话先落在临时对话', (await page.locator('.topbar-path').innerText()).includes('临时对话'))
   await page.locator('.project-picker-trigger').click()
   await page.locator('.project-picker-item').filter({ hasText: 'streaming' }).click()
@@ -2010,6 +2724,20 @@ async function caseComposerSafety() {
   writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root }))
   const { app, page } = await launch(dirs, 'default', { MOCK_PROMPT_DELAY: '1000' })
   const input = page.locator('.composer-input')
+  await input.fill('/missing-command')
+  await input.press('Enter')
+  await page.getByText('命令未找到').waitFor({timeout:5000})
+  check('未加载的单独斜杠命令不会发送给模型', await input.inputValue() === '/missing-command' && await page.locator('.user-message').count() === 0)
+  await page.getByRole('button',{name:'查看排查步骤'}).click({timeout:2000})
+  await page.getByRole('dialog').getByText('在终端进入项目目录，运行 pi，然后输入 /trust 并自行决定是否信任。').waitFor()
+  check('未加载命令提供信任排查步骤',true)
+  await page.evaluate(() => { Object.defineProperty(navigator, 'clipboard', { configurable:true, value:{writeText:async(value)=>{window.__copiedProject=value}} }) })
+  await page.getByRole('dialog').getByRole('button',{name:'复制项目路径'}).click()
+  await page.getByRole('dialog').getByText('路径已复制').waitFor()
+  check('排查时可复制当前项目路径',await page.evaluate(()=>window.__copiedProject)===root)
+  await page.waitForTimeout(350)
+  await page.screenshot({path:join(dirs.base,'command-help.png')})
+  await page.getByRole('dialog').locator('button.button.primary').click()
   await input.fill('中文输入')
   await input.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true, bubbles: true })
   await page.waitForTimeout(100)
@@ -2019,6 +2747,19 @@ async function caseComposerSafety() {
   await page.waitForTimeout(1300)
   check('发送等待期间的新草稿不会被清空', await input.inputValue() === '新的草稿', await input.inputValue())
   await app.close()
+}
+
+async function caseCommandRegistryUnavailable() {
+  const dirs = freshDirs('command-registry-unavailable')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme:'dark', workspaces:[root], lastWorkspace:root }))
+  const {app,page} = await launch(dirs,'default',{MOCK_COMMANDS_FAIL:'1'})
+  try {
+    const input=page.locator('.composer-input')
+    await input.fill('/example')
+    await input.press('Enter')
+    await page.getByText('无法检查命令').waitFor({timeout:5000})
+    check('命令列表不可用时不误报命令缺失并保留草稿', await page.getByText('命令未找到').count()===0 && await input.inputValue()==='/example')
+  } finally { await app.close() }
 }
 
 async function caseLanguage() {
@@ -2033,7 +2774,7 @@ async function caseLanguage() {
   await page.getByRole('menuitemradio', { name: 'English' }).click()
   await page.getByRole('heading', { name: 'Settings', exact: true }).waitFor()
   check('语言切换后设置页显示英语', await page.getByRole('heading', { name: 'Settings', exact: true }).count() === 1)
-  for (const category of ['General', 'Models', 'Tools & skills', 'Appearance', 'Sessions', 'Keyboard shortcuts', 'About']) {
+  for (const category of ['General', 'Models', 'Tools & skills', 'Appearance', 'Sessions', 'Computer Use', 'Web browsing', 'Keyboard shortcuts', 'About']) {
     await page.getByRole('button', { name: category, exact: true }).click()
     const heading = await page.locator('.settings-page-title').innerText()
     check(`英语设置分类：${category}`, heading === category, heading)
@@ -2075,16 +2816,806 @@ async function caseLanguage() {
   await app.close()
 }
 
+async function caseChromeBridgeGuide() {
+  const dirs = freshDirs('chrome-bridge-guide')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root }))
+  const { app, page } = await launch(dirs)
+  try {
+    await page.keyboard.press('Meta+,')
+    check('常规设置不显示浏览器设置', await page.getByRole('button', { name: '安装指引' }).count() === 0)
+    const search = page.getByPlaceholder('搜索设置')
+    await search.fill('computer-use')
+    await page.getByText('macOS 权限', { exact: true }).waitFor({ timeout: 3000 })
+    check('搜索 Computer Use 显示桌面设置', await page.getByText('macOS 权限', { exact: true }).count() === 1)
+    await search.fill('网页浏览')
+    await page.getByRole('button', { name: '安装指引' }).waitFor({ timeout: 3000 })
+    check('搜索网页浏览显示浏览器设置', await page.getByRole('button', { name: '安装指引' }).count() === 1)
+    await search.fill('')
+    await page.getByRole('button', { name: 'Computer Use', exact: true }).click()
+    check('Computer Use 有独立设置页', await page.getByRole('heading', { name: 'Computer Use', exact: true }).count() === 1)
+    check('Computer Use 不混入网页浏览设置', await page.getByRole('button', { name: '安装指引' }).count() === 0)
+    await page.getByRole('button', { name: '网页浏览', exact: true }).click()
+    check('网页浏览有独立设置页', await page.getByRole('heading', { name: '网页浏览', exact: true }).count() === 1)
+    await app.evaluate(({ipcMain})=>{ipcMain.removeHandler('chrome:bridge-check');ipcMain.handle('chrome:bridge-check',()=>({connected:true,busy:false,versionStatus:'unknown'}))})
+    await page.getByRole('button', { name: '安装指引' }).click()
+    const modal = page.getByRole('dialog')
+    await modal.getByText('已连接，但无法确认扩展版本。请在 Chrome 扩展页刷新 Pi Desktop Chrome Bridge，然后重新检测。').waitFor()
+    check('打开指引时自动检测旧版或未知版本',true)
+    await page.waitForTimeout(350)
+    await page.screenshot({path:join(dirs.base,'guide-refresh.png')})
+    await modal.getByRole('button',{name:'稍后再说'}).click()
+    await app.evaluate(({ipcMain})=>{ipcMain.removeHandler('chrome:bridge-check');ipcMain.handle('chrome:bridge-check',()=>({connected:false,busy:false}))})
+    await page.getByRole('button', { name: '安装指引' }).click()
+    await modal.locator('[draggable="true"][data-chrome-bridge-drag]').waitFor({ timeout: 3000 })
+    check('安装指引提供可拖拽的扩展文件夹', await modal.locator('[draggable="true"][data-chrome-bridge-drag]').count() === 1)
+    await app.evaluate(({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0].webContents
+      contents.startDrag = ({ file, icon }) => {
+        globalThis.__bridgeDragResult = { file, size: typeof icon === 'string' ? null : icon.getSize() }
+      }
+    })
+    await modal.locator('[data-chrome-bridge-drag]').dispatchEvent('dragstart')
+    await page.waitForTimeout(150)
+    const dragResult = await app.evaluate(() => globalThis.__bridgeDragResult)
+    check('拖动预览大小适中且指向扩展目录', Boolean(dragResult && dragResult.file === join(dirs.userData, 'chrome-bridge') && dragResult.size?.width <= 64 && dragResult.size?.height <= 64), JSON.stringify(dragResult))
+    await page.waitForTimeout(350)
+    await page.screenshot({ path: join(dirs.base, 'guide.png') })
+    await modal.locator('summary').click()
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('clipboard unavailable') } } })
+    })
+    await modal.getByRole('button', { name: '复制路径' }).click()
+    await page.waitForTimeout(300)
+    const copied = await modal.getByText('已复制', { exact: true }).count()
+    const clipboard = await app.evaluate(({ clipboard }) => clipboard.readText())
+    check('扩展路径可复制', copied === 1 && clipboard === join(dirs.userData, 'chrome-bridge'))
+    await modal.getByRole('button',{name:'检测连接'}).waitFor({timeout:6000})
+    await app.evaluate(({ipcMain})=>{ipcMain.removeHandler('chrome:bridge-check');ipcMain.handle('chrome:bridge-check',()=>({connected:true,busy:false,versionStatus:'outdated'}))})
+    await modal.getByRole('button',{name:'检测连接'}).click()
+    await modal.getByText('Chrome 正在使用旧版扩展。请打开扩展页，找到 Pi Desktop Chrome Bridge，点击卡片上的刷新按钮，然后重新检测。').waitFor()
+    check('旧扩展提示刷新而不要求重新拖入', await modal.locator('[data-chrome-bridge-drag]').count()===0)
+    await app.evaluate(({ipcMain})=>{ipcMain.removeHandler('chrome:bridge-check');ipcMain.handle('chrome:bridge-check',()=>({connected:true,busy:false,versionStatus:'unknown'}))})
+    await modal.getByRole('button',{name:'检测连接'}).click()
+    await modal.getByText('已连接，但无法确认扩展版本。请在 Chrome 扩展页刷新 Pi Desktop Chrome Bridge，然后重新检测。').waitFor()
+    check('版本未知时不声称扩展已就绪',true)
+    await app.evaluate(({ipcMain})=>{ipcMain.removeHandler('chrome:bridge-check');ipcMain.handle('chrome:bridge-check',()=>({connected:true,busy:false,versionStatus:'current'}))})
+    await modal.getByRole('button',{name:'检测连接'}).click()
+    await modal.getByText('已连接并验证本机配对。').waitFor()
+    check('版本匹配时显示连接成功',true)
+    await modal.getByRole('button', { name: '稍后再说' }).click()
+    check('安装指引可以关闭', await page.getByRole('dialog').count() === 0)
+  } finally {
+    await app.close()
+  }
+}
+
+async function caseBrowserRouter() {
+  const dirs = freshDirs('browser-router')
+  const { app, page } = await launch(dirs)
+  try {
+    const status = await page.evaluate(() => window.pi.browserRouterStatus())
+    check('统一状态包含三个浏览器后端', status.backends.map((item) => item.backend).join(',') === 'inapp,cdp,extension', JSON.stringify(status))
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('browser:router-status')
+      ipcMain.handle('browser:router-status', () => ({
+        cdpPort: 9223,
+        backends: [
+          { backend: 'inapp', connected: true, detail: 'https://example.com' },
+          { backend: 'cdp', connected: false, detail: '未连接' },
+          { backend: 'extension', connected: true, detail: '已连接当前 Chrome 标签页' }
+        ]
+      }))
+    })
+    await page.keyboard.press('Meta+,')
+    await page.getByPlaceholder('搜索设置').fill('网页浏览')
+    await page.getByText('统一浏览器入口', { exact: true }).waitFor({ timeout: 5000 })
+    check('设置页显示统一浏览器入口', await page.getByText('统一浏览器入口', { exact: true }).isVisible())
+    await page.locator('.browser-router-refresh').click()
+    await page.getByText('已打开', { exact: true }).waitFor({ timeout: 5000 })
+    check('应用内浏览器显示已打开', await page.getByText('已打开', { exact: true }).isVisible())
+    check('CDP 显示未连接', await page.getByText('未连接', { exact: true }).first().isVisible())
+    await page.getByText('统一浏览器入口', { exact: true }).waitFor()
+    check('可以重新检测浏览器状态', true)
+  } finally { await app.close() }
+}
+
+async function caseChromeBridgeUpgrade() {
+  const dirs = freshDirs('chrome-bridge-upgrade')
+  const target = join(dirs.userData, 'chrome-bridge')
+  mkdirSync(target, { recursive: true })
+  writeFileSync(join(target, 'manifest.json'), JSON.stringify({ version: '0.0.1' }))
+  writeFileSync(join(target, 'background.js'), 'old extension content')
+  writeFileSync(join(target, 'pairing.json'), JSON.stringify({key:'sensitive-old-key'}), {mode:0o600})
+  const { app } = await launch(dirs)
+  try {
+    const installed = JSON.parse(readFileSync(join(target, 'manifest.json'), 'utf8'))
+    const original = JSON.parse(readFileSync(join(root, 'extensions/chrome-bridge/manifest.json'), 'utf8'))
+    check('旧扩展文件更新到随应用提供的版本', installed.version === original.version)
+    const backupRoot = join(dirs.userData, 'chrome-bridge-backups')
+    const backups = existsSync(backupRoot) ? readdirSync(backupRoot) : []
+    check('更新扩展文件前保留旧目录备份', backups.some((name) => readFileSync(join(backupRoot, name, 'background.js'), 'utf8') === 'old extension content'))
+    const pairing = JSON.parse(readFileSync(join(target, 'pairing.json'), 'utf8'))
+    const secret = JSON.parse(readFileSync(join(dirs.base, 'chrome-bridge-secret.json'), 'utf8'))
+    check('扩展使用本机私有配对密钥', pairing.key === secret.key && pairing.port === 9317 && (statSync(join(target, 'pairing.json')).mode & 0o777) === 0o600)
+    check('扩展备份不包含配对密钥', backups.every((name) => !existsSync(join(backupRoot, name, 'pairing.json'))))
+
+  } finally { await app.close() }
+  writeFileSync(join(target, 'manifest.json'), JSON.stringify({ version: '999.0.0' }))
+  writeFileSync(join(target, 'background.js'), 'newer extension content')
+  const reopened = await launch(dirs)
+  try {
+    check('旧应用不会覆盖更新的扩展版本', readFileSync(join(target, 'background.js'), 'utf8') === 'newer extension content')
+  } finally { await reopened.app.close() }
+}
+
 const only = (process.env.E2E_ONLY ?? '').trim().toLowerCase()
 const wants = only ? only.split(/[,\s]+/).filter(Boolean) : []
 
 // Every scenario is addressable by tag, so a change can be checked against the
 // affected area without booting all twenty Electron instances.
+async function caseComputerUsePermissions() {
+  const dirs = freshDirs('computer-use-permissions')
+  const { app, page } = await launch(dirs)
+  try {
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].webContents.send('pi:record', { type:'extension_ui_request', id:'permission-test', method:'select', title:'Computer Use: System Permissions', options:['Open Accessibility Settings','Check Again','Cancel'] })
+    })
+    await page.getByRole('heading', { name:'开启桌面操作权限' }).waitFor()
+    await page.waitForTimeout(200)
+    await page.screenshot({ path: join(dirs.base, 'permission-guide.png') })
+    check('权限引导解释用途', await page.getByText('允许 Pi 观察和操作桌面应用').isVisible())
+    check('缺失的辅助功能提供系统设置入口', await page.getByRole('button', { name:'打开辅助功能设置' }).isVisible())
+    check('权限引导提供重新检测', await page.getByRole('button', { name:'重新检测' }).isVisible())
+    await page.getByRole('button', { name:'稍后再说' }).click()
+    check('可取消权限引导', await page.getByRole('heading', { name:'开启桌面操作权限' }).count() === 0)
+    await app.evaluate(({ipcMain}) => { globalThis.__confirmResponses = []; ipcMain.on('pi:ui-response', (_event, response) => globalThis.__confirmResponses.push(response)) })
+    for (const [id, label, expected] of [['yes','是',true], ['no','否',false]]) {
+      await app.evaluate(({BrowserWindow}, id) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id,method:'confirm',title:'Computer Use',message:'Test'}), id)
+      await page.getByRole('button',{name:label,exact:true}).click()
+      await page.waitForTimeout(100)
+      const response = await app.evaluate((_electron, id) => globalThis.__confirmResponses.find(item => item.id === id), id)
+      check(`确认弹窗 ${label} 符合 Pi RPC 协议`, response?.confirmed === expected && !('value' in response), JSON.stringify(response))
+    }
+    await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'desktop-action',method:'confirm',title:'确认桌面操作',message:'应用：本地测试应用\n窗口：业务窗口\n操作：click\n目标：AXButton 保存'}))
+    const actionDialog=page.getByRole('dialog')
+    await actionDialog.getByRole('button',{name:'确认执行'}).waitFor()
+    check('桌面操作确认清楚展示应用、窗口、动作和目标', await actionDialog.getByText('本地测试应用').count()===1 && await actionDialog.getByText('业务窗口').count()===1 && await actionDialog.getByText('点击',{exact:true}).count()===1 && await actionDialog.getByText('按钮 保存').count()===1)
+    await page.waitForTimeout(200)
+    await page.screenshot({path:join(dirs.base,'desktop-action-confirm.png')})
+    await actionDialog.getByRole('button',{name:'确认执行'}).click()
+    await page.waitForTimeout(100)
+    const actionResponse=await app.evaluate(()=>globalThis.__confirmResponses.find(item=>item.id==='desktop-action'))
+    check('明确操作按钮保留真实 Pi 确认协议', actionResponse?.confirmed===true, JSON.stringify(actionResponse))
+    await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'browser-action',method:'confirm',title:'Computer Use: Browser',message:'操作：click\n目标：上传资料\n浏览器：inapp\n页面：http://localhost/test\n已选文件：文件: fixture.csv (3 bytes)（当前页面可见文件，不一定属于此操作）'}))
+    const browserDialog=page.getByRole('dialog')
+    await browserDialog.getByRole('button',{name:'取消操作'}).waitFor()
+    check('网页操作确认展示目标、页面和选中文件', await browserDialog.getByRole('heading',{name:'确认网页操作'}).count()===1 && (await browserDialog.innerText()).includes('fixture.csv (3 bytes)') && (await browserDialog.innerText()).includes('上传资料') && (await browserDialog.innerText()).includes('http://localhost/test'))
+    await page.waitForTimeout(200)
+    await page.screenshot({path:join(dirs.base,'browser-action-confirm.png')})
+    await browserDialog.getByRole('button',{name:'取消操作'}).click()
+    await page.waitForTimeout(100)
+    check('取消网页操作保留 Pi 确认协议', (await app.evaluate(()=>globalThis.__confirmResponses.find(item=>item.id==='browser-action')))?.confirmed===false)
+    await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'browser-input',method:'confirm',title:'Computer Use: Browser',message:'操作：type\n目标：订单编号\n浏览器：inapp\n页面：http://localhost/test\n输入预览：\"ORD-2026-002\"'}))
+    const inputDialog=page.getByRole('dialog')
+    await inputDialog.getByRole('heading',{name:'确认网页操作'}).waitFor()
+    check('网页输入确认显示待输入内容', await inputDialog.locator('.browser-action-input-preview').innerText()==='\"ORD-2026-002\"')
+    await inputDialog.getByRole('button',{name:'取消操作'}).click()
+    await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'browser-input-long',method:'confirm',title:'Computer Use: Browser',message:`操作：type\n目标：内容\n浏览器：inapp\n页面：http://localhost/test\n输入内容：\"${'x'.repeat(2001)}END\"`}))
+    const longInputDialog=page.getByRole('dialog')
+    await longInputDialog.getByRole('heading',{name:'确认网页操作'}).waitFor()
+    const preview=longInputDialog.locator('.browser-action-input-preview')
+    check('长输入在确认窗口中可完整滚动查看', (await preview.innerText()).endsWith('END\"') && await preview.evaluate(el=>el.scrollHeight>el.clientHeight))
+    await longInputDialog.getByRole('button',{name:'取消操作'}).click()
+
+
+    await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'file-selection',method:'confirm',title:'Computer Use: File Selection',message:'请在浏览器弹出的系统窗口中选择要上传的文件。选择完成后回到这里确认；继续前需要重新观察并核对文件。'}))
+    const fileDialog=page.getByRole('dialog')
+    await fileDialog.getByRole('heading',{name:'选择上传文件'}).waitFor()
+    check('文件选择窗口未出现时提供明确替代步骤', (await fileDialog.innerText()).includes('如果没有看到系统文件选择窗口') && (await fileDialog.innerText()).includes('在网页中点击文件选择按钮'))
+    await fileDialog.getByRole('button',{name:'打开工作面板'}).click()
+    await page.waitForFunction(() => document.querySelector('[aria-label="工作面板"]')?.getAttribute('aria-pressed') === 'true')
+    check('文件选择引导能展开工作面板', await page.locator('[aria-label="工作面板"]').getAttribute('aria-pressed') === 'true')
+    await page.waitForFunction(() => [...document.querySelectorAll('[role="tab"][aria-selected="true"]')].some(el => el.textContent?.includes('浏览器')))
+    check('文件选择引导切换到浏览器标签', await page.locator('[role="tab"][aria-selected="true"]').filter({hasText:'浏览器'}).count()===1)
+    check('打开工作面板不会提前确认文件已选择', await fileDialog.getByRole('button',{name:'已完成选择'}).count()===1 && !(await app.evaluate(()=>globalThis.__confirmResponses.find(item=>item.id==='file-selection'))))
+    check('文件选择引导明确说明接下来要做什么', (await fileDialog.innerText()).includes('系统窗口') && await fileDialog.getByRole('button',{name:'已完成选择'}).count()===1)
+    await fileDialog.getByRole('button',{name:'稍后再说'}).click()
+    await page.waitForTimeout(100)
+    check('暂不选择保持 Pi 取消确认协议', (await app.evaluate(()=>globalThis.__confirmResponses.find(item=>item.id==='file-selection')))?.confirmed===false)
+    await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'file-cancel',method:'confirm',title:'Computer Use: Cancel File Selection',message:'请先关闭或取消系统文件选择窗口，再确认取消本次选择。'}))
+    const cancelFileDialog=page.getByRole('dialog')
+    await cancelFileDialog.getByRole('heading',{name:'取消文件选择'}).waitFor()
+    check('取消文件选择先提示关闭系统窗口', (await cancelFileDialog.innerText()).includes('系统文件选择窗口'))
+    await cancelFileDialog.getByRole('button',{name:'已取消选择'}).click()
+    await page.waitForTimeout(100)
+    check('确认取消文件选择遵循 Pi 确认协议', (await app.evaluate(()=>globalThis.__confirmResponses.find(item=>item.id==='file-cancel')))?.confirmed===true)
+  } finally { await app.close() }
+}
+
+async function caseComputerUseSettings() {
+  const dirs = freshDirs('computer-use-settings')
+  let { app, page } = await launch(dirs)
+  try {
+    await page.keyboard.press('Meta+,')
+    await page.getByRole('button', {name:'Computer Use', exact:true}).click()
+    const toggle = page.getByRole('switch', {name:'启用 Computer Use'})
+    await toggle.waitFor({timeout:4000})
+    await page.screenshot({ path:join(dirs.base, 'settings.png') })
+    check('Computer Use 默认关闭', await toggle.getAttribute('aria-checked') === 'false')
+    await toggle.click()
+    await page.locator('.settings-permission-list .desktop-permission-row').first().waitFor({timeout:10000})
+    const permissionStatus = await page.evaluate(() => window.pi.desktopPermissionCheck())
+    check('设置中显示执行组件的权限状态', await page.locator('.settings-permission-list .desktop-permission-row').first().getByText(permissionStatus.accessibility ? (permissionStatus.provisional ? '初步已开启' : '已开启') : '打开辅助功能设置').count() === 1)
+    await page.waitForTimeout(200)
+    await page.screenshot({ path:join(dirs.base, 'guide.png') })
+    check('开启时权限状态直接显示在设置页', await toggle.getAttribute('aria-checked') === 'true' && await page.getByRole('heading',{name:'开启桌面操作权限'}).count() === 0)
+    await app.close()
+    ;({ app, page } = await launch(dirs))
+    await page.keyboard.press('Meta+,')
+    await page.getByRole('button', {name:'Computer Use', exact:true}).click()
+    const restoredToggle = page.getByRole('switch', {name:'启用 Computer Use'})
+    check('重启后保留开关状态', await restoredToggle.getAttribute('aria-checked') === 'true')
+    await page.locator('.settings-permission-block').getByRole('button', {name:'重新检测'}).click()
+    check('设置中可主动检查权限', await page.locator('.settings-permission-list .desktop-permission-row').count() === 2)
+    await restoredToggle.click()
+    await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Computer Use"]')?.getAttribute('aria-checked') === 'false')
+    check('可以立即关闭 Computer Use', await restoredToggle.getAttribute('aria-checked') === 'false')
+    const guideUrl = new URL(page.url())
+    guideUrl.searchParams.set('view', 'permission-guide')
+    await page.goto(guideUrl.toString())
+    check('权限悬浮提示提供拖动入口和系统添加备用方案', await page.locator('[data-desktop-permission-drag][draggable="true"]').count() === 1 && await page.getByText(/列表下方的「＋」/).count() === 1)
+  } finally { await app.close() }
+}
+
+async function caseComputerUsePackagePath() {
+  if (process.platform !== 'darwin') return
+  const dirs = freshDirs('computer-use-package-path')
+  const source = join(dirs.base, 'My Project', 'computer-use')
+  const marker = join(dirs.base, 'helper-used')
+  mkdirSync(join(source, 'bin'), {recursive:true})
+  writeFileSync(join(source, 'package.json'), JSON.stringify({name:'pi-desktop-computer-use'}))
+  const helper = join(source, 'bin', 'computer-use-helper')
+  writeFileSync(helper, '#!/bin/sh\nprintf used > "$PERMISSION_HELPER_MARKER"\nprintf \'{"ok":true,"accessibility":false,"screenRecording":true}\\n\'\n')
+  chmodSync(helper, 0o755)
+  writeFileSync(join(dirs.agent, 'settings.json'), JSON.stringify({packages:[source]}))
+  const { app, page } = await launch(dirs, 'default', { MOCK_LIST_SOURCE:source, MOCK_LIST_DELAY_MS:'1500', PERMISSION_HELPER_MARKER:marker, MOCK_COMPUTER_USE_ROOT:source })
+  try {
+    await page.keyboard.press('Meta+,')
+    await page.getByRole('button', {name:'Computer Use',exact:true}).click()
+    const start = Date.now()
+    await page.getByRole('button', {name:'重新检测'}).waitFor({timeout:1000})
+    check('权限检查时界面保持可操作', Date.now()-start < 1000)
+    const deadline = Date.now()+10000
+    while (!existsSync(marker) && Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,100))
+    check('带空格的已有扩展使用正确的权限检查组件', existsSync(marker))
+    const starting = page.evaluate((cwd) => window.pi.openSession({cwd, scratch:true}), dirs.base)
+    const refresh = page.getByRole('button', {name:'重新检测'})
+    await page.waitForFunction(() => [...document.querySelectorAll('button')].some((button) => button.textContent?.includes('重新检测') && !button.disabled), null, {timeout:10000})
+    check('启动会话检查扩展时界面保持可操作', await refresh.isVisible())
+    const opened = await starting
+    check('带空格扩展配置下会话正常启动', opened.ok === true, JSON.stringify(opened))
+  } finally { await app.close() }
+}
+
+async function caseComputerUsePermissionCompletion() {
+  if (process.platform !== 'darwin') return
+  const dirs = freshDirs('computer-use-permission-completion')
+  const source = join(dirs.base, 'permission-extension')
+  const stateFile = join(dirs.base, 'permissions.json')
+  mkdirSync(join(source, 'bin'), {recursive:true})
+  writeFileSync(join(source, 'package.json'), JSON.stringify({name:'pi-desktop-computer-use'}))
+  const helper = join(source, 'bin', 'computer-use-helper')
+  writeFileSync(helper, '#!/bin/sh\ncat "$PERMISSION_STATE_FILE"\n')
+  chmodSync(helper, 0o755)
+  writeFileSync(stateFile, JSON.stringify({ok:true,accessibility:false,screenRecording:false}))
+  writeFileSync(join(dirs.agent, 'settings.json'), JSON.stringify({packages:[source]}))
+  const {app,page} = await launch(dirs, 'default', {MOCK_LIST_SOURCE:source, MOCK_COMPUTER_USE_ROOT:source, PERMISSION_STATE_FILE:stateFile})
+  try {
+    await page.keyboard.press('Meta+,')
+    await page.getByRole('button', {name:'Computer Use',exact:true}).click()
+    const toggle = page.getByRole('switch', {name:'启用 Computer Use'})
+    await toggle.click()
+    await page.getByRole('button', {name:'打开辅助功能设置'}).waitFor({timeout:10000})
+    writeFileSync(stateFile, JSON.stringify({ok:true,accessibility:true,screenRecording:true}))
+    await page.getByText('权限检查完成。桌面任务开始时会再次检查实际使用的组件。').waitFor({timeout:7000})
+    await page.getByRole('heading', {name:'开启桌面操作权限'}).waitFor({state:'hidden',timeout:7000})
+    check('授权完成后自动显示成功并关闭引导', true)
+    await toggle.click()
+    await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Computer Use"]')?.getAttribute('aria-checked') === 'false')
+    await toggle.click()
+    await page.waitForTimeout(1200)
+    check('已授权再次启用时不重复打断', await page.getByRole('heading',{name:'开启桌面操作权限'}).count() === 0)
+    await page.getByRole('button',{name:'重新检测'}).click()
+    await page.getByText('权限检查完成。桌面任务开始时会再次检查实际使用的组件。').waitFor({timeout:7000})
+    check('主动检查已授权状态时直接显示完成', await page.getByRole('heading',{name:'开启桌面操作权限'}).count() === 0)
+  } finally { await app.close() }
+}
+
+async function caseComputerUseProgressUi() {
+  const dirs=freshDirs('computer-use-progress-ui')
+  const session = seedSession(dirs.sessions, 'mock-session', 'Computer Use fixture', 0)
+  const now = Date.now()
+  const messages = [
+    {role:'user',timestamp:now,content:[{type:'text',text:'测试桌面执行过程'}]},
+    {role:'assistant',timestamp:now+1,content:[
+      {type:'toolCall',id:'cua-observe',name:'computer_use_observe',arguments:{app:'测试应用'}},
+      {type:'toolCall',id:'cua-act',name:'computer_use_act',arguments:{type:'click',elementId:'e1'}},
+      {type:'toolCall',id:'cua-file',name:'computer_use_session_act',arguments:{type:'click',candidateId:'b1'}},
+      {type:'toolCall',id:'cua-hash',name:'computer_use_session_verify_file',arguments:{expectedName:'data.csv'}},
+      {type:'toolCall',id:'cua-wait',name:'computer_use_session_wait',arguments:{name:'完成按钮'}},
+      {type:'toolCall',id:'cua-metadata',name:'computer_use_session_verify_file',arguments:{expectedName:'other.csv'}},
+      {type:'toolCall',id:'cua-browser-1',name:'computer_use_session_act',arguments:{type:'click',candidateId:'c1'}},
+      {type:'toolCall',id:'cua-browser-2',name:'computer_use_session_act',arguments:{type:'click',candidateId:'c1'}}
+    ]},
+    {role:'toolResult',toolCallId:'cua-observe',toolName:'computer_use_observe',content:[{type:'text',text:'观察结果'}],details:{},timestamp:now+2},
+    {role:'toolResult',toolCallId:'cua-act',toolName:'computer_use_act',content:[{type:'text',text:'操作已发出'}],details:{verification:{status:'confirmed'}},timestamp:now+3},
+    {role:'toolResult',toolCallId:'cua-file',toolName:'computer_use_session_act',content:[{type:'text',text:'等待文件选择'}],details:{verification:{status:'unavailable',requiresHuman:true,reason:'file_selection'}},timestamp:now+3},
+    {role:'toolResult',toolCallId:'cua-hash',toolName:'computer_use_session_verify_file',content:[{type:'text',text:'文件摘要已核对'}],details:{file:{name:'data.csv',size:4,type:'text/csv'},contentVerified:true},timestamp:now+4},
+    {role:'toolResult',toolCallId:'cua-wait',toolName:'computer_use_session_wait',content:[{type:'text',text:'等待结束'}],details:{matched:false},timestamp:now+4},
+    {role:'toolResult',toolCallId:'cua-metadata',toolName:'computer_use_session_verify_file',content:[{type:'text',text:'文件信息已读取'}],details:{file:{name:'other.csv',size:4,type:'text/csv'}},timestamp:now+4},
+    {role:'toolResult',toolCallId:'cua-browser-1',toolName:'computer_use_session_act',isError:true,content:[{type:'text',text:'The action result is unknown because the connection failed.'}],timestamp:now+4},
+    {role:'toolResult',toolCallId:'cua-browser-2',toolName:'computer_use_session_act',isError:true,content:[{type:'text',text:'The previous action result is unknown. Inspect the result.'}],timestamp:now+4},
+    {role:'assistant',timestamp:now+5,content:[{type:'text',text:'请核对实际业务结果。'}]}
+  ]
+  writeFileSync(session, messages.map(message => JSON.stringify({type:'message',message})).join('\n')+'\n', {flag:'a'})
+  writeFileSync(join(dirs.userData,'settings.json'),JSON.stringify({theme:'dark',workspaces:[root],lastWorkspace:root,turnAutoFold:false}))
+  const {app,page}=await launch(dirs,'default',{MOCK_LOAD_SESSION:'1'})
+  try {
+    await page.getByText('Computer Use fixture', {exact:true}).click()
+    await page.getByText('请核对实际业务结果。',{exact:true}).waitFor()
+    check('桌面观察显示用户可理解的动作', await page.getByText('已查看桌面',{exact:true}).count()===1)
+    check('桌面操作展示变化证据且不声称业务成功', await page.getByText('界面有变化，结果待核对',{exact:true}).count()===1)
+    check('文件选择显示等待状态', await page.getByText('等待选择文件',{exact:true}).count()===1)
+    check('文件摘要和仅文件信息状态清楚区分', await page.getByText('文件内容摘要已匹配',{exact:true}).count()===1 && await page.getByText('仅核对文件信息',{exact:true}).count()===1)
+    check('等待超时显示未等到目标', await page.getByText('未等到目标',{exact:true}).count()===1)
+    const unknown = page.getByText('操作结果未知，请核对',{exact:true})
+    check('折叠的网页操作分组显示结果未知', await unknown.count()===1)
+    await unknown.click()
+    check('展开分组后每个未知结果不显示成操作失败', await unknown.count()===3 && await page.getByText('网页操作失败',{exact:true}).count()===0)
+    await page.screenshot({path:join(dirs.base,'computer-use-progress.png')})
+  } finally {await app.close()}
+}
+
+async function caseBrowserDownloads() {
+  const server = createServer((req,res) => {
+    if (req.url === '/report') return res.writeHead(200, {'content-type':'text/csv','content-disposition':'attachment; filename="report.csv"'}).end('id,value\n1,verified\n')
+    res.writeHead(200, {'content-type':'text/html; charset=utf-8'}).end('<title>Downloads</title><a href="/report" download>下载报表</a>')
+  })
+  await new Promise(resolve => server.listen(0,'127.0.0.1',resolve))
+  const url = `http://127.0.0.1:${server.address().port}`
+  const dirs = freshDirs('browser-downloads')
+  writeFileSync(join(dirs.userData,'settings.json'),JSON.stringify({theme:'dark',workspaces:[root],lastWorkspace:root,workPanelTabs:['browser'],workPanelTab:'browser'}))
+  let app
+  try {
+    const launched = await launch(dirs,'default',{HOME:dirs.base}); app=launched.app
+    const page=launched.page
+    await page.keyboard.press('Meta+Shift+B')
+    await page.waitForSelector('.browser-toolbar')
+    await page.evaluate(url => window.pi.browserOpen(url),url)
+    const listeners = () => app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].contentView.children.find(child => child.constructor?.name?.includes('WebContentsView')).webContents.session.listenerCount('will-download'))
+    const before = await listeners()
+    await page.evaluate(() => window.pi.browserClose())
+    await page.evaluate(url => window.pi.browserOpen(url),url)
+    const after = await listeners()
+    check('重开浏览器不会重复注册下载监听', before === after, `${before} → ${after}`)
+    const bridgePath=await app.evaluate(()=>process.env.PI_DESKTOP_BROWSER_BRIDGE_FILE)
+    const bridge=JSON.parse(readFileSync(bridgePath,'utf8'))
+    const endpoint=`http://127.0.0.1:${bridge.port}/downloads`
+    const query=async()=>{const response=await fetch(endpoint,{headers:{authorization:`Bearer ${bridge.token}`}});return {status:response.status,body:await response.json()}}
+    const initial=await query()
+    check('下载记录只允许认证的本地会话读取', (await fetch(endpoint)).status === 401 && initial.status === 200)
+    const extensionSource=readFileSync(join(root,'extensions/computer-use/index.ts'),'utf8')
+    const start=extensionSource.indexOf('export default function computerUse(')
+    const end=extensionSource.indexOf("  pi.registerTool({\n    name: 'computer_use_apps'",start)
+    const registration=stripTypeScriptTypes(extensionSource.slice(start,end).replace('export default function','function')+'\n}')
+    const tools=new Map()
+    const Type=new Proxy({}, {get:()=> (...args)=>({args})})
+    let simulateRestart=false
+    const bridgeRequest=async (path, data) => {
+      const response=await fetch(`http://127.0.0.1:${bridge.port}${path}`,{method:data?'POST':'GET',headers:{authorization:`Bearer ${bridge.token}`,...(data?{'content-type':'application/json'}:{})},body:data?JSON.stringify(data):undefined})
+      const body=await response.json(); if (!response.ok) throw new Error(body.error); if (simulateRestart) body.epoch='restarted'; return body
+    }
+    const factory=runInNewContext(`${registration}\ncomputerUse`,{BrowserRouter,judgeWithJev,Type,createBrowserActionJournal:()=>undefined,bridgeRequest,randomUUID,URL,setTimeout,process:{env:{}},approvalMode:'always',audit:async()=>{}})
+    factory({registerTool:tool=>tools.set(tool.name,tool),on:()=>{}})
+    const invoke=async(name,params={})=>tools.get(name).execute('test',params,undefined,undefined,{ui:{confirm:async()=>true}})
+    for (let index=1; index<=2; index++) {
+      const destination=join(dirs.base,`report-${index}.csv`)
+      const result=await app.evaluate(({BrowserWindow},{downloadUrl,destination}) => new Promise((resolve,reject) => {
+        const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView'))
+        const timeout=setTimeout(()=>reject(new Error('download timed out')),10000)
+        view.webContents.session.once('will-download',(_event,item) => {
+          item.setSavePath(destination)
+          item.once('done',(_event,state)=>{clearTimeout(timeout);resolve(state)})
+        })
+        view.webContents.downloadURL(downloadUrl)
+      }),{downloadUrl:`${url}/report`,destination})
+      check(`第 ${index} 次下载真实落盘`,result === 'completed' && readFileSync(destination,'utf8') === 'id,value\n1,verified\n')
+      await page.waitForTimeout(200)
+      if (index === 1) await invoke('computer_use_session_open',{backend:'inapp'})
+    }
+    check('两次同名下载各有完成提示',await page.locator('.toast-title').filter({hasText:'下载完成'}).count() === 2)
+    const completed=await query()
+    check('下载记录包含每次完成状态和用户选定的路径', completed.status === 200 && completed.body.downloads?.length === 2 && completed.body.downloads.every((item,index) => item.state === 'completed' && item.path === join(dirs.base,`report-${index+1}.csv`) && item.bytes === Buffer.byteLength('id,value\n1,verified\n')))
+    const scoped=await invoke('computer_use_session_downloads')
+    check('Agent 只看到会话开始后的下载并提示核验', scoped.details.downloads.length === 1 && scoped.details.downloads[0].path === join(dirs.base,'report-2.csv') && scoped.content[0].text.includes('not necessarily by Pi'))
+    const cancelled=await app.evaluate(({BrowserWindow},downloadUrl)=>new Promise((resolve,reject)=>{
+      const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView'))
+      const timeout=setTimeout(()=>reject(new Error('cancelled download timed out')),10000)
+      view.webContents.session.once('will-download',(_event,item)=>{
+        item.once('done',(_event,state)=>{clearTimeout(timeout);resolve(state)})
+        item.cancel()
+      })
+      view.webContents.downloadURL(downloadUrl)
+    }),`${url}/report`)
+    const afterCancel=await invoke('computer_use_session_downloads')
+    const last=afterCancel.details.downloads.at(-1)
+    check('取消下载不会报告保存路径', cancelled === 'cancelled' && last?.state === 'cancelled' && !('path' in last))
+    await page.waitForTimeout(200)
+    check('用户取消下载时显示取消而非故障', await page.locator('.toast-title').filter({hasText:'下载已取消'}).count() === 1)
+    await invoke('computer_use_session_close')
+    await invoke('computer_use_session_open',{backend:'inapp'})
+    check('新会话不会继承旧下载', (await invoke('computer_use_session_downloads')).details.downloads.length === 0)
+    const observation=JSON.parse((await invoke('computer_use_session_observe')).content[0].text)
+    const downloadLink=observation.candidates.find(candidate=>candidate.name==='下载报表')
+    if (!downloadLink) throw new Error(`Download link missing: ${JSON.stringify(observation)}`)
+    const routedPath=join(dirs.base,'router-report.csv')
+    await app.evaluate(({BrowserWindow},destination)=>{
+      const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView'))
+      view.webContents.session.once('will-download',(_event,item)=>item.setSavePath(destination))
+    },routedPath)
+    await invoke('computer_use_session_act',{candidateId:downloadLink.id,type:'click'})
+    let routed
+    for(let attempt=0;attempt<40;attempt++){
+      routed=(await invoke('computer_use_session_downloads')).details.downloads.find(item=>item.path===routedPath && item.state==='completed')
+      if(routed)break
+      await page.waitForTimeout(100)
+    }
+    check('Pi 浏览器动作触发下载并可独立读取文件', Boolean(routed) && existsSync(routedPath) && readFileSync(routedPath,'utf8') === 'id,value\n1,verified\n')
+    simulateRestart=true
+    let restartRejected=false
+    try { await invoke('computer_use_session_downloads') } catch (error) { restartRejected=/restarted/.test(String(error)) }
+    check('桥接重启后不会混淆下载记录', restartRejected)
+    await invoke('computer_use_session_close')
+  } finally { if(app) await app.close(); await new Promise(resolve=>server.close(resolve)) }
+}
+
+async function caseMotionPolish() {
+  const dirs = freshDirs('motion-polish')
+  const session = seedSession(dirs.sessions, 'motion-session', 'Motion session', 2)
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({
+    theme: 'dark', language: 'zh-CN', workspaces: [root], lastWorkspace: root, lastSessionPath: session
+  }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1' })
+  try {
+    await page.locator('.message').first().waitFor()
+    const historyAnimation = await page.locator('.message').first().evaluate((el) => getComputedStyle(el).animationName)
+    check('历史消息不会重新播放入场动画', historyAnimation === 'none', historyAnimation)
+  } finally { await app.close() }
+}
+
+async function caseGeneralTaskSuggestions() {
+  const dirs = freshDirs('general-task-suggestions')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({theme:'dark',language:'zh-CN',workspaces:[root],lastWorkspace:root}))
+  const {app,page} = await launch(dirs)
+  try {
+    const buttons = ['研究一个问题','整理文件资料','规划并执行任务','了解这个项目']
+    check('新会话同时展示业务和项目入口', (await Promise.all(buttons.map(name => page.getByRole('button',{name,exact:true}).count()))).every(count => count === 1))
+    await page.getByRole('button',{name:'规划并执行任务',exact:true}).click()
+    const value = await page.locator('.composer-input').inputValue()
+    check('示例只填入可编辑草稿', value.includes('先拆解步骤') && (await page.locator('.turn').count()) === 0)
+    await page.locator('.composer-input').fill('用户已有草稿')
+    await page.getByRole('button',{name:'研究一个问题',exact:true}).click()
+    await page.waitForFunction(() => document.querySelector('.composer-input')?.value.includes('帮我研究这个问题'))
+    const appended = await page.locator('.composer-input').inputValue()
+    check('选择示例不会覆盖已有草稿', appended.startsWith('用户已有草稿') && appended.includes('帮我研究这个问题'))
+    await page.screenshot({path:join(dirs.base,'general-task-suggestions.png')})
+  } finally { await app.close() }
+}
+
+async function caseBundledSeed() {
+  const dirs = freshDirs('bundled-seed')
+  const { app, page } = await launch(dirs, 'default', {
+    PI_DESKTOP_PI_PATH: join(dirs.base, 'missing-pi'),
+    PATH: '/usr/bin:/bin',
+    SHELL: '/bin/sh',
+    PI_DESKTOP_SKIP_AUTO_INSTALL: '1'
+  })
+  try {
+    await page.locator('.welcome').waitFor({ timeout: 10000 })
+    check('有内置 seed 时不会要求联网安装', await page.locator('.welcome-setup').count() === 0)
+    check('内置 seed 被识别为可用 Pi', (await page.locator('.welcome-hint').innerText()).includes('内置 Pi'))
+    await page.screenshot({ path: join(dirs.base, 'bundled-seed.png') })
+    await page.getByRole('button', {name:'选择模型'}).click()
+    await page.locator('.settings-page-title').waitFor({timeout:5000})
+    check('选择模型直达模型设置', await page.locator('.settings-page-title').innerText() === '模型')
+    await page.locator('.model-setup-empty').waitFor({timeout:10000})
+    check('没有可用模型时提供账号登录与 API Key 入口', await page.getByRole('button', {name:'使用账号登录', exact:true}).isVisible() && await page.getByRole('button', {name:'使用 API Key', exact:true}).isVisible())
+  } finally { await app.close() }
+}
+
+async function caseProviderAuth() {
+  const dirs = freshDirs('provider-auth')
+  const { app, page } = await launch(dirs)
+  try {
+    const providers = await page.evaluate(async () => {
+      await window.pi.saveApiKey('openai', 'sk-test-123')
+      return window.pi.listAuthProviders()
+    })
+    const auth = JSON.parse(readFileSync(join(dirs.agent, 'auth.json'), 'utf8'))
+    check('API Key 写入 pi auth.json', auth.openai?.type === 'api_key' && auth.openai?.key === 'sk-test-123', JSON.stringify(auth))
+    check('auth.json 权限为 0600', (statSync(join(dirs.agent, 'auth.json')).mode & 0o777) === 0o600)
+    check('auth 列表不返回密钥', providers.some((item) => item.provider === 'openai' && item.type === 'api_key') && !JSON.stringify(providers).includes('sk-test-123'))
+  } finally { await app.close() }
+}
+
+async function caseProviderOAuth() {
+  const dirs = freshDirs('provider-oauth')
+  const { app, page } = await launch(dirs)
+  try {
+    const providers = await page.evaluate(() => window.pi.listOAuthProviders())
+    check('OAuth 服务商列表来自 pi ModelRuntime', providers.some((provider) => provider.id === 'openai' && provider.oauth))
+    check('OAuth 列表只显示支持账号授权的服务商', providers.every((provider) => provider.oauth))
+    const invalid = await page.evaluate(() => window.pi.startOAuth('unknown-provider-xyz'))
+    check('未知 OAuth 服务商不会启动', invalid.ok === false)
+  } finally { await app.close() }
+}
+
+async function caseSessionSearch() {
+  const dirs = freshDirs('session-search')
+  seedSession(dirs.sessions, 'search-source', 'Search needle', 1, dirs.base)
+  const { app, page } = await launch(dirs)
+  try {
+    await page.waitForTimeout(2500)
+    await page.locator('.search-box input').fill('needle')
+    await page.locator('.session-search-hit').first().waitFor({ timeout: 10000 })
+    check('侧栏可以搜索会话消息内容', await page.locator('.session-search-snippet').first().innerText().then((text) => text.toLowerCase().includes('needle')))
+    await page.locator('.session-search-hit').first().click()
+    await page.waitForTimeout(600)
+    check('搜索结果可以点击打开', await page.locator('.session-search-hit').count() === 1)
+  } finally { await app.close() }
+}
+
+async function caseSessionBranching() {
+  const dirs = freshDirs('session-branching')
+  const session = seedSession(dirs.sessions, 'branch-source', 'Branch source', 1, dirs.base)
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [dirs.base], lastWorkspace: dirs.base, lastSessionPath: session }))
+  const { app, page } = await launch(dirs)
+  try {
+    await page.locator('.session-menu-button').first().click()
+    await page.getByText('复制会话', { exact: true }).click()
+    await page.waitForTimeout(800)
+    const cloned = readdirSync(dirs.sessions, { recursive: true }).filter((name) => String(name).includes('clone'))
+    check('侧栏菜单可以复制当前会话', cloned.length > 0, JSON.stringify(cloned))
+    await page.locator('.session-menu-button').first().click()
+    await page.getByText('从历史提示分支…', { exact: true }).click()
+    await page.getByRole('heading', { name: '从历史提示分支' }).waitFor()
+    check('分支弹窗列出历史提示', await page.getByText('first prompt', { exact: true }).isVisible())
+    await page.locator('.fork-message-item').first().click()
+    check('分支前可以编辑要重新发送的提示', await page.locator('.fork-edit-field textarea').isVisible())
+    await page.getByRole('button', { name: '分支并编辑' }).click()
+    await page.waitForTimeout(800)
+    const forked = readdirSync(dirs.sessions, { recursive: true }).filter((name) => String(name).includes('fork'))
+    check('从历史提示可以创建分支会话', forked.length > 0, JSON.stringify(forked))
+  } finally { await app.close() }
+}
+
+async function caseSessionTree() {
+  const dirs = freshDirs('session-tree')
+  const session = seedSession(dirs.sessions, 'tree-source', 'Tree source', 1, dirs.base)
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [dirs.base], lastWorkspace: dirs.base, lastSessionPath: session }))
+  const { app, page } = await launch(dirs)
+  try {
+    await page.locator('.session-menu-button').first().click()
+    await page.getByText('查看分支树', { exact: true }).click()
+    await page.getByRole('heading', { name: '分支树' }).waitFor()
+    check('分支树显示用户提示', await page.getByText('first prompt', { exact: true }).isVisible())
+    check('分支树显示后续分支', await page.getByText('second prompt', { exact: true }).isVisible())
+    check('分支树标记当前叶子', await page.locator('.tree-current').count() === 1)
+    await page.locator('.tree-row.clickable').first().click()
+    await page.waitForTimeout(800)
+    const forked = readdirSync(dirs.sessions, { recursive: true }).filter((name) => String(name).includes('fork'))
+    check('分支树节点可以创建分支', forked.length > 0, JSON.stringify(forked))
+  } finally { await app.close() }
+}
+
+async function caseFileAttachment() {
+  const dirs = freshDirs('file-attachment')
+  const project = join(dirs.base, 'attachment-project')
+  mkdirSync(project, { recursive: true })
+  const attached = join(project, 'notes.txt')
+  writeFileSync(attached, 'ATTACHMENT_CONTENT_42\nsecond line\n')
+  const longFile = join(project, 'long.txt')
+  writeFileSync(longFile, 'a'.repeat(70000))
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project }))
+  const { app, page } = await launch(dirs)
+  try {
+    await page.locator('input[type=file]').setInputFiles([attached, longFile])
+    await page.locator('.attachment.file').first().waitFor({ timeout: 5000 })
+    check('非图片文件显示为附件卡片', await page.locator('.attachment.file').getByText('notes.txt').isVisible())
+    check('长附件标明只内嵌部分内容', await page.locator('.attachment.file').filter({ hasText: 'long.txt' }).getByText('部分内容，需读取文件').isVisible())
+    await page.locator('.composer-input').fill('请阅读这个附件')
+    await page.locator('.send-button').click()
+    await page.waitForTimeout(800)
+    const body = await page.locator('body').innerText()
+    check('文件附件内容随提示发送', body.includes('ATTACHMENT_CONTENT_42'))
+    check('文件附件显示路径', body.includes(attached))
+    check('发送内容明确标识长附件未完整内嵌', body.includes('附件内容未完整内嵌'))
+  } finally { await app.close() }
+}
+
+async function caseFileMention() {
+  const dirs = freshDirs('file-mention')
+  const project = join(dirs.base, 'mention-project')
+  mkdirSync(project, { recursive: true })
+  writeFileSync(join(project, 'notes.txt'), 'mention test\n')
+  writeFileSync(join(project, 'app.ts'), 'export const app = true\n')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project }))
+  const { app, page } = await launch(dirs)
+  try {
+    await page.locator('.composer-input').fill('@notes')
+    await page.locator('.mention-menu').waitFor({ timeout: 10000 })
+    check('输入 @ 会列出项目文件', await page.locator('.mention-path').first().innerText().then((text) => text.includes('notes.txt')))
+    await page.locator('.mention-menu .command-item').first().click()
+    const value = await page.locator('.composer-input').inputValue()
+    check('选择文件会插入 @ 路径', value.includes('@notes.txt'), value)
+  } finally { await app.close() }
+}
+
+async function caseProjectTrust() {
+  const dirs = freshDirs('project-trust')
+  const project = join(dirs.base, 'trusted-project')
+  mkdirSync(join(project, '.pi', 'skills', 'local-skill'), { recursive: true })
+  writeFileSync(join(project, '.pi', 'skills', 'local-skill', 'SKILL.md'), '---\nname: local\ndescription: local test\n---\n')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project }))
+  const { app, page } = await launch(dirs)
+  try {
+    await page.locator('.project-trust-banner').waitFor({ timeout: 10000 })
+    check('未信任项目显示信任提示', await page.getByText('项目资源需要信任').isVisible())
+    await page.getByRole('button', { name: '查看并信任' }).click()
+    await page.getByRole('heading', { name: '项目信任' }).waitFor()
+    check('信任弹窗展示检测到的资源', await page.locator('.project-trust-resources').getByText(join(project, '.pi', 'skills')).isVisible())
+    await page.locator('.project-trust-option.primary').click()
+    await page.waitForTimeout(600)
+    const trust = JSON.parse(readFileSync(join(dirs.agent, 'trust.json'), 'utf8'))
+    check('桌面端可写入项目信任文件', trust[project] === true, JSON.stringify(trust))
+    check('信任后提示消失', await page.locator('.project-trust-banner').count() === 0)
+  } finally { await app.close() }
+}
+
+async function caseAddProject() {
+  const dirs = freshDirs('add-project')
+  const settingsPath = join(dirs.userData, 'settings.json')
+  const trustPath = join(dirs.agent, 'trust.json')
+  const plain = join(dirs.base, 'plain-folder')
+  const trusted = join(dirs.base, 'trusted-folder')
+  const restricted = join(dirs.base, 'restricted-folder')
+  mkdirSync(plain)
+  for (const folder of [trusted, restricted]) {
+    mkdirSync(join(folder, '.pi', 'extensions'), { recursive: true })
+    writeFileSync(join(folder, '.pi', 'extensions', 'fixture.ts'),
+      "export default pi => pi.registerCommand('project-add-fixture', { description: 'isolated test', handler: async () => {} })\n")
+  }
+  writeFileSync(settingsPath, JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [], autoCheckUpdates: false }))
+  const realPi = process.env.PI_TEST_PI
+  const { app, page } = await launch(dirs, 'default', realPi ? { PI_DESKTOP_PI_PATH: realPi, PI_OFFLINE: '1' } : {})
+  try {
+    const settings = () => JSON.parse(readFileSync(settingsPath, 'utf8'))
+    const trust = () => JSON.parse(readFileSync(trustPath, 'utf8'))
+    const modal = (title) => page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: title, exact: true }) })
+    const setup = modal('添加项目')
+    const confirmation = modal('信任此项目？')
+    const choose = async (folder) => {
+      await app.evaluate(({ dialog }, path) => {
+        dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] })
+      }, folder)
+      await page.locator('.project-add').click()
+      await setup.getByRole('button', { name: '选择文件夹', exact: true }).click()
+      await setup.getByRole('button', { name: '更换文件夹', exact: true }).waitFor()
+    }
+    const showTrust = async (name) => {
+      await setup.getByRole('textbox', { name: '项目名称' }).fill(name)
+      await setup.getByRole('button', { name: '添加项目', exact: true }).click()
+      await confirmation.waitFor()
+    }
+    const hasFixtureCommand = async () => page.evaluate(async () => {
+      const { data } = await window.pi.command({ type: 'get_commands' })
+      return data?.commands.some((command) => command.name === 'project-add-fixture')
+    })
+    await choose(plain)
+    check('选择文件夹后预填目录名，尚未创建项目', await setup.getByRole('textbox', { name: '项目名称' }).inputValue() === 'plain-folder' && settings().workspaces.length === 0)
+    await showTrust('待取消项目')
+    check('首次添加普通文件夹也会确认信任', await confirmation.isVisible() && !existsSync(trustPath))
+    await confirmation.getByRole('button', { name: '返回', exact: true }).click()
+    check('从信任确认返回时保留项目名称', await setup.getByRole('textbox', { name: '项目名称' }).inputValue() === '待取消项目')
+    await setup.getByRole('button', { name: '取消', exact: true }).click()
+    check('取消添加不写入项目或信任', settings().workspaces.length === 0 && !existsSync(trustPath))
+
+    await choose(trusted)
+    await showTrust('经营分析')
+    check('信任弹窗显示项目资源，确认前未启动项目', await confirmation.getByText('.pi/extensions', { exact: true }).isVisible() && settings().workspaces.length === 0)
+    await confirmation.getByRole('button', { name: '信任并加载', exact: true }).click()
+    await confirmation.waitFor({ state: 'hidden' })
+    await page.locator('.project-row.active').getByText('经营分析', { exact: true }).waitFor()
+    check('保存名称与信任并进入项目', settings().workspaceNames[trusted] === '经营分析' && trust()[trusted] === true &&
+      await page.locator('.topbar-path').innerText() === '经营分析' && !await page.locator('.project-trust-banner').count())
+    if (realPi) check('真实 Pi 在信任后加载项目扩展', await hasFixtureCommand())
+
+    await choose(restricted)
+    await showTrust('只查看文件')
+    await confirmation.getByRole('button', { name: '继续，不加载', exact: true }).click()
+    await confirmation.waitFor({ state: 'hidden' })
+    await page.locator('.project-row.active').getByText('只查看文件', { exact: true }).waitFor()
+    check('拒绝加载后进入项目且不再显示信任横幅', trust()[restricted] === false && !await page.locator('.project-trust-banner').count())
+    if (realPi) check('真实 Pi 在拒绝后跳过项目扩展', !await hasFixtureCommand())
+    await page.locator('.project-row.active').hover()
+    await page.locator('.project-row.active .project-remove').click()
+    await page.getByRole('menuitem', { name: '项目信任', exact: true }).click()
+    const manage = modal('项目信任')
+    await manage.getByText('项目扩展未启用', { exact: true }).waitFor()
+    await manage.getByRole('button', { name: '关闭', exact: true }).last().click()
+
+    await choose(trusted)
+    await setup.getByRole('button', { name: '打开项目', exact: true }).click()
+    await setup.waitFor({ state: 'hidden' })
+    check('重复打开保留名称和已有信任决定', !await confirmation.count() && settings().workspaces.length === 2 && settings().workspaceNames[trusted] === '经营分析')
+    await page.reload()
+    await page.locator('.project-row').getByText('经营分析', { exact: true }).waitFor()
+    check('重开界面后自定义项目名称仍存在', await page.locator('.project-row').getByText('只查看文件', { exact: true }).isVisible())
+  } finally {
+    await app.close()
+  }
+}
+
+async function caseFirstRunSetup() {
+  const dirs = freshDirs('first-run-setup')
+  const { app, page } = await launch(dirs, 'default', {
+    PI_DESKTOP_PI_PATH: join(dirs.base, 'missing-pi'),
+    PATH: '/usr/bin:/bin',
+    SHELL: '/bin/sh',
+    PI_DESKTOP_SKIP_AUTO_INSTALL: '1',
+    PI_DESKTOP_SKIP_SEED: '1'
+  })
+  try {
+    await page.locator('.welcome-setup').waitFor({ timeout: 10000 })
+    check('缺少 pi 时显示首次准备引导', await page.getByText('准备 Pi').isVisible())
+    check('首次准备提供准备与重新检测', await page.getByRole('button', {name:'立即准备'}).isVisible() && await page.getByRole('button', {name:'重新检测'}).isVisible())
+    check('缺少 pi 时不展示打开项目主操作', await page.getByRole('button', {name:'打开项目'}).count() === 0)
+    await page.locator('.welcome-setup').getByRole('button', {name:'重新检测'}).click()
+    await page.getByText('还没有找到 Pi。请先完成准备，或检查设置里的 Pi 路径。').waitFor({ timeout: 5000 })
+    check('重新检测会给出明确错误', true)
+    await page.screenshot({ path: join(dirs.base, 'first-run.png') })
+  } finally { await app.close() }
+}
+
 const CASES = [
+  { tags: ['browser-downloads'], label: 'Browser downloads', run: caseBrowserDownloads },
+  { tags: ['first-run'], label: 'first-run Pi installation', run: caseFirstRunSetup },
+  { tags: ['motion-polish'], label: 'message motion polish', run: caseMotionPolish },
+  { tags: ['project-trust'], label: 'project trust flow', run: caseProjectTrust },
+  { tags: ['add-project'], label: 'project onboarding and trust', run: caseAddProject },
+  { tags: ['file-attachment'], label: 'file attachment composer', run: caseFileAttachment },
+  { tags: ['file-mention'], label: '@file workspace mention', run: caseFileMention },
+  { tags: ['session-branching'], label: 'clone and fork sessions', run: caseSessionBranching },
+  { tags: ['session-search'], label: 'full text session search', run: caseSessionSearch },
+  { tags: ['session-tree'], label: 'session tree view', run: caseSessionTree },
+  { tags: ['provider-oauth'], label: 'provider OAuth provider discovery', run: caseProviderOAuth },
+  { tags: ['provider-auth'], label: 'provider API key storage', run: caseProviderAuth },
+  { tags: ['pi-seed'], label: 'bundled Pi runtime seed', run: caseBundledSeed },
+  { tags: ['general-task-suggestions'], label: 'General task suggestions', run: caseGeneralTaskSuggestions },
+  { tags: ['computer-use-progress-ui'], label: 'Computer Use progress presentation', run: caseComputerUseProgressUi },
+  { tags: ['computer-use-completion'], label: 'Computer Use permission completion', run: caseComputerUsePermissionCompletion },
+  { tags: ['computer-use-permissions'], label: 'Computer Use permission guide', run: caseComputerUsePermissions },
+  { tags: ['computer-use-settings'], label: 'Computer Use settings', run: caseComputerUseSettings },
+  { tags: ['computer-use-package-path'], label: 'Computer Use configured package path', run: caseComputerUsePackagePath },
+  { tags: ['chrome-bridge-guide'], label: 'Chrome bridge setup guide', run: caseChromeBridgeGuide },
+  { tags: ['browser-router'], label: 'browser router status', run: caseBrowserRouter },
+  { tags: ['chrome-bridge-upgrade'], label: 'Chrome bridge upgrade', run: caseChromeBridgeUpgrade },
   { tags: ['language', 'settings'], label: 'language / settings menu', run: caseLanguage },
   { tags: ['composer'], label: 'composer safety (IME, draft)', run: caseComposerSafety },
+  { tags: ['command-registry'], label: 'command registry unavailable', run: caseCommandRegistryUnavailable },
   { tags: ['menu', 'keyboard'], label: 'model menu: scroll + keyboard', run: caseMenuScrollAndKeyboard },
   { tags: ['panel'], label: 'work panel', run: caseWorkPanel },
+  { tags: ['panel-landing'], label: 'empty work panel landing', run: caseWorkPanelLanding },
   { tags: ['browser'], label: 'in-app browser', run: caseBrowser },
   { tags: ['chrome-import', 'browser'], label: 'Chrome cookie import', run: caseChromeImport },
   { tags: ['usage'], label: 'usage trend chart', run: caseUsageTrend },
@@ -2096,19 +3627,35 @@ const CASES = [
   { tags: ['defaults', 'turns'], label: 'default: process visible', run: caseDefaultVisibility },
   { tags: ['rail', 'hover'], label: 'turn rail: slope + preview', run: caseTurnRailPreview },
   { tags: ['composer', 'composer-ui'], label: 'composer: plus + chip order', run: caseComposerLayout },
+  { tags: ['package-inspection'], label: 'package permission preview', run: casePackageInspection },
+  { tags: ['update-download'], label: 'update download entry', run: caseUpdateDownload },
+  { tags: ['jev-settings'], label: 'Jev settings + key storage', run: caseJevSettings },
+  { tags: ['package-catalog'], label: 'npm plugin catalog', run: casePackageCatalog },
+  { tags: ['jev-env'], label: 'Jev child env', run: caseJevEnv },
+  { tags: ['sandbox'], label: 'OS sandbox filesystem guard', run: caseSandbox },
+  { tags: ['proxy-env'], label: 'proxy environment', run: caseProxyEnv },
+  { tags: ['network-settings'], label: 'network and sandbox settings page', run: caseNetworkSettings },
+  { tags: ['update-download-real'], label: 'real update download checksum', run: caseUpdateDownloadReal },
+  { tags: ['work-edit-commit'], label: 'work panel edit + git commit', run: caseWorkEditCommit },
   { tags: ['skills', 'plugins'], label: 'skills & plugins page', run: caseSkillsPage },
   { tags: ['schedules'], label: 'scheduled tasks', run: caseSchedules },
   { tags: ['schedules', 'schedules-recovery'], label: 'scheduled task restart recovery', run: caseScheduleRecovery },
   { tags: ['schedules', 'schedules-interrupted'], label: 'scheduled run interrupted by quit', run: caseScheduleInterrupted },
+  { tags: ['session-security'], label: 'per-session security status', run: caseSessionSecurity },
+  { tags: ['schedules', 'schedules-missing-project'], label: 'scheduled task missing project', run: caseScheduleMissingProject },
+  { tags: ['schedules', 'schedules-sandbox'], label: 'scheduled task sandbox', run: caseScheduleSandbox },
   { tags: ['schedules', 'schedules-phase3'], label: 'headless scheduler tick', run: caseScheduleHeadlessTick },
   { tags: ['schedules', 'schedules-phase2'], label: 'cron, timezone, continue session, tools', run: caseScheduleAdvanced },
   { tags: ['schedules', 'schedules-failures'], label: 'consecutive failures pause', run: caseScheduleFailures },
   { tags: ['schedules', 'schedules-event'], label: 'file-change trigger', run: caseScheduleEvent },
   { tags: ['sidebar', 'scratch'], label: 'temporary chat without project', run: caseScratchChat },
+  { tags: ['scratch-startup'], label: 'temporary chat startup surface', run: caseScratchStartup },
+  { tags: ['scratch-trust'], label: 'temporary chat restoration and project trust', run: caseScratchRestoreTrust },
   { tags: ['schedules', 'schedules-slash'], label: '/schedule composer command', run: caseScheduleSlash },
   { tags: ['schedules', 'schedules-bridge'], label: 'chat scheduling bridge CLI', run: caseScheduleBridge },
   { tags: ['schedules', 'schedules-notice'], label: 'one-time completion notice', run: caseScheduleNotice },
   { tags: ['sidebar', 'sidebar-layout'], label: 'sidebar: projects + recent', run: caseSidebarLayout },
+  { tags: ['sidebar', 'project-removal'], label: 'remove project from sidebar', run: caseProjectRemoval },
   { tags: ['fold', 'autofold'], label: 'auto fold on answer', run: caseAutoFoldOnAnswer },
   { tags: ['menu', 'wheel', 'scroll'], label: 'wheel isolation', run: caseWheelIsolation },
   { tags: ['menu', 'typing'], label: 'menu typing', run: caseMenuTyping },

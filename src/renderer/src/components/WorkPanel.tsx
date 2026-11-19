@@ -2,6 +2,7 @@ import { useTranslation } from '../i18n'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { FileText, Files, FolderTree, Globe2, Image, Maximize2, Minimize2, Plus, SquareTerminal, X } from 'lucide-react'
 import clsx from 'clsx'
+import type { Settings } from '@shared/types'
 import { useApp } from '../store'
 import { ChangesTab } from './work/ChangesTab'
 import { FilesTab } from './work/FilesTab'
@@ -9,12 +10,13 @@ import { TerminalTab } from './work/TerminalTab'
 import { ArtifactsTab } from './work/ArtifactsTab'
 import { BrowserTab, type BrowserRequest } from './work/BrowserTab'
 import { FilePreview } from './work/FilePreview'
-import { Popover } from './ui'
+import { WorkHome } from './work/WorkHome'
 import { baseName } from '../lib/format'
 
-type TabId = 'changes' | 'files' | 'terminal' | 'artifacts' | 'browser'
+type TabId = 'home' | 'changes' | 'files' | 'terminal' | 'artifacts' | 'browser'
 
 const TABS: { id: TabId; label: string; icon: typeof Files }[] = [
+  { id: 'home', label: '新标签页', icon: Globe2 },
   { id: 'changes', label: '变更', icon: Files },
   { id: 'files', label: '文件', icon: FolderTree },
   { id: 'terminal', label: '终端', icon: SquareTerminal },
@@ -28,22 +30,42 @@ const DEFAULT_WIDTH = 360
 /** Dragging narrower than this and releasing collapses the panel. */
 const COLLAPSE_AT = 240
 
-export function WorkPanel(): ReactNode {
+function restoreTabs(settings: Settings): TabId[] {
+  const saved = settings.workPanelTabs ?? (settings.workPanelTab ? [settings.workPanelTab] : [])
+  const valid = saved.filter((id) => TABS.some((tab) => tab.id === id))
+  const tabs = [...new Set(valid)]
+  if (!tabs.length || (tabs.length === 1 && tabs[0] === 'files')) tabs.push('home')
+  return tabs
+}
+
+function restoreSelection(tabs: TabId[], preferred?: TabId): TabId {
+  if (tabs.includes('home') && tabs.every((tab) => tab === 'home' || tab === 'files')) return 'home'
+  return preferred && tabs.includes(preferred) ? preferred : tabs[0]
+}
+
+export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: string | null) => void}): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
   const open = state.settings.workPanelOpen === true
   const storedWidth = state.settings.workPanelWidth ?? DEFAULT_WIDTH
-  const preferredTab = state.settings.workPanelTab ?? 'changes'
   const [width, setWidth] = useState(storedWidth)
   const [maximized, setMaximized] = useState(false)
-  const [tabs, setTabs] = useState<TabId[]>(() => {
-    const saved = state.settings.workPanelTabs?.filter((id, index, all) => TABS.some((item) => item.id === id) && all.indexOf(id) === index)
-    return saved?.length ? saved : ['changes']
-  })
+  const [tabs, setTabs] = useState<TabId[]>(() => restoreTabs(state.settings))
+  const [preferredTab, setPreferredTab] = useState(() => restoreSelection(tabs, state.settings.workPanelTab))
   const [fileTabs, setFileTabs] = useState<string[]>([])
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [browserRequest, setBrowserRequest] = useState<BrowserRequest | null>(null)
   const [browserTitle, setBrowserTitle] = useState('')
+  const [followTurn, setFollowTurn] = useState<string | null>(null)
+  const turnKey = (state.sessionPath ?? state.workspace ?? '') + '/' + state.turnStartedAt
+  let taskDoc: string | undefined
+  if (state.streaming) for (const run of Object.values(state.toolRuns)) {
+    if (run.startedAt < state.turnStartedAt || run.status !== 'done') continue
+    if (run.name === 'computer_use_session_open' || run.name === 'computer_use_session_close') taskDoc = undefined
+    const details = run.resultDetails as {backend?: string; documentId?: string} | undefined
+    if (run.name === 'computer_use_session_observe' && details?.backend === 'inapp') taskDoc = details.documentId
+  }
+  const following = followTurn === turnKey
   const cancelResize = useRef<(() => void) | null>(null)
   const tabListRef = useRef<HTMLDivElement>(null)
   const workspaceRef = useRef(state.workspace)
@@ -52,13 +74,31 @@ export function WorkPanel(): ReactNode {
   const allTabs = [...tabs, ...fileTabs.map((path) => `file:${path}`)]
   const [visited, setVisited] = useState<Set<TabId>>(() => new Set([builtinTab]))
   const restoredTabs = useRef(false)
+  const wasOpen = useRef(open)
+  const browserSelected = useRef(false)
 
   useEffect(() => {
     if (restoredTabs.current || !state.boot) return
     restoredTabs.current = true
-    const saved = state.boot.settings.workPanelTabs?.filter((id, index, all) => TABS.some((item) => item.id === id) && all.indexOf(id) === index)
-    if (saved?.length) setTabs(saved)
+    const saved = restoreTabs(state.boot.settings)
+    setTabs(saved)
+    setPreferredTab(restoreSelection(saved, state.boot.settings.workPanelTab))
+    // A saved browser tab can outlive its native page when the app restarts.
+    if (saved.length === 1 && saved[0] === 'browser') {
+      void window.pi.browserCurrent().then((browser) => {
+        if (browserSelected.current || browser.url || browser.loading) return
+        setTabs((current) => current === saved ? ['home'] : current)
+      }).catch(() => {})
+    }
   }, [state.boot])
+
+  useEffect(() => {
+    const opening = open && !wasOpen.current
+    wasOpen.current = open
+    if (!opening || fileTabs.length || tabs.some((id) => id !== 'home' && id !== 'files')) return
+    if (!tabs.includes('home')) setTabs([...tabs, 'home'])
+    setPreferredTab('home')
+  }, [open, fileTabs.length, tabs])
 
   useEffect(() => {
     setWidth(storedWidth)
@@ -94,6 +134,7 @@ export function WorkPanel(): ReactNode {
 
   const update = useCallback(
     (patch: { workPanelOpen?: boolean; workPanelWidth?: number; workPanelTab?: TabId; workPanelTabs?: TabId[] }) => {
+      if (patch.workPanelTab) setPreferredTab(patch.workPanelTab)
       void actions.updateSettings(patch)
     },
     [actions]
@@ -101,7 +142,8 @@ export function WorkPanel(): ReactNode {
 
   const closeTab = (id: string): void => {
     if (id === 'browser') {
-      void window.pi.browserClose()
+      if (!taskDoc) void window.pi.browserClose()
+      setFollowTurn(null)
       setBrowserRequest(null)
     }
     if (id.startsWith('file:')) {
@@ -110,21 +152,25 @@ export function WorkPanel(): ReactNode {
       if (activeFile === path) setActiveFile(null)
       return
     }
-    if (tabs.length <= 1) return
     const remaining = tabs.filter((item) => item !== id)
-    const next = id === builtinTab ? remaining[Math.max(0, tabs.indexOf(id as TabId) - 1)] : builtinTab
-    setTabs(remaining)
-    update({ workPanelTabs: remaining, workPanelTab: next })
+    const nextTabs: TabId[] = remaining.length ? remaining : ['home']
+    const next = id === builtinTab ? nextTabs[Math.max(0, tabs.indexOf(id as TabId) - 1)] : builtinTab
+    if (!remaining.length && !activeFile && fileTabs.length) setActiveFile(fileTabs[fileTabs.length - 1])
+    setTabs(nextTabs)
+    update({ workPanelTabs: nextTabs, workPanelTab: next })
   }
 
   const openTab = (id: TabId): void => {
-    const next = tabs.includes(id) ? tabs : [...tabs, id]
+    if (id === 'browser') browserSelected.current = true
+    const retained = id === 'home' ? tabs : tabs.filter(item => item !== 'home')
+    const next = retained.includes(id) ? retained : [...retained, id]
     setTabs(next)
     setActiveFile(null)
     update({ workPanelTabs: next, workPanelTab: id })
   }
 
   const selectTab = (id: string): void => {
+    if (id === 'browser') browserSelected.current = true
     if (id.startsWith('file:')) setActiveFile(id.slice(5))
     else { setActiveFile(null); update({ workPanelTab: id as TabId }) }
   }
@@ -141,16 +187,17 @@ export function WorkPanel(): ReactNode {
       setActiveFile(null)
       setVisited((current) => new Set([...current, 'changes']))
       actions.setWorkPanelOpen(true)
-      void actions.updateSettings({ workPanelTabs: next, workPanelTab: 'changes' })
+      update({ workPanelTabs: next, workPanelTab: 'changes' })
     }
     window.addEventListener('pi:review-request', onReview)
     return () => window.removeEventListener('pi:review-request', onReview)
-  }, [tabs, actions])
+  }, [tabs, actions, update])
 
   useEffect(() => {
     const onOpenBrowser = (event: Event): void => {
       const detail = (event as CustomEvent<{ url: string }>).detail
       if (!detail?.url) return
+      browserSelected.current = true
       const next = tabs.includes('browser') ? tabs : [...tabs, 'browser' as const]
       setTabs(next)
       setActiveFile(null)
@@ -162,11 +209,27 @@ export function WorkPanel(): ReactNode {
         setWidth(targetWidth)
         void actions.updateSettings({ workPanelWidth: targetWidth })
       }
-      void actions.updateSettings({ workPanelTabs: next, workPanelTab: 'browser' })
+      update({ workPanelTabs: next, workPanelTab: 'browser' })
     }
     window.addEventListener('pi:open-browser', onOpenBrowser)
     return () => window.removeEventListener('pi:open-browser', onOpenBrowser)
-  }, [tabs, actions, width])
+  }, [tabs, actions, update, width])
+
+  useEffect(() => {
+    const revealBrowser = (doc?: string | Event): void => {
+      browserSelected.current = true
+      setFollowTurn(doc && doc === taskDoc ? turnKey : null)
+      const next = tabs.includes('browser') ? tabs : [...tabs, 'browser' as const]
+      setTabs(next)
+      setActiveFile(null)
+      setVisited((current) => new Set([...current, 'browser']))
+      actions.setWorkPanelOpen(true)
+      update({ workPanelTabs: next, workPanelTab: 'browser' })
+    }
+    const unsubscribe = window.pi.onBrowserReveal(revealBrowser)
+    window.addEventListener('pi:reveal-browser', revealBrowser)
+    return () => { unsubscribe(); window.removeEventListener('pi:reveal-browser', revealBrowser) }
+  }, [actions, tabs, taskDoc, turnKey, update])
 
   useEffect(() => {
     const onToggleBrowser = (): void => {
@@ -174,6 +237,7 @@ export function WorkPanel(): ReactNode {
         actions.setWorkPanelOpen(false)
         return
       }
+      browserSelected.current = true
       const next = tabs.includes('browser') ? tabs : [...tabs, 'browser' as const]
       setTabs(next)
       setActiveFile(null)
@@ -184,11 +248,11 @@ export function WorkPanel(): ReactNode {
         setWidth(targetWidth)
         void actions.updateSettings({ workPanelWidth: targetWidth })
       }
-      void actions.updateSettings({ workPanelTabs: next, workPanelTab: 'browser' })
+      update({ workPanelTabs: next, workPanelTab: 'browser' })
     }
     window.addEventListener('pi:toggle-browser', onToggleBrowser)
     return () => window.removeEventListener('pi:toggle-browser', onToggleBrowser)
-  }, [actions, open, tab, tabs])
+  }, [actions, open, tab, tabs, update, width])
 
   // Drag locally (instant) and persist once on release. Persisting on every
   // mousemove made the edge lag behind the cursor, which felt like the panel
@@ -241,13 +305,35 @@ export function WorkPanel(): ReactNode {
   const browserActive =
     open &&
     tab === 'browser' &&
+    !state.addProjectOpen &&
     !state.settingsOpen &&
     !state.skillsOpen &&
     !state.schedulesOpen &&
     !state.diagnosticsOpen
 
+  useEffect(() => {
+    let current = true
+    if (browserActive && following && taskDoc) {
+      void window.pi.revealBrowserPage(taskDoc, false).then(shown => {
+        if (current) onExpandedDocument(shown ? taskDoc : null)
+      }).catch(() => { if (current) onExpandedDocument(null) })
+    } else onExpandedDocument(null)
+    return () => { current = false }
+  }, [browserActive, following, taskDoc, onExpandedDocument])
+  useEffect(() => {
+    if (!browserActive) return
+    const pick = (event: Event) => {
+      const doc = (event as CustomEvent<string>).detail
+      if (!doc) return
+      setFollowTurn(doc === taskDoc ? turnKey : null)
+      void window.pi.revealBrowserPage(doc, false)
+    }
+    window.addEventListener('pi:preview-select', pick)
+    return () => window.removeEventListener('pi:preview-select', pick)
+  }, [browserActive, taskDoc, turnKey])
+
   return (
-    <aside className={clsx('work-panel', maximized && 'is-maximized')} style={{ width }} hidden={!open}>
+    <aside className={clsx('work-panel', !open && 'is-closed', maximized && 'is-maximized')} style={{ width: open ? width : 0 }} aria-hidden={!open}>
       <div
         className="work-resize"
         onMouseDown={onDragStart}
@@ -300,7 +386,7 @@ export function WorkPanel(): ReactNode {
               <Icon size={12} />
               <span className="work-tab-label">{label}</span>
             </button>
-            <button className="work-tab-close" onClick={() => closeTab(id)} disabled={!file && tabs.length <= 1}
+            <button className="work-tab-close" onClick={() => closeTab(id)} disabled={id === 'home' && tabs.length === 1}
               aria-label={state.settings.language === 'en' ? `Close ${label} tab` : `关闭${label}标签`}
               title={state.settings.language === 'en' ? `Close ${label} tab` : `关闭${label}标签`}>
               <X size={11} />
@@ -309,17 +395,7 @@ export function WorkPanel(): ReactNode {
           })}
         </div>
         <div className="work-head-actions">
-          <Popover align="right" width={170} trigger={(_open, toggle, expanded) => (
-            <button className="work-icon" onClick={toggle} aria-label={state.settings.language === 'en' ? 'Add work tab' : '添加工作区标签'} title={state.settings.language === 'en' ? 'Add work tab' : '添加工作区标签'} {...expanded}>
-              <Plus size={15} />
-            </button>
-          )}>
-            {(close) => <div className="menu">{TABS.map(({ id, label, icon: Icon }) => (
-              <button key={id} className="menu-item" onClick={() => { openTab(id); close() }}>
-                <Icon size={14} /><span className="menu-item-title">{t(label)}</span>
-              </button>
-            ))}</div>}
-          </Popover>
+          <button className="work-icon" onClick={() => openTab('home')} aria-label={t('新标签页')} title={t('新标签页')}><Plus size={15}/></button>
           <button
             className="work-icon"
             onClick={() => setMaximized((value) => !value)}
@@ -336,6 +412,7 @@ export function WorkPanel(): ReactNode {
       </header>
 
       <div className="work-body">
+        {tab === 'home' && <WorkHome key={state.workspace} openTab={openTab} openFile={openFile} />}
         {(visited.has('changes') || tab === 'changes') && <div className="work-tab-container" hidden={tab !== 'changes'}><ChangesTab /></div>}
         {(visited.has('files') || tab === 'files') && <div className="work-tab-container" hidden={tab !== 'files'}><FilesTab onOpenFile={openFile} /></div>}
         {(visited.has('terminal') || tab === 'terminal') && <div className="work-tab-container" hidden={tab !== 'terminal'}><TerminalTab /></div>}
@@ -344,9 +421,11 @@ export function WorkPanel(): ReactNode {
           <div className="work-tab-container" hidden={tab !== 'browser'}>
             <BrowserTab
               active={browserActive}
+              canFollow={!!taskDoc} following={following} onFollow={enabled => setFollowTurn(enabled ? turnKey : null)}
               request={browserRequest}
               onRequestConsumed={() => setBrowserRequest(null)}
               onTitle={setBrowserTitle}
+              onClose={() => taskDoc ? actions.setWorkPanelOpen(false) : closeTab('browser')}
             />
           </div>
         )}

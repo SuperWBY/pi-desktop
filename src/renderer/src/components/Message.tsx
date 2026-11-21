@@ -11,10 +11,13 @@ import type {
   ToolRun,
   UserMessage
 } from '@shared/types'
-import { formatDuration, timeOfDay } from '../lib/format'
+import { formatElapsedSeconds, timeOfDay } from '../lib/format'
+import { useElapsed } from '../lib/use-elapsed'
 import { Markdown } from './Markdown'
+import { InlineImage } from './ImageLightbox'
 import { ToolCard } from './ToolCard'
-import { ToolGroup } from './ToolGroup'
+import { ToolSequence } from './ToolGroup'
+import { toolGroupKey } from '../lib/process-steps'
 
 /**
  * Streaming text arrives much faster than needed for a readable typewriter
@@ -48,25 +51,31 @@ function useSmoothText(text: string, streaming: boolean, interval = 55): string 
 
 const TextBlockView = memo(function TextBlockView({
   text,
-  streaming
+  streaming,
+  deferLocalImages
 }: {
   text: string
   streaming: boolean
+  deferLocalImages?: boolean
 }): ReactNode {
   const shown = useSmoothText(text, streaming)
   if (!shown.trim()) return null
-  return <Markdown>{shown}</Markdown>
+  return <Markdown streaming={streaming} deferLocalImages={deferLocalImages}>{shown}</Markdown>
 })
 
 function ThinkingBlock({
   text,
   streaming,
   defaultOpen,
+  startedAt,
+  endedAt,
   durationMs
 }: {
   text: string
   streaming: boolean
   defaultOpen: boolean
+  startedAt?: number
+  endedAt?: number
   durationMs?: number
 }): ReactNode {
   const t = useTranslation()
@@ -74,21 +83,7 @@ function ThinkingBlock({
   const mode = state.settings.thinkingDisplay ?? 'summary'
   const [open, setOpen] = useState(mode === 'full' || defaultOpen)
   const manual = useRef(false)
-  const startedAt = useRef<number | undefined>(streaming ? Date.now() : undefined)
-  const [elapsed, setElapsed] = useState<number | undefined>(undefined)
-
-  useEffect(() => {
-    if (!streaming) {
-      setElapsed((value) =>
-        value ?? (startedAt.current ? Date.now() - startedAt.current : undefined)
-      )
-      return
-    }
-    const timer = window.setInterval(() => {
-      if (startedAt.current) setElapsed(Date.now() - startedAt.current)
-    }, 500)
-    return () => window.clearInterval(timer)
-  }, [streaming])
+  const elapsed = useElapsed(startedAt, streaming, 1000)
 
   useEffect(() => {
     if (mode === 'full') setOpen(true)
@@ -97,18 +92,16 @@ function ThinkingBlock({
 
   if (!text.trim() || mode === 'off') return null
 
-  // Readers care how long it thought, not how many lines it wrote. Live runs are
-  // timed here; history falls back to the step duration pi recorded.
-  const thoughtMs = elapsed ?? durationMs
+  const thoughtMs = startedAt !== undefined && endedAt !== undefined ? endedAt - startedAt : durationMs
   const label = streaming
     ? elapsed !== undefined
-      ? `${t('思考中')} ${formatDuration(elapsed)}`
+      ? `${t('思考中')} ${formatElapsedSeconds(elapsed)}`
       : t('思考中')
     : thoughtMs === undefined
       ? t('思考过程')
       : thoughtMs < 1000
         ? t('思考了片刻')
-        : `${t('思考了')} ${formatDuration(thoughtMs)}`
+        : `${t('思考了')} ${formatElapsedSeconds(thoughtMs)}`
 
   return (
     <div className={clsx('thinking', open && 'open')}>
@@ -214,6 +207,7 @@ interface AssistantProps {
   toolRuns: Record<string, ToolRun>
   results: Record<string, ToolResultMessage>
   streaming: boolean
+  deferLocalImages?: boolean
   /** Hide the model/time header (consecutive assistant blocks in the transcript). */
   hideHeader?: boolean
   /** Usage belongs to the turn, not to every tool-only step. */
@@ -224,7 +218,8 @@ function AssistantMessageViewImpl({
   message,
   toolRuns,
   results,
-  streaming
+  streaming,
+  deferLocalImages
 }: AssistantProps): ReactNode {
   const blocks = message.content ?? []
   const text = blocks
@@ -234,43 +229,34 @@ function AssistantMessageViewImpl({
   const hasProse = text.trim().length > 0
   const hasImages = blocks.some((block: ContentBlock) => block.type === 'image')
 
-  // 「read × 5」这种连续同类调用合成一组，避免一轮刷出十几张卡。
   type Segment =
     | { kind: 'block'; block: ContentBlock; index: number }
     | { kind: 'group'; calls: ToolCallBlock[] }
 
   const segments: Segment[] = []
-  let pending: { name: string; calls: ToolCallBlock[]; indexes: number[] } | null = null
+  let pending: { key: string; calls: ToolCallBlock[] } | null = null
 
   const flush = (): void => {
     if (!pending) return
-    if (pending.calls.length >= 2) {
-      segments.push({ kind: 'group', calls: pending.calls })
-    } else {
-      pending.calls.forEach((call, offset) => {
-        segments.push({ kind: 'block', block: call, index: pending?.indexes[offset] ?? 0 })
-      })
-    }
+    segments.push({ kind: 'group', calls: pending.calls })
     pending = null
   }
 
   blocks.forEach((block, index) => {
     if (block.type === 'toolCall') {
       const call = block as ToolCallBlock
-      // Diffs stay one-per-card; bursts of reads/greps are the noisy ones.
-      const groupable = call.name !== 'edit' && call.name !== 'write'
-      if (!groupable) {
+      const key = toolGroupKey(call.name)
+      if (!key) {
         flush()
         segments.push({ kind: 'block', block, index })
         return
       }
-      if (pending && pending.name === call.name) {
+      if (pending?.key === key) {
         pending.calls.push(call)
-        pending.indexes.push(index)
         return
       }
       flush()
-      pending = { name: call.name, calls: [call], indexes: [index] }
+      pending = { key, calls: [call] }
       return
     }
     flush()
@@ -281,11 +267,11 @@ function AssistantMessageViewImpl({
   return (
     <div className={clsx('message assistant-message', streaming && 'is-streaming', !hasProse && !hasImages && 'is-tool-only')}>
       <div className="assistant-body">
-        {segments.map((segment, segmentIndex) => {
+        {segments.map((segment) => {
           if (segment.kind === 'group') {
             return (
-              <ToolGroup
-                key={`group-${segmentIndex}`}
+              <ToolSequence
+                key={`group-${segment.calls[0].id}`}
                 calls={segment.calls}
                 toolRuns={toolRuns}
                 results={results}
@@ -295,15 +281,17 @@ function AssistantMessageViewImpl({
           const block = segment.block
           const index = segment.index
           if (block.type === 'text') {
-            return <TextBlockView key={index} text={block.text} streaming={streaming} />
+            return <TextBlockView key={index} text={block.text} streaming={streaming} deferLocalImages={deferLocalImages} />
           }
           if (block.type === 'thinking') {
             return (
               <ThinkingBlock
                 key={index}
                 text={block.thinking}
-                streaming={streaming}
+                streaming={streaming && block.desktopEndedAt === undefined && index === message.content.length - 1}
                 defaultOpen={false}
+                startedAt={block.desktopStartedAt}
+                endedAt={block.desktopEndedAt}
                 durationMs={message.durationMs}
               />
             )
@@ -314,12 +302,7 @@ function AssistantMessageViewImpl({
           }
           if (block.type === 'image') {
             return (
-              <img
-                key={index}
-                className="md-image"
-                src={`data:${block.mimeType};base64,${block.data}`}
-                alt=""
-              />
+              <InlineImage key={index} src={`data:${block.mimeType};base64,${block.data}`} alt="" />
             )
           }
           return null
@@ -343,7 +326,7 @@ export const AssistantMessageView = memo(function AssistantMessageView(props: As
 }, areMessagePropsEqual)
 
 function areMessagePropsEqual(prev: AssistantProps, next: AssistantProps): boolean {
-  if (prev.message !== next.message || prev.streaming !== next.streaming) return false
+  if (prev.message !== next.message || prev.streaming !== next.streaming || prev.deferLocalImages !== next.deferLocalImages) return false
   const blocks = next.message.content ?? []
   for (const block of blocks) {
     if (block.type === 'toolCall') {
@@ -358,12 +341,14 @@ function areMessagePropsEqual(prev: AssistantProps, next: AssistantProps): boole
 export const AnswerOnly = memo(function AnswerOnly({
   text,
   message,
-  streaming = false
+  streaming = false,
+  deferLocalImages
 }: {
   text: string
   model?: string
   message?: AssistantMessage
   streaming?: boolean
+  deferLocalImages?: boolean
 }): ReactNode {
   const images = (message?.content ?? []).filter(
     (block): block is Extract<ContentBlock, { type: 'image' }> => block.type === 'image'
@@ -372,9 +357,9 @@ export const AnswerOnly = memo(function AnswerOnly({
   return (
     <div className="message assistant-message folded-answer">
       <div className="assistant-body">
-        {text && <TextBlockView text={text} streaming={streaming} />}
+        {text && <TextBlockView text={text} streaming={streaming} deferLocalImages={deferLocalImages} />}
         {images.map((image, index) => (
-          <img key={index} className="md-image" src={`data:${image.mimeType};base64,${image.data}`} alt="" />
+          <InlineImage key={index} src={`data:${image.mimeType};base64,${image.data}`} alt="" />
         ))}
         {message?.errorMessage && (
           <div className="message-error"><AlertTriangle size={14} /><span>{message.errorMessage}</span></div>

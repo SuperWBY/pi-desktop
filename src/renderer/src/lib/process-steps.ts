@@ -1,18 +1,15 @@
 import type { AgentMessage, AssistantMessage, ToolCallBlock } from '@shared/types'
 
-/**
- * A turn's process rendered as a flat list of steps. pi emits one assistant
- * message per tool call, so six `bash` calls in a row arrive as six separate
- * messages with a model header each. Rendering them message-by-message paints
- * a very long execution chain; collapsing same-name neighbours into one step
- * keeps the density Codex / Claude Code have.
- */
 export type ProcessStep =
   | { kind: 'message'; item: AgentMessage; index: number }
-  | { kind: 'calls'; name: string; calls: ToolCallBlock[] }
+  | { kind: 'calls'; calls: ToolCallBlock[] }
 
-/** Diffs stay one-per-card: merging them would hide what actually changed. */
-const KEEP_SINGLE = new Set(['edit', 'write'])
+const workspaceTools = new Set(['read', 'bash', 'grep', 'find', 'ls'])
+
+export function toolGroupKey(name: string): string | null {
+  if (name === 'edit' || name === 'write') return null
+  return workspaceTools.has(name) ? 'workspace-tools' : name
+}
 
 /** Tool-call-only assistant message → the calls it carries, otherwise null. */
 function pureCallsOf(item: AgentMessage): ToolCallBlock[] | null {
@@ -26,20 +23,19 @@ function pureCallsOf(item: AgentMessage): ToolCallBlock[] | null {
 }
 
 /**
- * Collapse a turn into steps. Runs of same-name tool calls merge across
- * messages (and across the tool results between them); anything that carries
- * text, thinking or a diff flushes the run.
+ * Group adjacent workspace actions across messages. Prose, thinking and
+ * individual edits stay in their original places.
  */
 export function buildProcessSteps(
   items: AgentMessage[],
   rendered: Set<string>
 ): ProcessStep[] {
   const steps: ProcessStep[] = []
-  let run: { name: string; calls: ToolCallBlock[] } | null = null
+  let run: { key: string; calls: ToolCallBlock[] } | null = null
 
   const flush = (): void => {
     if (!run) return
-    steps.push({ kind: 'calls', name: run.name, calls: run.calls })
+    steps.push({ kind: 'calls', calls: run.calls })
     run = null
   }
 
@@ -54,13 +50,13 @@ export function buildProcessSteps(
     }
 
     const calls = pureCallsOf(item)
-    const name = calls?.[0]?.name
-    if (calls && name && !KEEP_SINGLE.has(name) && calls.every((call) => call.name === name)) {
-      if (run && run.name === name) {
+    const key = calls && toolGroupKey(calls[0].name)
+    if (calls && key && calls.every((call) => toolGroupKey(call.name) === key)) {
+      if (run?.key === key) {
         run.calls.push(...calls)
       } else {
         flush()
-        run = { name, calls: [...calls] }
+        run = { key, calls: [...calls] }
       }
       return
     }

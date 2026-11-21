@@ -61,7 +61,7 @@ try {
   assert.equal(await page.locator('#go').textContent(), 'Go')
   const bridgePort = bridge.address().port
   await new Promise((resolve) => bridge.close(resolve))
-  const versionCheck = await checkChromeBridge({ port: bridgePort, timeoutMs: 5000, key: pairingKey, expectedVersion:'0.1.13' })
+  const versionCheck = await checkChromeBridge({ port: bridgePort, timeoutMs: 5000, key: pairingKey, expectedVersion:JSON.parse(await readFile(join(extension, 'manifest.json'),'utf8')).version })
   assert.equal(versionCheck.connected, true, 'real extension must answer the connection check')
   assert.equal(versionCheck.versionStatus, 'current', 'authenticated ping reports the running extension version')
   const piSource = await readFile(new URL('../extensions/computer-use/index.ts', import.meta.url), 'utf8')
@@ -73,7 +73,53 @@ try {
   }
   const observed = await run('observe')
   assert.equal(observed.ok, true, JSON.stringify(observed))
-  let observation = observed.result
+  const marker = { tabId: observed.result.tabId, owner: randomUUID() }
+  assert.equal((await run('control', { ...marker, control: 'active' })).ok, true)
+  assert.equal(await page.title(), '🖱 Pi test')
+  const unrelatedPage = await browser.newPage()
+  await unrelatedPage.goto(page.url())
+  await unrelatedPage.bringToFront()
+  assert.equal(await unrelatedPage.title(), 'Pi test', 'the marker must stay on the original tab')
+  const pinnedObservation = await run('observe', { tabId: marker.tabId })
+  assert.equal(pinnedObservation.result.tabId, marker.tabId)
+  assert.equal(pinnedObservation.result.title, 'Pi test', 'control text does not enter observation results')
+  await page.evaluate(() => { document.title = 'Updated page' })
+  await page.waitForFunction(() => document.title === '🖱 Updated page')
+  assert.equal((await run('control', { ...marker, control: 'waiting' })).ok, true)
+  assert.equal(await page.title(), '⏸ Updated page')
+  assert.equal((await run('control', { ...marker, owner: randomUUID(), control: null })).ok, true)
+  assert.equal(await page.title(), '⏸ Updated page', 'a stale owner cannot clear the marker')
+  assert.equal((await run('control', { ...marker, control: null })).ok, true)
+  assert.equal(await page.title(), 'Updated page')
+  await unrelatedPage.close()
+  await page.bringToFront()
+  console.log('PASS Chrome tab marker follows its tab and restores the latest page title')
+  assert.equal(observed.result.interaction.blocker, 'verification', 'a visible OTP requires handoff')
+  await page.evaluate(() => {
+    document.querySelectorAll('input[type="password"],textarea[autocomplete]').forEach(field => { field.hidden = true })
+    const link = document.createElement('a')
+    link.id = 'navigation'
+    link.href = '/help'
+    link.textContent = 'Help'
+    document.body.append(link)
+  })
+  let observation = (await run('observe')).result
+  const preview = await run('preview', observation)
+  assert.ok(preview.ok && /^data:image\/jpeg;base64,/.test(preview.result.image), `visible task tab should provide a JPEG preview: ${JSON.stringify({ok:preview.ok,error:preview.error})}`)
+  const otherTab = await browser.newPage()
+  await otherTab.goto(page.url())
+  await otherTab.bringToFront()
+  assert.equal((await run('preview', observation)).ok, false, 'do not capture an unrelated active tab')
+  await otherTab.close()
+  await page.bringToFront()
+  observation = (await run('observe')).result
+  const navigation = observation.candidates.find(candidate => candidate.name === 'Help')
+  assert.ok(observation.interaction.navigation.includes(navigation.id))
+  await page.locator('#navigation').evaluate(el => el.download = 'file')
+  assert.equal((await run('act',{...observation,action:{type:'click',interaction:'navigation',candidateId:navigation.id}})).ok,false,'navigation grant must be rechecked before the click')
+  await page.locator('#navigation').evaluate(el => el.remove())
+  await page.evaluate(() => document.querySelectorAll('input[type="password"],textarea[autocomplete]').forEach(field => { field.hidden = false }))
+  observation = (await run('observe')).result
   const pageText = await run('read', observation)
   assert.equal(pageText.ok,true,JSON.stringify(pageText))
   assert.ok(pageText.result.text.includes('上传成功') && !pageText.result.text.includes('hidden-secret') && !pageText.result.text.includes('otp-secret'))
@@ -144,6 +190,7 @@ try {
   assert.equal(routed.ok, false, 'changing URL within a document must reject the action')
   assert.equal((await run('read', observation)).ok, false, 'changing URL must reject reading')
   await page.reload()
+  assert.equal((await run('preview', {...observation,url:page.url()})).ok,false,'reloaded document must not use the prior snapshot')
   const replaced = await run('act', { ...observation, url: page.url(), action: { type: 'click', candidateId: button.id } })
   assert.equal(replaced.ok, false, 'reloading a page must reject the previous document')
   assert.equal((await run('read', {...observation,url:page.url()})).ok, false, 'reloading must reject reading a previous document')
@@ -157,13 +204,38 @@ try {
   const registration = stripTypeScriptTypes(piSource.slice(start, end).replace('export default function', 'function') + '\n}')
   const definitions = new Map()
   const Type = new Proxy({}, { get: () => (...args) => ({ args }) })
+  await page.evaluate(() => document.querySelectorAll('input[type="password"],textarea[autocomplete]').forEach(field => { field.style.display = 'none' }))
+  const previewFrames = [], previewTools = new Map()
+  const previewFactory = runInNewContext(`${registration}\ncomputerUse`, { BrowserRouter, judgeWithJev, Type, createBrowserActionJournal: () => undefined, chromeBridgeTask: bridgeTask, bridgeRequest: async (path, value) => { if (path === '/external-preview') previewFrames.push(value); return {ok:true,generation:'test-generation'} }, approvalMode:'always', manualBrowserApproval:false, allowRoutineActions:true, audit:async()=>{}, process:{env:{PI_DESKTOP_BROWSER_BRIDGE_FILE:'fixture'}}, randomUUID, setTimeout, setInterval, clearInterval })
+  previewFactory({registerTool:definition => previewTools.set(definition.name,definition), on:()=>{}})
+  await previewTools.get('computer_use_session_open').execute('preview', {backend:'extension'})
+  const previewObservation = await previewTools.get('computer_use_session_observe').execute('preview', {}, undefined, undefined, {hasUI:false})
+  assert.ok(previewFrames.some(frame => frame.backend === 'extension' && frame.documentId && /^data:image\/jpeg;base64,/.test(frame.image ?? '')), 'real Chrome task should publish the observed tab screenshot')
+  assert.ok(!JSON.stringify(previewObservation).includes('data:image'), 'preview bytes must not enter the model observation')
+  await previewTools.get('computer_use_session_close').execute()
+  await page.evaluate(() => document.querySelectorAll('input[type="password"],textarea[autocomplete]').forEach(field => { field.style.display = '' }))
   const journal = new BrowserActionJournal(join(tmp, 'actions.sqlite'))
   let dropGuardReply = false
   const unifiedBridge = async (...args) => { const value=await bridgeTask(...args); if(dropGuardReply && value?.__piGuardRejected){dropGuardReply=false;throw new Error('simulated lost bridge response')} return value }
-  const factory = runInNewContext(`${registration}\ncomputerUse`, { BrowserRouter, judgeWithJev, Type, createBrowserActionJournal: () => journal, chromeBridgeTask: unifiedBridge, approvalMode: 'always', audit: async () => {}, process: { env: {} }, randomUUID })
+  const factory = runInNewContext(`${registration}\ncomputerUse`, { BrowserRouter, judgeWithJev, Type, createBrowserActionJournal: () => journal, chromeBridgeTask: unifiedBridge, approvalMode: 'always', manualBrowserApproval: false, allowRoutineActions: true, audit: async () => {}, process: { env: {} }, randomUUID })
   factory({ registerTool: (definition) => definitions.set(definition.name, definition), on: () => {} })
   const invoke = async (name, params = {}) => definitions.get(name).execute('test', params, undefined, undefined, { ui: { confirm: async () => true } })
   await invoke('computer_use_session_open', { backend: 'extension' })
+  let handoffs = 0
+  const resumed = await definitions.get('computer_use_session_observe').execute('test', {}, undefined, undefined, {
+    hasUI: true,
+    ui: { confirm: async (title, message) => {
+      handoffs++
+      assert.equal(title, 'Computer Use: Sign-in Handoff')
+      assert.deepEqual(JSON.parse(message), { kind: 'verification', host: '127.0.0.1', backend: 'extension' })
+      assert.ok(!message.includes('otp-secret'))
+      await page.evaluate(() => document.querySelectorAll('input[type="password"],textarea[autocomplete]').forEach(field => field.remove()))
+      return true
+    } }
+  })
+  assert.equal(handoffs, 1)
+  assert.equal(resumed.details.paused, false)
+  await assert.rejects(invoke('computer_use_session_act', { candidateId: freshButton.id, type: 'click' }), /observe/i)
   let unified = JSON.parse((await invoke('computer_use_session_observe')).content[0].text)
   assert.ok((await invoke('computer_use_session_read')).content[0].text.includes('上传成功'))
   let unifiedButton = unified.candidates.find((candidate) => candidate.name === 'clicked')

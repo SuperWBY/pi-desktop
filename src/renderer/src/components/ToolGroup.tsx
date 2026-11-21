@@ -1,6 +1,6 @@
 import { useTranslation } from '../i18n'
 import { useState, type ReactNode } from 'react'
-import { ChevronRight } from 'lucide-react'
+import { ChevronRight, ListTree } from 'lucide-react'
 import clsx from 'clsx'
 import type { ToolCallBlock, ToolResultMessage, ToolRun } from '@shared/types'
 import { formatDuration } from '../lib/format'
@@ -8,20 +8,30 @@ import { browserActionResultUnknown, contentText, durationOf, toolPhrases } from
 import { useElapsed } from '../lib/use-elapsed'
 import { ToolCard } from './ToolCard'
 
-/**
- * Collapses a burst of same-name tool calls into one action row
- * ("运行了 3 条命令") — the unit a reader thinks in, not one card per call.
- */
-export function ToolGroup({
+interface ToolSequenceProps {
+  calls: ToolCallBlock[]
+  toolRuns: Record<string, ToolRun>
+  results: Record<string, ToolResultMessage>
+}
+
+export function ToolSequence({ calls, toolRuns, results }: ToolSequenceProps): ReactNode {
+  const [firstOpen, setFirstOpen] = useState(false)
+  const first = calls[0]
+  if (calls.length === 1) {
+    return <ToolCard call={first} run={toolRuns[first.id]} result={results[first.id]}
+      expanded={firstOpen} onExpandedChange={setFirstOpen} />
+  }
+  return <ToolGroup calls={calls} toolRuns={toolRuns} results={results}
+    defaultOpen={firstOpen} firstCallDefaultOpen={firstOpen} />
+}
+
+function ToolGroup({
   calls,
   toolRuns,
   results,
   defaultOpen = false,
   firstCallDefaultOpen = false
-}: {
-  calls: ToolCallBlock[]
-  toolRuns: Record<string, ToolRun>
-  results: Record<string, ToolResultMessage>
+}: ToolSequenceProps & {
   defaultOpen?: boolean
   firstCallDefaultOpen?: boolean
 }): ReactNode {
@@ -53,7 +63,8 @@ export function ToolGroup({
   const elapsed = useElapsed(startedAt, running)
   const duration = running ? elapsed : total
 
-  const label = t(phrases.group)
+  const mixed = calls.some((call) => call.name !== name)
+  const label = t(mixed ? '{count} 项文件与终端操作' : phrases.group)
     .replace('{count}', String(calls.length))
     .replace('{name}', name)
 
@@ -68,6 +79,7 @@ export function ToolGroup({
         <span className="tool-chevron">
           <ChevronRight size={13} />
         </span>
+        {mixed && <span className="tool-icon"><ListTree size={13} /></span>}
         <span className="tool-title">{uncertain ? t('操作结果未知，请核对') : label}</span>
         <span className="tool-status">
           {duration !== undefined && <span className="tool-duration">{formatDuration(duration)}</span>}

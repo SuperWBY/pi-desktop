@@ -7,14 +7,15 @@ import { useApp } from '../../store'
 import { buildTurns } from '../../lib/turns'
 import { collectSessionChanges, type FileChange } from '../../lib/session-changes'
 import { latestReview } from '../../lib/review-focus'
-import { DiffView } from '../Diff'
+import { DiffView, PatchView } from '../Diff'
 import { baseName, shortenPath } from '../../lib/format'
 
 
 export function ChangesTab(): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
-  const [mode, setMode] = useState<'session' | 'workspace'>('session')
+  const [selectedMode, setMode] = useState<'turn' | 'session' | 'workspace'>('session')
+  const [review, setReview] = useState<ReturnType<typeof latestReview>>(null)
   const [git, setGit] = useState<GitStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [openFile, setOpenFile] = useState<string | null>(null)
@@ -26,28 +27,45 @@ export function ChangesTab(): ReactNode {
   const [committing, setCommitting] = useState(false)
 
   const turns = useMemo(
-    () => buildTurns(state.messages, state.toolRuns, {}, -1),
+    () => buildTurns(state.messages, state.toolRuns, false),
     [state.messages, state.toolRuns]
   )
   const sessionFiles = useMemo(() => collectSessionChanges(turns, state.toolRuns, state.workspace ?? ''), [turns, state.toolRuns, state.workspace])
   const handledReview = useRef(0)
+  const selectedTurn = review && review.session === state.sessionPath && review.workspace === state.workspace
+    ? turns.find((turn) => turn.key === review.turnKey)
+    : undefined
+  const turnFiles = useMemo(
+    () => selectedTurn ? collectSessionChanges([selectedTurn], state.toolRuns, state.workspace ?? '') : [],
+    [selectedTurn, state.toolRuns, state.workspace]
+  )
+  const mode = selectedMode === 'turn' && !selectedTurn ? 'session' : selectedMode
 
   useEffect(() => {
     const apply = (): void => {
       const request = latestReview()
       if (!request || request.sequence === handledReview.current || request.session !== state.sessionPath || request.workspace !== state.workspace) return
-      if (!sessionFiles.some((file) => file.path === request.path)) return
+      if (!turns.some((turn) => turn.key === request.turnKey)) return
       handledReview.current = request.sequence
-      setMode('session')
-      setOpenFile(request.path)
-      requestAnimationFrame(() => {
-        document.querySelector<HTMLElement>(`[data-work-file="${CSS.escape(request.path)}"]`)?.scrollIntoView({ block: 'nearest' })
-      })
+      setReview(request)
+      setMode('turn')
+      setHideTests(false)
+      setFullDiff(false)
+      setOpenFile(request.path ?? null)
     }
     window.addEventListener('pi:review-request', apply)
     apply()
     return () => window.removeEventListener('pi:review-request', apply)
-  }, [sessionFiles, state.sessionPath, state.workspace])
+  }, [turns, state.sessionPath, state.workspace])
+
+  useEffect(() => {
+    if (mode !== 'turn' || !review?.path) return
+    const path = review.path
+    const frame = requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(`[data-work-file="${CSS.escape(path)}"]`)?.scrollIntoView({ block: 'nearest' })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [mode, review])
 
   const loadGit = async (): Promise<void> => {
     if (!state.workspace) return
@@ -67,7 +85,9 @@ export function ChangesTab(): ReactNode {
   }, [mode, state.workspace])
 
   const files =
-    mode === 'session'
+    mode === 'turn'
+      ? turnFiles
+      : mode === 'session'
       ? sessionFiles
       : (git?.files ?? []).map((file) => ({
           path: file.path,
@@ -134,6 +154,11 @@ export function ChangesTab(): ReactNode {
     <div className="work-tab">
       <div className="work-toolbar">
         <div className="work-segment">
+          {selectedTurn && (
+            <button className={clsx(mode === 'turn' && 'active')} onClick={() => setMode('turn')}>
+              {t('本轮')}
+            </button>
+          )}
           <button
             className={clsx(mode === 'session' && 'active')}
             onClick={() => setMode('session')}
@@ -176,14 +201,14 @@ export function ChangesTab(): ReactNode {
         <span className="work-dim">
           {t('{count} 个文件').replace('{count}', String(visible.length))}
           {mode === 'workspace' && git?.branch ? ` · ${git.branch}` : ''}
-          {mode === 'session' && visible.some((file) => file.unmeasuredWrite) ? ` · ${state.settings.language === 'en' ? 'some counts unknown' : '部分行数未知'}` : ''}
+          {mode !== 'workspace' && visible.some((file) => file.unmeasuredWrite) ? ` · ${t('部分行数未知')}` : ''}
         </span>
       </div>
 
       {visible.length === 0 && (
         <div className="work-empty">
-          {mode === 'session'
-            ? t('本次会话还没有改动文件。')
+          {mode !== 'workspace'
+            ? t(mode === 'turn' ? '本轮没有可显示的文件变更。' : '本次会话还没有改动文件。')
             : git?.ok
               ? t('工作区是干净的。')
               : t('当前目录不是 git 仓库，或读不到 git 状态。')}
@@ -240,7 +265,7 @@ export function ChangesTab(): ReactNode {
                     )
                   ) : (
                     file.calls.map((call, index) =>
-                      call.name === 'edit' ? (
+                      call.patch ? <PatchView key={index} patch={call.patch} /> : call.name === 'edit' ? (
                         <DiffView
                           key={index}
                           oldText={call.oldText}
@@ -263,13 +288,12 @@ export function ChangesTab(): ReactNode {
                     )
                   )}
                   <div className="work-file-actions">
-                    {mode === 'session' && (
+                    {mode !== 'workspace' && file.calls.some((call) => call.name === 'edit' && !call.patch) && (
                       <button
                         className="settings-button"
                         onClick={() => setFullDiff((value) => !value)}
-                        title={fullDiff ? t('只看上下文') : t('展开全文件')}
                       >
-                        {fullDiff ? t('全文') : '±3'}
+                        {t(fullDiff ? '只看上下文' : '展开片段')}
                       </button>
                     )}
                     <button className="settings-button" onClick={() => void window.pi.openPath(file.path)}>
@@ -283,7 +307,7 @@ export function ChangesTab(): ReactNode {
                     >
                       <FolderSearch size={11} /> {t('在 Finder 中显示')}
                     </button>
-                    {mode === 'session' && file.turnKeys.length > 0 && (
+                    {mode !== 'workspace' && file.turnKeys.length > 0 && (
                       <button
                         className="settings-button"
                         onClick={() => {
@@ -328,7 +352,7 @@ export function ChangesTab(): ReactNode {
           {t('提示：工作区模式需要项目是 git 仓库；本会话模式只看 Pi 的改动。')}
         </p>
       )}
-      {mode === 'session' && visible.length > 0 && (
+      {mode !== 'workspace' && visible.length > 0 && (
         <p className="work-hint">
           {t('数据来自本会话的工具调用参数，可能和磁盘最终状态略有差异。')}
         </p>

@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { agentDir } from './pi-settings'
 import type { JevStatus } from '@shared/types'
@@ -89,12 +89,4 @@ export function jevEnv(): Record<string, string> {
   if (typeof value.model === 'string' && value.model.trim()) env.PI_JEV_MODEL = value.model.trim()
   if (value.sharePageText === true) env.PI_JEV_SHARE_PAGE_TEXT = '1'
   return env
-}
-
-export function jevFile(): string {
-  return filePath()
-}
-
-export function jevExists(): boolean {
-  return existsSync(filePath())
 }

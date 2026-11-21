@@ -1,8 +1,8 @@
 import { useTranslation } from '../i18n'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { FileText, Files, FolderTree, Globe2, Image, Maximize2, Minimize2, Plus, SquareTerminal, X } from 'lucide-react'
+import { FileText, Files, FolderTree, Globe2, Image, Maximize2, Minimize2, MousePointer2, Pause, Plus, SquareTerminal, X } from 'lucide-react'
 import clsx from 'clsx'
-import type { Settings } from '@shared/types'
+import type { BrowserState, Settings } from '@shared/types'
 import { useApp } from '../store'
 import { ChangesTab } from './work/ChangesTab'
 import { FilesTab } from './work/FilesTab'
@@ -32,15 +32,15 @@ const COLLAPSE_AT = 240
 
 function restoreTabs(settings: Settings): TabId[] {
   const saved = settings.workPanelTabs ?? (settings.workPanelTab ? [settings.workPanelTab] : [])
-  const valid = saved.filter((id) => TABS.some((tab) => tab.id === id))
+  const valid = saved.filter((id): id is TabId => TABS.some((tab) => tab.id === id))
   const tabs = [...new Set(valid)]
   if (!tabs.length || (tabs.length === 1 && tabs[0] === 'files')) tabs.push('home')
   return tabs
 }
 
-function restoreSelection(tabs: TabId[], preferred?: TabId): TabId {
+function restoreSelection(tabs: TabId[], preferred?: Settings['workPanelTab']): TabId {
   if (tabs.includes('home') && tabs.every((tab) => tab === 'home' || tab === 'files')) return 'home'
-  return preferred && tabs.includes(preferred) ? preferred : tabs[0]
+  return preferred && preferred !== 'creator' && tabs.includes(preferred) ? preferred : tabs[0]
 }
 
 export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: string | null) => void}): ReactNode {
@@ -54,8 +54,10 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
   const [preferredTab, setPreferredTab] = useState(() => restoreSelection(tabs, state.settings.workPanelTab))
   const [fileTabs, setFileTabs] = useState<string[]>([])
   const [activeFile, setActiveFile] = useState<string | null>(null)
+  const [fileFocus, setFileFocus] = useState<{ path: string; line?: number } | null>(null)
   const [browserRequest, setBrowserRequest] = useState<BrowserRequest | null>(null)
   const [browserTitle, setBrowserTitle] = useState('')
+  const [browserTabs, setBrowserTabs] = useState<Pick<BrowserState, 'documentId' | 'controlledTab' | 'otherTab'>>({})
   const [followTurn, setFollowTurn] = useState<string | null>(null)
   const turnKey = (state.sessionPath ?? state.workspace ?? '') + '/' + state.turnStartedAt
   let taskDoc: string | undefined
@@ -71,11 +73,22 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
   const workspaceRef = useRef(state.workspace)
   const builtinTab = tabs.includes(preferredTab) ? preferredTab : tabs[0]
   const tab = activeFile ? `file:${activeFile}` : builtinTab
-  const allTabs = [...tabs, ...fileTabs.map((path) => `file:${path}`)]
+  const { controlledTab, otherTab } = browserTabs
+  const separateControl = controlledTab && (otherTab || !tabs.includes('browser'))
+  const allTabs = [...tabs, ...(separateControl ? ['browser:controlled'] : []), ...fileTabs.map((path) => `file:${path}`)]
+  const selectedTab = separateControl && tab === 'browser' && browserTabs.documentId === controlledTab.documentId ? 'browser:controlled' : tab
   const [visited, setVisited] = useState<Set<TabId>>(() => new Set([builtinTab]))
   const restoredTabs = useRef(false)
   const wasOpen = useRef(open)
   const browserSelected = useRef(false)
+
+  useEffect(() => {
+    let current = true
+    const receive = ({ documentId, controlledTab, otherTab }: BrowserState): void => setBrowserTabs({ documentId, controlledTab, otherTab })
+    const unsubscribe = window.pi.onBrowserState(value => { current = false; receive(value) })
+    void window.pi.browserCurrent().then(value => { if (current) receive(value) }).catch(() => {})
+    return () => { current = false; unsubscribe() }
+  }, [])
 
   useEffect(() => {
     if (restoredTabs.current || !state.boot) return
@@ -130,6 +143,7 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
     workspaceRef.current = state.workspace
     setFileTabs([])
     setActiveFile(null)
+    setFileFocus(null)
   }, [state.workspace])
 
   const update = useCallback(
@@ -142,7 +156,7 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
 
   const closeTab = (id: string): void => {
     if (id === 'browser') {
-      if (!taskDoc) void window.pi.browserClose()
+      if (!taskDoc && (!controlledTab || browserTabs.documentId !== controlledTab.documentId)) void window.pi.browserClose()
       setFollowTurn(null)
       setBrowserRequest(null)
     }
@@ -170,15 +184,43 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
   }
 
   const selectTab = (id: string): void => {
+    if (id === 'browser:controlled' && controlledTab) {
+      openTab('browser')
+      setFollowTurn(turnKey)
+      void window.pi.revealBrowserPage(controlledTab.documentId, false)
+      return
+    }
+    if (id === 'browser' && separateControl && otherTab) {
+      setFollowTurn(null)
+      void window.pi.revealBrowserPage(otherTab.documentId, false)
+    }
     if (id === 'browser') browserSelected.current = true
     if (id.startsWith('file:')) setActiveFile(id.slice(5))
     else { setActiveFile(null); update({ workPanelTab: id as TabId }) }
   }
 
-  const openFile = (path: string): void => {
+  const openFile = useCallback((path: string, line?: number): void => {
     setFileTabs((current) => current.includes(path) ? current : [...current, path])
     setActiveFile(path)
-  }
+    setFileFocus({ path, line })
+  }, [])
+
+  useEffect(() => {
+    const onToolFile = (event: Event): void => {
+      const { path, line } = (event as CustomEvent<{ path: string; line?: number }>).detail ?? {}
+      if (!path) return
+      const full = path.startsWith('~/') && state.boot?.home
+        ? state.boot.home + path.slice(1)
+        : /^(?:[\\/]|[A-Za-z]:[\\/])/.test(path)
+          ? path
+          : state.workspace && state.workspace.replace(/[\\/]$/, '') + '/' + path
+      if (!full) return
+      openFile(full, line)
+      actions.setWorkPanelOpen(true)
+    }
+    window.addEventListener('pi:tool-file', onToolFile)
+    return () => window.removeEventListener('pi:tool-file', onToolFile)
+  }, [state.workspace, state.boot?.home, actions, openFile])
 
   useEffect(() => {
     const onReview = (): void => {
@@ -218,7 +260,9 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
   useEffect(() => {
     const revealBrowser = (doc?: string | Event): void => {
       browserSelected.current = true
-      setFollowTurn(doc && doc === taskDoc ? turnKey : null)
+      const target = typeof doc === 'string' ? doc : controlledTab?.state === 'waiting' ? controlledTab.documentId : undefined
+      setFollowTurn(target && (target === taskDoc || target === controlledTab?.documentId) ? turnKey : null)
+      if (typeof doc !== 'string' && target) void window.pi.revealBrowserPage(target, false)
       const next = tabs.includes('browser') ? tabs : [...tabs, 'browser' as const]
       setTabs(next)
       setActiveFile(null)
@@ -229,7 +273,7 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
     const unsubscribe = window.pi.onBrowserReveal(revealBrowser)
     window.addEventListener('pi:reveal-browser', revealBrowser)
     return () => { unsubscribe(); window.removeEventListener('pi:reveal-browser', revealBrowser) }
-  }, [actions, tabs, taskDoc, turnKey, update])
+  }, [actions, tabs, taskDoc, turnKey, update, controlledTab])
 
   useEffect(() => {
     const onToggleBrowser = (): void => {
@@ -262,16 +306,22 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
     cancelResize.current?.()
     event.preventDefault()
     const startX = event.clientX
-    const startWidth = event.currentTarget.parentElement?.getBoundingClientRect().width ?? width
+    const panel = event.currentTarget.parentElement
+    const startWidth = panel?.getBoundingClientRect().width ?? width
     let latest = startWidth
+    let frame = 0
     document.body.classList.add('is-resizing')
 
     const onMove = (moveEvent: MouseEvent): void => {
       latest = Math.max(120, Math.min(MAX_WIDTH, startWidth + (startX - moveEvent.clientX)))
-      setWidth(latest)
+      if (!frame) frame = requestAnimationFrame(() => {
+        frame = 0
+        if (panel) panel.style.width = `${latest}px`
+      })
     }
     const cleanup = (): void => {
       document.body.classList.remove('is-resizing')
+      if (frame) cancelAnimationFrame(frame)
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
       window.removeEventListener('blur', onBlur)
@@ -279,16 +329,21 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
     }
     const onBlur = (): void => {
       cleanup()
+      if (panel) panel.style.width = `${storedWidth}px`
       setWidth(storedWidth)
     }
     const onUp = (): void => {
       cleanup()
       if (latest < COLLAPSE_AT) {
+        if (panel) panel.style.width = `${storedWidth}px`
         setWidth(storedWidth)
         actions.setWorkPanelOpen(false)
         return
       }
-      void actions.updateSettings({ workPanelWidth: Math.round(Math.max(MIN_WIDTH, latest)) })
+      const finalWidth = Math.round(Math.max(MIN_WIDTH, latest))
+      if (panel) panel.style.width = `${finalWidth}px`
+      setWidth(finalWidth)
+      void actions.updateSettings({ workPanelWidth: finalWidth })
     }
 
     window.addEventListener('mousemove', onMove)
@@ -363,7 +418,7 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
         <div className="work-tabs" ref={tabListRef} role="tablist" onKeyDown={(event) => {
           if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
           event.preventDefault()
-          const current = allTabs.indexOf(tab)
+          const current = allTabs.indexOf(selectedTab)
           const next = event.key === 'Home' ? 0 : event.key === 'End' ? allTabs.length - 1 :
             (current + (event.key === 'ArrowRight' ? 1 : -1) + allTabs.length) % allTabs.length
           selectTab(allTabs[next])
@@ -372,25 +427,29 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
           {allTabs.map((id) => {
             const file = id.startsWith('file:') ? id.slice(5) : null
             const item = TABS.find((candidate) => candidate.id === id)
-            const label = file ? baseName(file) : item!.id === 'browser' && browserTitle ? browserTitle : t(item!.label)
-            const Icon = file ? FileText : item!.icon
-            return <div className={clsx('work-tab-item', tab === id && 'active', file && 'is-file')} key={id}>
+            const marker = id === 'browser:controlled' || (id === 'browser' && !separateControl) ? controlledTab : undefined
+            const status = marker && t(marker.state === 'waiting' ? '等你操作' : 'Pi 正在操作此网页')
+            const label = file ? baseName(file) : id === 'browser:controlled' ? controlledTab!.title : item?.id === 'browser' ? (separateControl ? otherTab?.title : browserTitle || marker?.title) || t('浏览器') : t(item!.label)
+            const Icon = marker ? marker.state === 'waiting' ? Pause : MousePointer2 : file ? FileText : item!.icon
+            const selected = selectedTab === id
+            return <div className={clsx('work-tab-item', selected && 'active', file && 'is-file')} key={id}>
             <button
               role="tab"
-              aria-selected={tab === id}
-              aria-label={label}
-              title={file ?? label}
-              className={clsx('work-tab-button', tab === id && 'active')}
+              aria-selected={selected}
+              aria-label={status ? `${label} · ${status}` : label}
+              title={status ? `${label} · ${status}` : file ?? label}
+              className={clsx('work-tab-button', selected && 'active')}
+              data-control={marker?.state}
               onClick={() => selectTab(id)}
             >
               <Icon size={12} />
               <span className="work-tab-label">{label}</span>
             </button>
-            <button className="work-tab-close" onClick={() => closeTab(id)} disabled={id === 'home' && tabs.length === 1}
+            {id !== 'browser:controlled' && <button className="work-tab-close" onClick={() => closeTab(id)} disabled={id === 'home' && tabs.length === 1}
               aria-label={state.settings.language === 'en' ? `Close ${label} tab` : `关闭${label}标签`}
               title={state.settings.language === 'en' ? `Close ${label} tab` : `关闭${label}标签`}>
               <X size={11} />
-            </button>
+            </button>}
             </div>
           })}
         </div>
@@ -421,15 +480,19 @@ export function WorkPanel({onExpandedDocument}: {onExpandedDocument: (doc: strin
           <div className="work-tab-container" hidden={tab !== 'browser'}>
             <BrowserTab
               active={browserActive}
-              canFollow={!!taskDoc} following={following} onFollow={enabled => setFollowTurn(enabled ? turnKey : null)}
+              canFollow={!!taskDoc || !!controlledTab} following={following} onFollow={enabled => setFollowTurn(enabled ? turnKey : null)}
               request={browserRequest}
               onRequestConsumed={() => setBrowserRequest(null)}
               onTitle={setBrowserTitle}
-              onClose={() => taskDoc ? actions.setWorkPanelOpen(false) : closeTab('browser')}
+              onClose={() => taskDoc || controlledTab ? actions.setWorkPanelOpen(false) : closeTab('browser')}
             />
           </div>
         )}
-        {fileTabs.map((path) => <div key={path} className="work-tab-container" hidden={tab !== `file:${path}`}><FilePreview path={path} /></div>)}
+        {fileTabs.map((path) => (
+          <div key={path} className="work-tab-container" hidden={tab !== `file:${path}`}>
+            <FilePreview path={path} focus={fileFocus?.path === path ? fileFocus : null} />
+          </div>
+        ))}
       </div>
     </aside>
   )

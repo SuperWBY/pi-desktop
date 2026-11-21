@@ -6,6 +6,8 @@ import remarkBreaks from 'remark-breaks'
 import rehypeHighlight from 'rehype-highlight'
 import { Check, Copy } from 'lucide-react'
 import { useApp } from '../store'
+import { DiagramPreview } from './DiagramPreview'
+import { isLocalMediaImage } from '../lib/turn-media'
 
 function nodeText(node: ReactNode): string {
   if (node === null || node === undefined || typeof node === 'boolean') return ''
@@ -37,7 +39,11 @@ export function CopyButton({ text, label }: { text: string; label?: string }): R
   )
 }
 
-export const Markdown = memo(function Markdown({ children }: { children: string }): ReactNode {
+export const Markdown = memo(function Markdown({ children, streaming = false, deferLocalImages = false }: {
+  children: string
+  streaming?: boolean
+  deferLocalImages?: boolean
+}): ReactNode {
   const { state, actions } = useApp()
 
   const components: Components = {
@@ -47,7 +53,7 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
         (first as { props?: { className?: string } } | undefined)?.props?.className ?? ''
       const language = /language-([\w+-]+)/.exec(className)?.[1]
       const text = nodeText(children)
-      return (
+      const code = (
         <div className="code-block">
           <div className="code-head">
             <span>{language ?? 'plain'}</span>
@@ -56,6 +62,9 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
           <pre>{children}</pre>
         </div>
       )
+      return !streaming && (language === 'mermaid' || language === 'svg')
+        ? <DiagramPreview source={text} code={code} type={language} />
+        : code
     },
     code: ({ className, children }) => {
       const isBlock = typeof className === 'string' && className.includes('language-')
@@ -89,7 +98,9 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
         <table>{children}</table>
       </div>
     ),
-    img: ({ src, alt }) => <img className="md-image" src={src} alt={alt ?? ''} />
+    img: ({ src, alt }) => typeof src === 'string' && src && (!deferLocalImages || !isLocalMediaImage(src))
+      ? <img className="md-image" src={src} alt={alt ?? ''} />
+      : null
   }
 
   return (

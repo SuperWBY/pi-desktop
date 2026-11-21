@@ -1,4 +1,5 @@
 import { useTranslation } from '../i18n'
+import { useNavigationHistory } from '../lib/use-navigation-history'
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowLeft,
@@ -33,14 +34,13 @@ import type {
   ThinkingLevel,
   BrowserRouterStatus,
   JevStatus,
-  SandboxStatus,
   UpdateInfo,
   UsageRange,
   UsageSummary
 } from '@shared/types'
 import { useApp } from '../store'
 import { formatCost, formatTokens, shortenPath } from '../lib/format'
-import { shortcutKeys } from '../lib/platform'
+import { isMac, shortcutParts } from '../lib/platform'
 import { ALL_THINKING_LEVELS, thinkingOptionsFor } from '../lib/thinking'
 import { Modal, Popover } from './ui'
 import { ChromeImportDialog } from './ChromeImportDialog'
@@ -53,13 +53,15 @@ const SHORTCUTS: { keys: string; label: string }[] = [
   { keys: '⌘N', label: '新建会话' },
   { keys: '⌘O', label: '打开项目' },
   { keys: '⌘B', label: '收起 / 展开侧栏' },
-  { keys: '⌘⇧L', label: '切换主题' },
-  { keys: '⌘⇧E', label: '右侧工作面板' },
-  { keys: '⌘⇧B', label: '应用内浏览器' },
-  { keys: '⌘⇧O', label: '完整记录' },
+  { keys: '⇧⌘L', label: '切换主题' },
+  { keys: '⇧⌘E', label: '右侧工作面板' },
+  { keys: '⇧⌘B', label: '应用内浏览器' },
+  { keys: '⇧⌘O', label: '完整记录' },
   { keys: '⌘.', label: '收起所有轮次' },
   { keys: '⇧⌘.', label: '展开所有轮次' },
   { keys: '⌘,', label: '打开设置' },
+  { keys: '⌘[', label: '返回上一页' },
+  { keys: '⌘]', label: '前进到下一页' },
   { keys: 'Enter', label: '发送消息' },
   { keys: '⇧Enter', label: '换行' },
   { keys: 'Esc', label: '停止运行 / 关闭面板' }
@@ -272,7 +274,7 @@ const NAV: {
         id: 'appearance',
         label: '外观',
         icon: Palette,
-        keywords: ['主题', '深色', '浅色', '外观', 'theme']
+        keywords: ['主题', '深色', '浅色', '跟随系统', '外观', 'theme', 'system']
       },
       {
         id: 'sessions',
@@ -299,9 +301,9 @@ const NAV: {
       },
       {
         id: 'network',
-        label: '网络与沙箱',
+        label: '权限与安全',
         icon: Shield,
-        keywords: ['网络', '网关', '代理', 'proxy', 'http_proxy', 'no_proxy', '沙箱', 'sandbox', '隔离', '域名', '审计', 'audit', '防火墙', '网络访问']
+        keywords: ['联网', '权限', '审批', '自动模式', '手动确认', '完全访问', '沙箱', 'sandbox', '代理', 'proxy', '连接', '诊断', '日志']
       },
       {
         id: 'usage',
@@ -501,8 +503,6 @@ export function SettingsPage(): ReactNode {
   const [jev, setJev] = useState<JevStatus | null>(null)
   const [jevKey, setJevKey] = useState('')
   const [jevBusy, setJevBusy] = useState(false)
-  const [sandbox, setSandbox] = useState<SandboxStatus | null>(null)
-  const [sandboxDomains, setSandboxDomains] = useState((state.settings.sandboxAllowedDomains ?? []).join(', '))
   const [networkProxy, setNetworkProxy] = useState(state.settings.networkProxy ?? '')
   const [networkNoProxy, setNetworkNoProxy] = useState(state.settings.networkNoProxy ?? '')
   const [auditOpen, setAuditOpen] = useState(false)
@@ -541,19 +541,6 @@ export function SettingsPage(): ReactNode {
   }
 
   useEffect(() => { void loadJev() }, [])
-  useEffect(() => {
-    void window.pi.sandboxStatus().then(setSandbox).catch(() => setSandbox({ available: false, reason: '无法读取 sandbox 状态。' }))
-  }, [])
-
-  const saveSandbox = async (patch: Partial<{ sandboxEnabled: boolean; sandboxMode: 'workspace-write' | 'read-only'; sandboxNetwork: 'model' | 'off'; sandboxAllowedDomains: string[] }>): Promise<void> => {
-    await actions.updateSettings(patch)
-    actions.notify('success', t('沙箱设置已保存'), t('新会话生效。'), {
-      label: t('重启会话'),
-      run: () => void actions.restartSession()
-    })
-  }
-
-
   useEffect(() => {
     void refreshRouter()
     // The status is a snapshot; the manual refresh button updates it.
@@ -678,6 +665,8 @@ export function SettingsPage(): ReactNode {
     return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
   }, [state.models, piModels])
 
+  useNavigationHistory({ value: active, key: active, enabled: open,
+    busy: showAdd || Boolean(editingProvider), restore: (next) => { setActive(next); setQuery('') }, animate: '.settings-content-inner' })
   if (!open) return null
 
   const close = (): void => actions.openSettings(false)
@@ -1360,193 +1349,84 @@ export function SettingsPage(): ReactNode {
 
   const renderNetwork = (): ReactNode => (
     <>
-      <div className={clsx('settings-status-summary', state.settings.sandboxEnabled === true ? 'is-protected' : 'is-open')}>
-        <span className="settings-status-icon"><Shield size={16} /></span>
-        <div className="settings-status-copy">
-          <strong>{t(state.settings.sandboxEnabled === true ? '当前：受保护' : '当前：未开启保护')}</strong>
-          <span>
-            {state.settings.sandboxEnabled === true
-              ? `${t(state.settings.sandboxMode === 'read-only' ? '只能读取项目文件' : '可以修改当前项目')} · ${t(state.settings.sandboxNetwork === 'off' ? '完全离线' : '仅访问 AI 服务和允许的网站')}`
-              : t('Pi 可以修改项目文件并访问网络。开启保护后可以限制文件和网络范围。')}
-          </span>
-        </div>
-        <span className={clsx('settings-status-pill', state.settings.sandboxEnabled === true && 'ok')}>
-          {t(state.settings.sandboxEnabled === true ? '已开启' : '未开启')}
-        </span>
-      </div>
-      <p className="settings-section-lead">
-        {t("管理 Pi 任务可以修改哪些文件、访问哪些网络。设置修改后，对新建会话生效。")}
-      </p>
-<Block
-  title={t("运行限制")}
-  query={query}
-  terms={['sandbox', '沙箱', '网络', 'network', 'proxy', '域名', '隔离']}
->
-  <Row
-    title={t("打开保护")}
-    desc={sandbox?.available
-      ? t("打开后，只能修改当前文件夹里的文件，并且只能访问允许的网站。不会影响电脑上的其他应用。")
-      : (sandbox?.reason ?? t("当前平台暂不支持沙箱。"))}
-    query={query}
-  >
-    <Switch
-      label={t("打开保护")}
-      checked={state.settings.sandboxEnabled === true}
-      onChange={(enabled) => void saveSandbox({ sandboxEnabled: enabled })}
-    />
-  </Row>
-  {state.settings.sandboxEnabled === true && <>
-  <Row
-    title={t("文件写入范围")}
-    desc={t("允许 Pi 修改当前项目，还是只能读取文件？无论哪种，Pi 都可以写会话记录和临时文件。")}
-    query={query}
-  >
-    <Select
-      label={t("文件写入范围")}
-      value={state.settings.sandboxMode ?? 'workspace-write'}
-      onChange={(mode) => void saveSandbox({ sandboxMode: mode as 'workspace-write' | 'read-only' })}
-      options={[
-        { value: 'workspace-write', label: t('项目可写') },
-        { value: 'read-only', label: t('项目只读') }
-      ]}
-    />
-  </Row>
-  <Row
-    title={t("网络访问")}
-    desc={t("允许 Pi 连接 AI 服务和指定网站，或完全离线。完全离线时，在线模型也无法使用。")}
-    query={query}
-  >
-    <Select
-      label={t("网络访问")}
-      value={state.settings.sandboxNetwork ?? 'model'}
-      onChange={(network) => void saveSandbox({ sandboxNetwork: network as 'model' | 'off' })}
-      options={[
-        { value: 'model', label: t('仅模型域名') },
-        { value: 'off', label: t('完全关闭') }
-      ]}
-    />
-  </Row>
-  <Row
-    title={t("额外允许的域名")}
-    desc={t("Pi 需要访问其他网站时，在这里填写；多个网站用逗号或换行分隔。")}
-    query={query}
-  >
-    <input
-      className="rename-input sandbox-domains"
-      value={sandboxDomains}
-      placeholder={t('留空即可，多个网站用逗号分隔')}
-      onChange={(event) => setSandboxDomains(event.target.value)}
-      onBlur={() => void saveSandbox({ sandboxAllowedDomains: sandboxDomains.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean) })}
-    />
-  </Row>
-  </>}
-  {state.settings.sandboxEnabled !== true && <p className="settings-note settings-inactive-note">{t('现在没有额外限制。打开保护后，才能限制能改哪些文件、能访问哪些网站。')}</p>}
-</Block>
-<details className="settings-advanced" open={networkAdvanced || (query.trim() !== '' && matches(query, '代理', 'proxy', '网关', '网络代理'))} onToggle={(event) => setNetworkAdvanced(event.currentTarget.open)}>
-  <summary>{t('高级：网络代理')}</summary>
-<Block title={t("网络代理")} query={query} terms={['网络', '代理', '网关', 'proxy', 'no_proxy']}>
-  <Row
-    title={t("代理地址")}
-    desc={t("公司网络或本机代理需要时填写；普通用户留空。沙箱开启时由安全层管理网络，此项主要用于未开启沙箱的对话。")}
-    query={query}
-  >
-    <input
-      className="rename-input sandbox-domains"
-      value={networkProxy}
-      placeholder={t('留空即可')}
-      onChange={(event) => setNetworkProxy(event.target.value)}
-      onBlur={() => void actions.updateSettings({ networkProxy: networkProxy.trim() || undefined })}
-    />
-  </Row>
-  <Row
-    title={t("不使用代理的地址")}
-    desc={t("不经过代理的地址，多个用逗号分隔。")}
-    query={query}
-  >
-    <input
-      className="rename-input sandbox-domains"
-      value={networkNoProxy}
-      placeholder={t('留空即可')}
-      onChange={(event) => setNetworkNoProxy(event.target.value)}
-      onBlur={() => void actions.updateSettings({ networkNoProxy: networkNoProxy.trim() || undefined })}
-    />
-  </Row>
-</Block>
-</details>
-<Block title={t("运行记录")} query={query} terms={['沙箱', '日志', '审计', 'audit']}>
-  <Row
-    title={t("沙箱运行记录")}
-    desc={t("查看 Pi 被允许和阻止了哪些操作。记录保存在本机。")}
-    query={query}
-  >
-    <button
-      className="settings-button"
-      onClick={() => {
-        void window.pi.sandboxAudit().then((lines) => {
-          setAuditLines(lines)
-          setAuditOpen(true)
-        })
-      }}
-    >
-      {t("查看日志")}
-    </button>
-  </Row>
-  <p className="settings-note">{t("沙箱不是虚拟机：电脑界面、辅助功能权限和部分系统服务仍可能被访问。")}</p>
-  <Modal
-    open={auditOpen}
-    title={t("沙箱审计日志")}
-    subtitle={t("最近 200 条事件")}
-    width={720}
-    onClose={() => setAuditOpen(false)}
-    footer={<button className="button ghost" onClick={() => setAuditOpen(false)}>{t("关闭")}</button>}
-  >
-    <pre className="sandbox-audit-log">{auditLines.length ? auditLines.join('\n') : t("还没有沙箱审计记录。")}</pre>
-  </Modal>
-</Block>
-
+      <Block title={t('新对话默认')} query={query} terms={['审批', '权限', '联网', '沙箱', '网络访问']}>
+        <Row
+          title={t('新对话的执行方式')}
+          desc={t('当前对话的执行方式可以在输入框下方切换。')}
+          query={query}
+        >
+          <Select
+            label={t('新对话的执行方式')}
+            value={state.settings.toolApprovalMode === 'all' ? 'all' : 'dangerous'}
+            onChange={(value) => void actions.updateSettings({ toolApprovalMode: value === 'all' ? 'all' : 'dangerous' })}
+            options={[
+              { value: 'dangerous', label: t('自动模式') },
+              { value: 'all', label: t('手动确认') }
+            ]}
+          />
+        </Row>
+        <Row title={t('联网')} desc={t('允许 Pi 连接在线模型和使用联网工具。关闭后，在线模型也不可用。')} query={query}>
+          <Switch
+            label={t('联网')}
+            checked={state.settings.sandboxNetwork !== 'off'}
+            onChange={(enabled) => void actions.updateSettings({ sandboxNetwork: enabled ? 'model' : 'off' })}
+          />
+        </Row>
+      </Block>
+      <details
+        className="settings-advanced"
+        open={networkAdvanced || Boolean(query.trim() && matches(query, '代理', 'proxy', '网络代理', '诊断', '日志'))}
+        onToggle={(event) => setNetworkAdvanced(event.currentTarget.open)}
+      >
+        <summary>{t('连接与诊断')}</summary>
+        <Block title={t('网络代理')} query={query} terms={['代理', 'proxy', '连接', '诊断']}>
+          <Row title={t('代理地址')} desc={t('需要通过公司网关或本机代理连接时填写。')} query={query}>
+            <input
+              className="rename-input sandbox-domains"
+              aria-label={t('代理地址')}
+              value={networkProxy}
+              placeholder={t('留空即可')}
+              onChange={(event) => setNetworkProxy(event.target.value)}
+              onBlur={() => void actions.updateSettings({ networkProxy: networkProxy.trim() || undefined })}
+            />
+          </Row>
+          <Row title={t('不使用代理的地址')} desc={t('不经过代理的地址，多个用逗号分隔。')} query={query}>
+            <input
+              className="rename-input sandbox-domains"
+              aria-label={t('不使用代理的地址')}
+              value={networkNoProxy}
+              placeholder={t('留空即可')}
+              onChange={(event) => setNetworkNoProxy(event.target.value)}
+              onBlur={() => void actions.updateSettings({ networkNoProxy: networkNoProxy.trim() || undefined })}
+            />
+          </Row>
+          <Row title={t('拦截记录')} desc={t('查看最近的文件和联网保护记录。')} query={query}>
+            <button className="settings-button" onClick={() => {
+              void window.pi.sandboxAudit().then((lines) => {
+                setAuditLines(lines)
+                setAuditOpen(true)
+              })
+            }}>{t('查看日志')}</button>
+          </Row>
+        </Block>
+      </details>
+      <Modal
+        open={auditOpen}
+        title={t('拦截记录')}
+        subtitle={t('最近 200 条事件')}
+        width={720}
+        onClose={() => setAuditOpen(false)}
+        footer={<button className="button ghost" onClick={() => setAuditOpen(false)}>{t('关闭')}</button>}
+      >
+        <pre className="sandbox-audit-log">{auditLines.length ? auditLines.join('\n') : t('还没有沙箱审计记录。')}</pre>
+      </Modal>
     </>
   )
 
   const renderTools = (): ReactNode => (
     <>
-      <div className={'settings-status-summary'}>
-        <span className="settings-status-icon"><Shield size={16} /></span>
-        <div className="settings-status-copy">
-          <strong>{t('当前：执行前确认')}</strong>
-          <span>{t(state.settings.toolApprovalMode === 'all' ? '每一步操作都会先询问你。' : '高风险操作会先询问你。')}</span>
-        </div>
-        <span className="settings-status-pill">{t(state.settings.toolApprovalMode === 'all' ? '每一步询问' : '高风险询问')}</span>
-      </div>
-      <Block title={t('会话权限')} query={query} terms={['审批', '确认', '危险', '权限', '完全访问', '自动审核', 'tool approval', 'security']}>
-        <Row
-          title={t('新对话的默认方式')}
-          desc={t('只影响之后新建的对话。正在进行的对话不会跟着改变。')}
-          query={query}
-        >
-          <Select
-            label={t('新对话的默认方式')}
-            value={state.settings.toolApprovalMode ?? 'dangerous'}
-            onChange={(value) => void actions.updateSettings({ toolApprovalMode: value === 'all' ? 'all' : 'dangerous' })}
-            options={[
-              { value: 'dangerous', label: t('通常直接做') },
-              { value: 'all', label: t('每次先问我') }
-            ]}
-          />
-        </Row>
-        <Row
-          title={t('允许使用完全访问')}
-          desc={t('打开后，可以让某一次对话不再逐次询问。那次对话可以修改电脑上的文件并联网。')}
-          query={query}
-        >
-          <Switch
-            label={t('允许使用完全访问')}
-            checked={state.settings.allowFullAccess === true}
-            onChange={(allowed) => void actions.updateSettings({ allowFullAccess: allowed })}
-          />
-        </Row>
-      </Block>
-      <details className="settings-advanced" open>
-        <summary>{t("高级：判断服务与内置工具")}</summary>
+      <details className="settings-advanced" open={Boolean(query.trim() && matches(query, 'jev', '判断', '工具', 'bash', 'read', 'write', 'edit'))}>
+        <summary>{t('开发者设置')}</summary>
       <Block
         title={t("Jev 判断层")}
         query={query}
@@ -1748,15 +1628,24 @@ export function SettingsPage(): ReactNode {
   )
 
   const renderAppearance = (): ReactNode => (
-    <Block title={t("主题")} query={query} terms={['深色', '浅色', '外观']}>
+    <Block title={t("主题")} query={query} terms={['深色', '浅色', '跟随系统', '外观']}>
       <div className="setting-row stack">
         <div className="setting-main">
           <div className="setting-title">{t("界面主题")}</div>
-          <div className="setting-desc">{t("深色为暖调纸墨；浅色适合白天和投屏。")}</div>
+          <div className="setting-desc">{t('选择深色、浅色，或跟随系统外观自动切换。')}</div>
         </div>
         <div className="theme-cards">
           <button
+            className={clsx('theme-card', state.settings.theme === 'system' && 'active')}
+            aria-pressed={state.settings.theme === 'system'}
+            onClick={() => void actions.setTheme('system')}
+          >
+            <span className="theme-preview system"><span /><span /><span /></span>
+            <span className="theme-name">{t('跟随系统')}{state.settings.theme === 'system' && <Check size={13} />}</span>
+          </button>
+          <button
             className={clsx('theme-card', state.settings.theme === 'dark' && 'active')}
+            aria-pressed={state.settings.theme === 'dark'}
             onClick={() => void actions.setTheme('dark')}
           >
             <span className="theme-preview dark">
@@ -1769,6 +1658,7 @@ export function SettingsPage(): ReactNode {
           </button>
           <button
             className={clsx('theme-card', state.settings.theme === 'light' && 'active')}
+            aria-pressed={state.settings.theme === 'light'}
             onClick={() => void actions.setTheme('light')}
           >
             <span className="theme-preview light">
@@ -1829,15 +1719,26 @@ export function SettingsPage(): ReactNode {
     </>
   )
 
-  const renderShortcuts = (): ReactNode => (
+  const renderShortcuts = (): ReactNode => <>
     <Block title={t("快捷键")} query={query} terms={SHORTCUTS.map((item) => item.label)}>
       {SHORTCUTS.map((shortcut) => (
         <Row key={shortcut.keys} title={t(shortcut.label)} query={query}>
-          <kbd>{shortcutKeys(shortcut.keys)}</kbd>
+          <span className="shortcut-keys">
+            {shortcutParts(shortcut.keys).map((part, index) => (
+              <span key={`${part}-${index}`} className="shortcut-key">
+                {index > 0 && !isMac && <span className="shortcut-plus" aria-hidden="true">+</span>}
+                <kbd>{part}</kbd>
+              </span>
+            ))}
+          </span>
         </Row>
       ))}
     </Block>
-  )
+    {window.pi.platform === 'darwin' && <Block title={t('触摸板手势')} query={query} terms={['手势', '触摸板', '返回', '前进']}>
+      <Row title={t('双指左右轻扫')} desc={t('向右轻扫返回，向左轻扫前进。提示板块随滑动距离逐渐拉出、变清晰；松手前可回拉取消。')} query={query} />
+      <Row title={t('滚动保持系统行为')} desc={t('双指上下滚动，以及代码块、表格中的横向滚动照常使用；弹窗和输入框内不触发翻页。')} query={query} />
+    </Block>}
+  </>
 
   const checkUpdate = async (): Promise<void> => {
     if (updateBusy) return
@@ -2333,7 +2234,7 @@ export function SettingsPage(): ReactNode {
     browser: { title: '网页浏览', render: renderBrowser },
     models: { title: '模型', render: renderModels },
     tools: { title: '工具与技能', render: renderTools },
-    network: { title: '网络与沙箱', render: renderNetwork },
+    network: { title: '权限与安全', render: renderNetwork },
     appearance: { title: '外观', render: renderAppearance },
     sessions: { title: '会话', render: renderSessions },
     usage: { title: '使用情况与费用', render: renderUsage },

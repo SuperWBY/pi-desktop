@@ -9,6 +9,10 @@ import { locatePi } from './pi-locate'
  * Contents/Resources/pi-seed.
  */
 export function seedRoot(): string {
+  // Tests point this at a disposable seed root so they never touch the real
+  // build output (a hard-killed test must not leave the repo misplanted).
+  const override = process.env.PI_DESKTOP_SEED_ROOT
+  if (override) return override
   return app.isPackaged
     ? join(process.resourcesPath, 'pi-seed')
     : join(app.getAppPath(), 'build', 'pi-seed')

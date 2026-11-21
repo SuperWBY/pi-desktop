@@ -1,3 +1,5 @@
+import type { Settings } from './types'
+
 /** Comparison key for workspace paths. Not a path to display or persist. */
 export function canonicalWorkspacePath(input: string): string {
   let path = input.trim().replace(/[/\\]+/g, '/')
@@ -31,4 +33,9 @@ export function isTemporaryWorkspace(path: string | null | undefined, scratchPat
 
 export function looksLikeRawPath(value: string): boolean {
   return value.startsWith('/') || value.startsWith('~') || /^[A-Za-z]:[\\/]/.test(value) || value.includes('/private/var/')
+}
+
+export function projectReadOnly(settings: Settings, cwd: string): boolean {
+  const configured = Object.entries(settings.workspaceReadOnly ?? {}).find(([project]) => pathsEqual(project, cwd))
+  return configured ? configured[1] === true : settings.sandboxMode === 'read-only'
 }

@@ -1,6 +1,6 @@
 import { useTranslation } from '../i18n'
-import { useEffect, useState, type ReactNode } from 'react'
-import { Archive, PanelLeft, PanelRight } from 'lucide-react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { PanelLeft, PanelRight } from 'lucide-react'
 import clsx from 'clsx'
 import { useApp } from '../store'
 import { projectName, shortenPath } from '../lib/format'
@@ -29,11 +29,20 @@ export function TopBar(): ReactNode {
           ? t('New session')
           : 'Pi Desktop'
   })
-  const percent = state.stats?.contextUsage?.percent ?? 0
 
   useEffect(() => {
     setEditing(false)
   }, [state.sessionPath])
+
+  const beginEditing = useCallback((): void => {
+    setValue(state.sessionName ?? '')
+    setEditing(true)
+  }, [state.sessionName])
+
+  useEffect(() => {
+    window.addEventListener('pi:rename-current-session', beginEditing)
+    return () => window.removeEventListener('pi:rename-current-session', beginEditing)
+  }, [beginEditing])
 
   const commit = (): void => {
     setEditing(false)
@@ -67,10 +76,7 @@ export function TopBar(): ReactNode {
           ) : (
             <button
               className="title-button"
-              onClick={() => {
-                setValue(state.sessionName ?? '')
-                setEditing(true)
-              }}
+              onClick={beginEditing}
               title={t("Rename session")}
             >
               {title}
@@ -88,15 +94,6 @@ export function TopBar(): ReactNode {
       </div>
 
       <div className="topbar-right">
-        {percent >= 40 && (
-          <button
-            className={clsx('icon-button', percent > 80 && 'warn')}
-            onClick={() => void actions.compact()}
-            title={t('Compact context ({percent}% used)').replace('{percent}', String(Math.round(percent)))}
-          >
-            <Archive size={15} />
-          </button>
-        )}
         <button
           className={clsx('icon-button', state.settings.workPanelOpen && 'work-panel-toggle-active')}
           onClick={actions.toggleWorkPanel}

@@ -14,18 +14,6 @@ export function relativeTime(timestamp: number, language: 'zh-CN' | 'en' = 'zh-C
   return new Date(timestamp).toLocaleDateString(language, { month: 'short', day: 'numeric' })
 }
 
-export function dayLabel(timestamp: number, language: 'zh-CN' | 'en' = 'zh-CN'): string {
-  const date = new Date(timestamp)
-  const today = new Date()
-  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
-  const day = 86_400_000
-  if (timestamp >= startOfToday) return language === 'en' ? 'Today' : '今天'
-  if (timestamp >= startOfToday - day) return language === 'en' ? 'Yesterday' : '昨天'
-  if (timestamp >= startOfToday - 7 * day) return language === 'en' ? 'Last 7 days' : '最近 7 天'
-  if (timestamp >= startOfToday - 30 * day) return language === 'en' ? 'Last 30 days' : '最近 30 天'
-  return date.toLocaleDateString(language, { month: 'long', year: 'numeric' })
-}
-
 export function formatTokens(value: number | null | undefined): string {
   if (!value || value < 0) return '0'
   if (value < 1000) return String(value)
@@ -103,6 +91,12 @@ export function formatDuration(ms: number | undefined): string {
   const minutes = Math.floor(ms / 60_000)
   const seconds = Math.round((ms % 60_000) / 1000)
   return `${minutes}m ${seconds}s`
+}
+
+export function formatElapsedSeconds(ms: number): string {
+  const seconds = Math.floor(Math.max(0, ms) / 1000)
+  const minutes = Math.floor(seconds / 60)
+  return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`
 }
 
 export function truncate(text: string, length: number): string {

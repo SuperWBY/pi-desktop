@@ -301,7 +301,7 @@ async function main() {
     const schedule = await open('chat')
     await schedule.getByRole('button', { name: '定时任务' }).click()
     await schedule.getByRole('button', { name: '新建任务' }).first().click()
-    await schedule.getByText('要做的事情', { exact: true }).first().waitFor()
+    await schedule.getByText('什么时候做什么？', { exact: true }).first().waitFor()
     await schedule.getByText('更多选项').click()
     await schedule.getByText('使用 cron 表达式').waitFor()
     await shot(schedule, '10-schedule')

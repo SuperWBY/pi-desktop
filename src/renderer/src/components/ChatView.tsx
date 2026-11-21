@@ -165,11 +165,9 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
     setRailPreview(null)
   }
 
-  const streamingIndex = state.streaming ? lastAssistantIndex : -1
   const turns = useMemo(
-    () => buildTurns(state.messages, state.toolRuns, results, streamingIndex),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state.messages, state.toolRuns, results, streamingIndex]
+    () => buildTurns(state.messages, state.toolRuns, state.streaming),
+    [state.messages, state.toolRuns, state.streaming]
   )
 
   const folds = useTurnFolds(state.sessionPath, turns, {
@@ -415,14 +413,14 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
   const streamingMessage =
     lastAssistantIndex >= 0 ? (state.messages[lastAssistantIndex] as AssistantMessage) : null
   const thinkingLive = Boolean(
-    state.streaming &&
+    state.streaming && state.streamingIndex === lastAssistantIndex &&
       streamingMessage?.content?.some(
         (block) => block.type === 'thinking' && block.thinking.trim().length > 0
       )
   )
   const runningTool = Object.values(state.toolRuns).find((run) => run.status === 'running')
   const activity = state.retry
-    ? `${t('Retrying {attempt}/{max}').replace('{attempt}', String(state.retry.attempt)).replace('{max}', String(state.retry.maxAttempts))}${state.retry.errorMessage ? ` — ${state.retry.errorMessage}` : ''}`
+    ? `${t('Retrying {attempt}/{max}').replace('{attempt}', String(state.retry.attempt)).replace('{max}', String(state.retry.maxAttempts))}${state.retry.errorMessage && !state.networkBlock ? ` — ${state.retry.errorMessage}` : ''}`
     : state.compacting
       ? t('Compacting context…')
       : runningTool
@@ -431,7 +429,11 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
             const object = meta.subtitle ? (meta.translateSubtitle ? t(meta.subtitle) : meta.subtitle) : ''
             return [t(toolPhrases(runningTool.name).running), object].filter(Boolean).join(' ')
           })()
-        : t('正在回复')
+        : state.awaitingResponse
+          ? t('正在发送…')
+          : state.streamingIndex < 0 || !streamingMessage?.content?.some((block) => block.type === 'text' && block.text.trim())
+            ? t('等待模型响应…')
+            : t('正在回复')
 
   if (state.status === 'starting' && state.messages.length === 0 && !newChat) {
     if (!showStarting) {
@@ -463,7 +465,7 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
           <h1 className="empty-title">{t('想做点什么')}</h1>
           <div className="empty-suggestions">
             {SUGGESTIONS.map(([label, prompt]) => (
-              <button key={label} type="button" className="empty-suggestion" onClick={() => actions.fillComposer(prompt, true)}>
+              <button key={label} type="button" className="empty-suggestion" onClick={() => actions.fillComposer(prompt, true, true)}>
                 {t(label)}
               </button>
             ))}
@@ -526,11 +528,12 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
               results={results}
               busy={state.streaming}
               fresh={turn.key === freshTurn}
+              completed={!state.streaming || turn !== turns.at(-1)}
             />
           ))}
 
-          {state.streaming && !thinkingLive && !Object.keys(turns.at(-1)?.stats.tools ?? {}).some(name => name.startsWith('computer_use_')) && (
-            <div className="activity">
+          {(state.awaitingResponse || state.streaming) && !thinkingLive && !Object.keys(turns.at(-1)?.stats.tools ?? {}).some(name => name.startsWith('computer_use_')) && (
+            <div className="activity" role="status" aria-live="polite">
               <Spinner size={14} />
               <span>{activity}</span>
             </div>
@@ -561,7 +564,7 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
                 }}
                 className={clsx(
                   'turn-rail-tick',
-                  turn.failed && 'has-error',
+                  !turn.streaming && Boolean(turn.finalMessage?.errorMessage) && 'has-error',
                   turn.streaming && 'is-live',
                   activeTurn === turn.key && 'is-active'
                 )}

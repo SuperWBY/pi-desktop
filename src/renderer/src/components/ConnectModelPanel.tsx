@@ -29,7 +29,7 @@ function modelFor(id: string): string {
 
 function quietError(message: string): string {
   const cleaned = userFacingError(message, '暂时无法登录')
-  if (/服务商|models\.json|pi /i.test(cleaned)) return '请检查接口地址'
+  if (/服务商|models\.json|\bpi /i.test(cleaned)) return '请检查接口地址'
   return cleaned || '暂时无法登录'
 }
 

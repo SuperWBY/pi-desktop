@@ -1,5 +1,5 @@
 import { useTranslation } from '../i18n'
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowLeft,
   Cable,
@@ -16,6 +16,8 @@ import {
 import clsx from 'clsx'
 import type { ConnectorEntry, PackageCatalogEntry, PackageEntry, PackageInspection, SkillEntry } from '@shared/types'
 import { useApp } from '../store'
+import { useNavigationHistory } from '../lib/use-navigation-history'
+import { runPackageWrite } from '../lib/package-operations'
 import { appConnectionName, ConnectionsPanel } from './ConnectionsPanel'
 import { Markdown } from './Markdown'
 import { Modal } from './ui'
@@ -88,7 +90,7 @@ function skillSummary(skill: SkillEntry, t: (text: string) => string): string {
 /** Set before openSkills(true) so the page mounts on the right tab (event alone races mount). */
 let pendingSkillsTab: Tab | null = null
 
-export function requestSkillsTab(tab: Tab): void {
+export function requestSkillsTab(tab: Exclude<Tab, 'plugins'>): void {
   pendingSkillsTab = tab
 }
 
@@ -98,18 +100,20 @@ function takePendingSkillsTab(): Tab | null {
   return tab
 }
 
-export function SkillsPage(): ReactNode {
+export function SkillsPage({ pluginsOnly = false }: { pluginsOnly?: boolean }): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
   // Do not consume pending in useState — Strict Mode can double-invoke and drop connectors.
-  const [tab, setTab] = useState<Tab>('skills')
+  const [tab, setTab] = useState<Tab>(pluginsOnly ? 'plugins' : 'skills')
+  const pageTitle = t(pluginsOnly ? 'Pi 插件' : '技能与工具')
 
   useEffect(() => {
+    if (pluginsOnly) return
     const pending = takePendingSkillsTab()
     if (pending) setTab(pending)
     const onTab = (event: Event): void => {
       const detail = (event as CustomEvent<Tab>).detail
-      if (detail === 'skills' || detail === 'plugins' || detail === 'connectors') {
+      if (detail === 'skills' || detail === 'connectors') {
         // Consume leftover pending so a later sidebar reopen does not restore it.
         pendingSkillsTab = null
         setTab(detail)
@@ -117,7 +121,7 @@ export function SkillsPage(): ReactNode {
     }
     window.addEventListener('pi:skills-tab', onTab)
     return () => window.removeEventListener('pi:skills-tab', onTab)
-  }, [])
+  }, [pluginsOnly])
   const [skills, setSkills] = useState<SkillEntry[]>([])
   const [packages, setPackages] = useState<PackageEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -177,6 +181,7 @@ export function SkillsPage(): ReactNode {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
+      if (!state.skillsOpen) return
       if (event.key !== 'Escape') return
       if (event.defaultPrevented || connectionDialog) return
       if (selected) {
@@ -195,17 +200,21 @@ export function SkillsPage(): ReactNode {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [actions, connectionDialog, installOpen, removeTarget, selected, selectedConnector, selectedPackage])
+  }, [actions, state.skillsOpen, connectionDialog, installOpen, removeTarget, selected, selectedConnector, selectedPackage])
 
+  const openSkillToken = useRef(0)
   const openSkill = useCallback(async (skill: SkillEntry) => {
+    const token = ++openSkillToken.current
     setSelected(skill)
     setContent('')
     setContentLoading(true)
     try {
       const result = await window.pi.readSkill(skill.path)
+      // A slower response for an earlier click must not overwrite the current one.
+      if (token !== openSkillToken.current) return
       setContent(result.content ?? '')
     } finally {
-      setContentLoading(false)
+      if (token === openSkillToken.current) setContentLoading(false)
     }
   }, [])
 
@@ -216,6 +225,19 @@ export function SkillsPage(): ReactNode {
     },
     [actions]
   )
+  useNavigationHistory({ value: { selected, selectedPackage, selectedConnector, tab },
+    isParent: (key) => key.startsWith('list:'),
+    canRestore: (next) => (!next.selected || skills.some((item) => item.path === next.selected!.path)) &&
+      (!next.selectedPackage || packages.some((item) => item.source === next.selectedPackage!.source && item.scope === next.selectedPackage!.scope)) &&
+      (!next.selectedConnector || connectors.some((item) => item.name === next.selectedConnector!.name)),
+    key: selected ? `skill:${selected.path}` : selectedPackage ? `package:${selectedPackage.source}` : selectedConnector ? `connector:${selectedConnector.name}` : `list:${tab}`,
+    enabled: state.skillsOpen && state.skillsSection === 'skills',
+    busy: connectionDialog || installOpen || Boolean(removeTarget),
+    restore: (next) => {
+      setTab(next.tab); setSelectedPackage(next.selectedPackage); setSelectedConnector(next.selectedConnector)
+      if (next.selected) void openSkill(next.selected)
+      else setSelected(null)
+    }, animate: '.navigation-page:not([inert]) .detail-page,.navigation-page:not([inert]) .skills-scroll' })
 
   const visibleSkills = useMemo(() => {
     const text = query.trim().toLowerCase()
@@ -255,7 +277,8 @@ export function SkillsPage(): ReactNode {
     setInstalling(true)
     setProgress([])
     try {
-      const result = await window.pi.installPackage(source, { cwd, local: installLocal })
+      // Serialize with the market: npm and Pi settings share one install directory.
+      const result = await runPackageWrite(() => window.pi.installPackage(source, { cwd, local: installLocal }))
       if (result.ok) {
         actions.notify('success', t('已安装'), source, {
           label: t('重启会话'),
@@ -306,7 +329,7 @@ export function SkillsPage(): ReactNode {
     if (!removeTarget) return
     const target = removeTarget
     setRemoveTarget(null)
-    const result = await window.pi.removePackage(target.source, cwd)
+    const result = await runPackageWrite(() => window.pi.removePackage(target.source, cwd))
     if (result.ok) {
       actions.notify('success', t('已移除'), target.name, {
         label: t('重启会话'),
@@ -321,7 +344,7 @@ export function SkillsPage(): ReactNode {
 
   const update = useCallback(
     async (item: PackageEntry) => {
-      const result = await window.pi.updatePackage(item.source, cwd)
+      const result = await runPackageWrite(() => window.pi.updatePackage(item.source, cwd))
       if (result.ok) {
         actions.notify('success', t('已更新'), item.name)
         await load()
@@ -351,7 +374,7 @@ export function SkillsPage(): ReactNode {
         : null
 
   return (
-    <div className="skills-page" role="dialog" aria-label={t('技能与工具')}>
+    <div className={clsx('skills-page', pluginsOnly && 'plugins-page')} role="dialog" aria-label={pageTitle}>
       <div className="skills-drag" />
       <div className="skills-head">
         <button
@@ -368,14 +391,14 @@ export function SkillsPage(): ReactNode {
         </button>
         {detail ? (
           <div className="skills-crumbs">
-            <span>{t('技能与工具')}</span>
+            <span>{pageTitle}</span>
             <ChevronRight size={12} />
             <span>{detail.kind}</span>
             <ChevronRight size={12} />
             <b>{detail.name}</b>
           </div>
         ) : (
-          <div className="skills-title">{t('技能与工具')}</div>
+          <div className="skills-title">{pageTitle}</div>
         )}
       </div>
 
@@ -643,17 +666,14 @@ export function SkillsPage(): ReactNode {
         </div>
       ) : (
         <>
-          <div className="skills-tabs">
+          {!pluginsOnly && <div className="skills-tabs">
             <button className={clsx('skills-tab', tab === 'skills' && 'active')} onClick={() => setTab('skills')}>
               {t('技能')}
             </button>
             <button className={clsx('skills-tab', tab === 'connectors' && 'active')} onClick={() => setTab('connectors')}>
               {t('应用连接')}
             </button>
-            <button className={clsx('skills-tab', tab === 'plugins' && 'active')} onClick={() => setTab('plugins')}>
-              {t('插件')}
-            </button>
-          </div>
+          </div>}
 
           {tab === 'connectors' ? (
             <ConnectionsPanel

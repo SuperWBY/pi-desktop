@@ -1,3 +1,4 @@
+import { browserInteractionCode } from '../extensions/computer-use/src/browser-interaction.ts'
 #!/usr/bin/env node
 // Deterministic local tool-chain comparison. This is not an autonomous-agent benchmark.
 import { createServer } from 'node:http'
@@ -82,11 +83,11 @@ async function run(kind, iteration, order) {
       await page.getByText('已提交：ORD-2026-002').waitFor({timeout:5000})
       record.steps.push('submit_status')
     } else {
-      const cdp=runInNewContext(`${stripTypeScriptTypes(cdpSource)}\n({ensureCdpPage,releaseCdpSocket,cdpSend,cdpEval,cdpAction,closeCdp,cdpObserveCode})`,{browserChallengeCode,browserTargetGuardCode,browserFileSnapshotCode,homedir,join,spawn,mkdir,unlink,fetch,WebSocket,AbortSignal,setTimeout,clearTimeout,process:{env:{PI_CDP_PORT:String(port)}}})
+      const cdp=runInNewContext(`${stripTypeScriptTypes(cdpSource)}\n({ensureCdpPage,releaseCdpSocket,cdpSend,cdpEval,cdpAction,closeCdp,cdpObserveCode})`,{browserChallengeCode,browserTargetGuardCode,browserInteractionCode,browserFileSnapshotCode,homedir,join,spawn,mkdir,unlink,fetch,WebSocket,AbortSignal,setTimeout,clearTimeout,process:{env:{PI_CDP_PORT:String(port)}}})
       const definitions=new Map()
       const Type=new Proxy({}, {get:()=> (...args)=>({args})})
       journal=new BrowserActionJournal(join(dir,'actions.sqlite'))
-      const factory=runInNewContext(`${registration}\ncomputerUse`,{...cdp,BrowserRouter,browserChallengeCode,browserTargetGuardCode,browserPageTextCode,browserFileHashCode,judgeWithJev,Type,createBrowserActionJournal:()=>journal,approvalMode:'always',audit:async()=>{},process:{env:{}},randomUUID,URL,setTimeout})
+      const factory=runInNewContext(`${registration}\ncomputerUse`,{...cdp,BrowserRouter,browserChallengeCode,browserInteractionCode,browserTargetGuardCode,browserPageTextCode,browserFileHashCode,judgeWithJev,Type,createBrowserActionJournal:()=>journal,approvalMode:'always',manualBrowserApproval:false,allowRoutineActions:false,audit:async()=>{},process:{env:{}},randomUUID,URL,setTimeout})
       factory({registerTool:tool=>definitions.set(tool.name,tool),on:()=>{}})
       const invoke=async(name,params={})=>{record.toolCalls++;return definitions.get(name).execute('benchmark',params,undefined,undefined,{ui:{confirm:async()=>{record.approvalCount++;return true}}})}
       const observe=async(url)=>JSON.parse((await invoke('computer_use_session_observe',url?{url}:{})).content[0].text)

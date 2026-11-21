@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
@@ -10,13 +10,47 @@ const run = promisify(execFile)
 
 export type PiExecResult = { stdout: string; stderr: string }
 
+/**
+ * Single exit for spawning pi child processes without a shell. Prefers the
+ * coding-agent cli.js under ELECTRON_RUN_AS_NODE so no shell wrapper sits
+ * between us and pi: `shell:true` concatenates args unescaped, which breaks
+ * any argument containing spaces and lets user- or model-controlled strings
+ * run as commands on Windows. Returns null when only an unresolvable launcher
+ * exists (Windows without cli.js) — callers must fail closed with an
+ * actionable message instead of falling back to a shell.
+ */
+export function directPiSpawn(
+  piPath: string,
+  args: string[]
+): { executable: string; args: string[]; env: Record<string, string> } | null {
+  const cli = resolvePiCliJs(piPath)
+  if (cli) {
+    return { executable: process.execPath, args: [cli, ...args], env: { ELECTRON_RUN_AS_NODE: '1' } }
+  }
+  if (process.platform === 'win32') return null
+  return { executable: piPath, args, env: {} }
+}
+
 /** Resolve the bundled/managed CLI entry that seed launchers invoke via ELECTRON_RUN_AS_NODE. */
 export function resolvePiCliJs(piPath?: string): string | null {
   const candidates: string[] = []
   if (piPath && piPath !== 'pi') {
-    candidates.push(
-      join(dirname(piPath), 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'bundle', 'cli.js')
-    )
+    // An explicitly selected runtime must never be replaced by the bundled seed.
+    // Resolve npm symlinks and the official managed launcher's version pointer.
+    let selected = piPath
+    try { selected = realpathSync(piPath) } catch { return null }
+    if (/\.[cm]?js$/i.test(selected)) return statSync(selected).isFile() ? selected : null
+    candidates.push(join(dirname(selected), 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'bundle', 'cli.js'))
+    const managed = join(dirname(dirname(selected)), 'install')
+    try {
+      const version = readFileSync(join(managed, 'current-version'), 'utf8').trim()
+      if (version !== '.' && version !== '..' && /^[a-z0-9._+-]+$/i.test(version)) {
+        candidates.push(join(managed, 'releases', version, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'bundle', 'cli.js'))
+      }
+    } catch { /* Custom launchers can still run directly on Unix. */ }
+    return candidates.find(file => {
+      try { return statSync(file).isFile() && statSync(file).size > 64 } catch { return false }
+    }) ?? null
   }
   const seed = seedPiPath()
   if (seed) {

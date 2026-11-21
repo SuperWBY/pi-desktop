@@ -21,7 +21,7 @@ async function main() {
   })
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
-    await page.addInitScript(() => {
+    await page.addInitScript(({ dictationTest, platform }) => {
       let settings = {
         theme: 'dark', language: 'zh-CN', workspaces: ['/work/alpha', '/work/beta'],
         lastWorkspace: '/work/alpha', lastSessionPath: '/session/1', workPanelOpen: true, workPanelWidth: 360,
@@ -82,16 +82,20 @@ async function main() {
       window.sentCommands = []
       const noop = () => () => {}
       window.pi = {
-        onPiInstallProgress: noop, onBrowserReveal: noop, onUpdateAvailable: noop,
+        platform,
+        initialTheme: settings.theme === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : settings.theme,
+        systemTheme: async () => matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+        onSystemTheme: (callback) => { const media = matchMedia('(prefers-color-scheme: dark)'); const change = () => callback(media.matches ? 'dark' : 'light'); media.addEventListener('change', change); return () => media.removeEventListener('change', change) },
+        onPiInstallProgress: noop, onBrowserState: noop, onBrowserReveal: noop, onUpdateAvailable: noop,
+        browserCurrent: async () => ({ documentId: null, controlledTab: null, otherTab: null }),
         onUpdateProgress: noop, onSandboxDomainDenied: noop, onOAuthEvent: noop,
         sandboxStatus: async () => ({ available: false, reason: '测试环境' }),
         sessionSecurity: async () => sessionPermission,
-        setSessionPermission: async ({ permission, files }) => {
+        setSessionPermission: async ({ permission }) => {
           sessionPermission = {
             permission,
             mode: permission === 'full' ? 'never' : permission === 'ask' ? 'all' : 'dangerous',
-            sandboxed: false,
-            ...(permission === 'ask' && files === 'read-only' ? { files: 'read-only' } : {})
+            sandboxed: false
           }
           return sessionPermission
         },
@@ -99,7 +103,7 @@ async function main() {
         countSkills: async () => 0,
         listSchedules: async () => [],
         getSessionNotices: async () => [],
-        bootstrap: async () => ({ settings, home: '/work', piVersion: '1.4.0', electronVersion: '45', appVersion: '0.1.6', piSettings }),
+        bootstrap: async () => { const delay = Number(sessionStorage.getItem('mock-startup-delay') || 0); if (delay) await new Promise(resolve => setTimeout(resolve, delay)); if (sessionStorage.getItem('mock-startup-error')) throw Error('模拟启动失败'); return { settings, home: '/work', piVersion: '1.4.0', electronVersion: '45', appVersion: '0.1.6', piSettings } },
         updatePiSettings: async (patch) => { Object.assign(piSettings, patch); window.savedPiSettings = { ...piSettings }; return piSettings },
         listSessions: async () => [
           { path: '/session/1', id: '1', cwd: '/work/alpha', name: '项目结构', preview: '项目结构', updatedAt: Date.now(), createdAt: Date.now(), messageCount: 2, size: 10 },
@@ -133,7 +137,7 @@ async function main() {
         onRecord: (callback) => { window.emitRecord = callback; return () => {} },
         onStatus: noop, onStderr: noop, onAppEvent: noop, onSettings: noop,
         onScheduleEvent: noop, onScheduleOpen: noop, onSchedulesChanged: noop,
-        gitStatus: async () => ({ files: [] }), gitDiff: async () => '',
+        gitStatus: async () => ({ files: [] }), gitBranch: async () => null, gitDiff: async () => '',
         readDir: async (dir) => dir.endsWith('/nested')
           ? [{ path: `${dir}/nested.txt`, name: 'nested.txt', isDir: false, size: 8 }]
           : [{ path: `${dir}/example.txt`, name: 'example.txt', isDir: false, size: 8 }, { path: `${dir}/nested`, name: 'nested', isDir: true, size: 0 }],
@@ -142,26 +146,174 @@ async function main() {
         notify: async (payload) => { window.lastNotify = payload; return true },
         onNotifyOpen: (callback) => { window.emitNotifyOpen = callback; return () => {} }
       }
+      if (dictationTest) {
+        window.dictationRequests = []
+        window.dictationStops = []
+        window.dictationCancels = []
+        window.pi.dictation = {
+          available: async () => {
+            window.dictationAvailabilityChecked = true
+            return !sessionStorage.getItem('mock-dictation-unavailable')
+          },
+          start: async (id, locale) => {
+            window.dictationRequests.push({ id, locale })
+            window.emitDictation({ id, type: 'recording' })
+          },
+          stop: async (id) => { window.dictationStops.push(id) },
+          cancel: async (id) => { window.dictationCancels.push(id) },
+          openSettings: async (permission) => { window.dictationPermission = permission },
+          onEvent: (callback) => { window.emitDictation = callback; return () => {} }
+        }
+      }
+    }, {
+      dictationTest: process.env.HEADLESS_UI_ONLY === 'dictation',
+      platform: process.env.HEADLESS_UI_PLATFORM || 'darwin'
     })
     const errors = []
     page.on('pageerror', (error) => { errors.push(error.message); console.error(`页面异常: ${error.message}`) })
     await page.goto(`http://127.0.0.1:${server.address().port}/`)
+    if (process.env.HEADLESS_UI_ONLY === 'startup') {
+      const assert = require('node:assert/strict')
+      const shots = path.resolve(__dirname, '../output/startup')
+      fs.mkdirSync(shots, { recursive: true })
+      await page.evaluate(() => sessionStorage.removeItem('mock-startup-delay'))
+      await page.reload()
+      await page.locator('.startup-screen[data-finished="false"]').waitFor({state:'visible'})
+      await page.waitForTimeout(200)
+      assert.equal(await page.locator('.startup-screen[data-finished="false"]').count(), 1, 'Fast startup skipped the mark animation')
+      await page.locator('.startup-screen').waitFor({ state:'detached', timeout:1500 })
+      await page.evaluate(() => sessionStorage.setItem('mock-startup-delay', '1800'))
+      await page.reload()
+      const splash = page.locator('.startup-screen')
+      await splash.waitFor({ state: 'visible' })
+      await splash.evaluate(el => { for (const animation of el.getAnimations({ subtree: true })) { animation.pause(); animation.currentTime = 160 } })
+      await page.screenshot({ path: path.join(shots, 'pixels-scattered.png') })
+      await splash.evaluate(el => { for (const animation of el.getAnimations({ subtree: true })) animation.currentTime = 360 })
+      await page.screenshot({ path: path.join(shots, 'pixels-gathering.png') })
+      await splash.evaluate(el => { for (const animation of el.getAnimations({ subtree: true })) animation.play() })
+      await splash.getByText('正在启动…', { exact: true }).waitFor()
+      assert.ok(await splash.locator('.startup-pixel').count() > 100, 'Pi mark must assemble from many pixels')
+      assert.notEqual(await splash.locator('.startup-logo').evaluate(el => getComputedStyle(el).animationName), 'none')
+      await page.screenshot({ path: path.join(shots, 'dark.png'), animations: 'disabled' })
+      await splash.waitFor({ state: 'detached', timeout: 5000 })
+      await page.waitForSelector('.turn')
+      await page.evaluate(() => { sessionStorage.setItem('mock-settings', JSON.stringify({theme:'light'})); sessionStorage.setItem('mock-startup-delay', '1400') })
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      await page.reload()
+      await splash.waitFor({state:'visible'})
+      await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
+      assert.equal(await splash.locator('.startup-logo').evaluate(el => getComputedStyle(el).animationName), 'none')
+      await page.screenshot({ path: path.join(shots, 'light.png'), animations: 'disabled' })
+      await splash.waitFor({state:'detached', timeout:5000})
+      await page.evaluate(() => { sessionStorage.removeItem('mock-startup-delay'); sessionStorage.setItem('mock-startup-error', '1') })
+      await page.reload()
+      await page.locator('.error-banner').getByText('模拟启动失败').waitFor()
+      await splash.waitFor({state:'detached'})
+      assert.equal(await page.getByRole('button', { name: 'Retry' }).isVisible(), true)
+      await page.evaluate(() => sessionStorage.removeItem('mock-startup-error'))
+      await page.getByRole('button', { name: 'Retry' }).click()
+      await page.waitForSelector('.turn')
+      await splash.waitFor({state:'detached', timeout:2000})
+      if (errors.length) throw Error(`页面异常: ${errors.join('; ')}`)
+      console.log('PASS startup: delayed bootstrap, brand animation, reduced motion, failure recovery and fast launch')
+      return
+    }
     await page.waitForSelector('.project-row').catch(async (error) => {
       throw new Error(`项目列表未加载: ${errors.join('; ') || '无页面异常'}; 内容: ${(await page.locator('body').innerText()).slice(0, 500)}`, { cause: error })
     })
     await page.waitForSelector('.turn')
-    await page.getByRole('button', { name: /保护/ }).click()
-    await page.getByRole('menuitem', { name: '只读', exact: true }).click()
-    await page.getByRole('button', { name: /保护：只读/ }).waitFor()
+    if (process.env.HEADLESS_UI_ONLY === 'dictation') {
+      await require('./dictation-ui.cjs')(page)
+      if (errors.length) throw Error(`页面异常: ${errors.join('; ')}`)
+      return
+    }
+    if (process.env.HEADLESS_UI_ONLY === 'theme') {
+      const assert = require('node:assert/strict')
+      await page.emulateMedia({ colorScheme: 'dark' })
+      await page.locator('.sidebar-footer .settings-entry').click()
+      await page.locator('.settings-nav-item').filter({ hasText: '外观' }).click()
+      const system = page.getByRole('button', { name: '跟随系统', exact: true })
+      await system.click()
+      assert.equal(await system.getAttribute('aria-pressed'), 'true')
+      await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark')
+      await page.emulateMedia({ colorScheme: 'light' })
+      await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
+      assert.equal(await page.evaluate(() => JSON.parse(sessionStorage.getItem('mock-settings')).theme), 'system')
+      await page.screenshot({ path: path.resolve(__dirname, '../output/theme-system.png') })
+      await page.reload()
+      await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
+      await page.waitForSelector('.turn')
+      await page.emulateMedia({ colorScheme: 'dark' })
+      await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark')
+      await page.locator('.sidebar-footer .settings-entry').click()
+      await page.locator('.settings-nav-item').filter({ hasText: '外观' }).click()
+      await page.getByRole('button', { name: '浅色', exact: true }).click()
+      await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
+      await page.emulateMedia({ colorScheme: 'light' })
+      await page.emulateMedia({ colorScheme: 'dark' })
+      assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'light')
+      if (errors.length) throw Error(`页面异常: ${errors.join('; ')}`)
+      console.log('跟随系统主题检查通过：实时切换、重启恢复、手动覆盖与设置状态')
+      return
+    }
+    if (process.env.HEADLESS_UI_ONLY === 'settings-shots') {
+      const shots = path.resolve(__dirname, '../output/settings-shortcuts')
+      fs.mkdirSync(shots, { recursive: true })
+      const openShortcuts = async () => {
+        await page.locator('.sidebar-footer .settings-entry').click()
+        await page.locator('.settings-nav-item').filter({ hasText: '快捷键' }).click()
+        await page.getByText('发送消息', { exact: true }).waitFor()
+      }
+      await openShortcuts()
+      await page.screenshot({ path: path.join(shots, 'dark.png'), animations: 'disabled' })
+      await page.setViewportSize({ width: 900, height: 900 })
+      await page.waitForTimeout(300)
+      await page.screenshot({ path: path.join(shots, 'narrow.png'), animations: 'disabled' })
+      await page.setViewportSize({ width: 1440, height: 900 })
+      await page.evaluate(() => sessionStorage.setItem('mock-settings', JSON.stringify({ ...JSON.parse(sessionStorage.getItem('mock-settings')), theme: 'light' })))
+      await page.reload()
+      await page.waitForSelector('.turn')
+      await openShortcuts()
+      await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
+      await page.screenshot({ path: path.join(shots, 'light.png'), animations: 'disabled' })
+      if (errors.length) throw Error(`页面异常: ${errors.join('; ')}`)
+      console.log('settings-shots: dark / narrow / light 已保存到 output/settings-shortcuts/')
+      return
+    }
+    if (process.env.HEADLESS_UI_ONLY === 'settings-shots-win') {
+      const shots = path.resolve(__dirname, '../output/settings-shortcuts')
+      fs.mkdirSync(shots, { recursive: true })
+      await page.locator('.sidebar-footer .settings-entry').click()
+      await page.locator('.settings-nav-item').filter({ hasText: '快捷键' }).click()
+      await page.getByText('发送消息', { exact: true }).waitFor()
+      await page.screenshot({ path: path.join(shots, 'windows.png'), animations: 'disabled' })
+      if (errors.length) throw Error(`页面异常: ${errors.join('; ')}`)
+      console.log('settings-shots-win: windows.png 已保存')
+      return
+    }
+    await require('./context-usage-ui.cjs')(page)
+    if (process.env.HEADLESS_UI_ONLY === 'context') {
+      if (errors.length) throw Error(`页面异常: ${errors.join('; ')}`)
+      return
+    }
+    // Context tests exercise lifecycle events; restore an isolated renderer for other cases.
+    await page.reload()
+    await page.waitForSelector('.turn')
+    await page.getByRole('button', { name: '自动模式', exact: true }).click()
+    await page.getByRole('menuitemradio', { name: /手动确认/ }).click()
+    await page.getByRole('button', { name: '手动确认', exact: true }).waitFor()
     if ((await page.evaluate(() => JSON.parse(sessionStorage.getItem('mock-settings') || '{}'))).toolApprovalMode === 'all') throw Error('切换当前会话误改了全局默认权限')
-    await page.getByRole('button', { name: /保护：只读/ }).click()
-    await page.getByRole('menuitem', { name: '标准', exact: true }).click()
-    await page.getByRole('button', { name: /保护：标准/ }).waitFor()
-    await page.getByRole('button', { name: '查看并信任' }).click()
-    if (!await page.getByText('/work/alpha/.pi/extensions', { exact: true }).isVisible()) throw Error('信任提示没有显示检测到的资源')
-    await page.getByRole('button', { name: '取消', exact: true }).click()
-    await page.getByRole('button', { name: '收起提示' }).click()
-    if (!await page.getByRole('button', { name: '项目资源待确认' }).isVisible()) throw Error('收起后缺少信任入口')
+    await page.getByRole('button', { name: '手动确认', exact: true }).click()
+    await page.getByRole('menuitemradio', { name: /自动模式/ }).click()
+    await page.getByRole('button', { name: '自动模式', exact: true }).waitFor()
+    if (await page.locator('.project-trust-banner, .project-trust-collapsed').count()) throw Error('对话区仍有项目信任提示')
+    const activeProject = page.locator('.project-row.active')
+    await activeProject.hover()
+    await activeProject.getByRole('button', { name: '项目操作' }).click()
+    await page.getByRole('menuitem', { name: '项目信任', exact: true }).click()
+    const projectTrust = page.getByRole('dialog', { name: '项目信任' })
+    await projectTrust.getByText('/work/alpha/.pi/extensions', { exact: true }).waitFor()
+    await projectTrust.getByRole('button', { name: '取消', exact: true }).click()
     if (await page.locator('.workspace-button, .brand-action').count()) throw Error('侧栏仍有重复的项目或新建会话入口')
     await page.locator('.project-add').click()
     await page.getByRole('heading', { name: '添加项目', exact: true }).waitFor()
@@ -189,7 +341,11 @@ async function main() {
     await page.evaluate(() => window.emitRecord({ type: 'tool_execution_end', toolCallId: 'failed-call', toolName: 'read', isError: true }))
     await page.waitForTimeout(100)
     const errorCount = await page.locator('.turn').filter({ hasText: '测试工具错误' }).locator('.turn-summary-error').innerText()
-    if (errorCount.trim() !== '1') throw Error(`同一工具错误被重复计数: ${errorCount}`)
+    if (errorCount.trim() !== '1 条异常记录') throw Error(`同一工具错误被重复计数: ${errorCount}`)
+    const toolErrorSummary = page.locator('.turn').filter({ hasText: '测试工具错误' }).locator('.turn-summary')
+    if (!await toolErrorSummary.getByText('过程结束', { exact: false }).count() || await toolErrorSummary.evaluate(el => el.classList.contains('has-error'))) throw Error('工具异常被误标为整轮响应中断')
+    const responseErrorSummary = page.locator('.turn').filter({ hasText: '请检查项目结构。' }).locator('.turn-summary')
+    if (!await responseErrorSummary.getByText('响应中断', { exact: false }).count() || !await responseErrorSummary.evaluate(el => el.classList.contains('has-error'))) throw Error('最终响应异常没有被明确提示')
     if (await page.locator('.project-row').count() !== 2 || !await page.getByText('旧项目会话', { exact: true }).count()) throw Error('项目列表或最近对话未显示预期内容')
     await page.locator('.search-box input').fill('Beta 的会话')
     if (await page.locator('.project-row').count() !== 1) throw Error('搜索未隐藏无匹配的项目')
@@ -217,12 +373,10 @@ async function main() {
     if (await page.locator('.attachment').count()) throw Error('切换项目时带入了其他会话的附件')
     await page.locator('.composer-input').fill('beta 的草稿')
     await page.getByRole('button', { name: '在 beta 中新建对话' }).click()
-    await page.waitForTimeout(150)
-    if (await page.locator('.composer-input').inputValue() !== 'beta 的草稿' || !await page.getByText('当前有未发送的草稿', { exact: true }).count()) throw Error('新建会话时未保护未发送草稿')
-    await page.locator('.composer-input').fill('')
-    await page.getByRole('button', { name: '在 beta 中新建对话' }).click()
-    await page.waitForTimeout(150)
-    if (await page.locator('.composer-input').inputValue({ timeout: 5000 }).catch(async (error) => { throw new Error(`新会话输入框未出现: ${(await page.locator('body').innerText()).slice(-700)}`, { cause: error }) })) throw Error('同一项目的新会话继承了之前的草稿')
+    await page.waitForFunction(() => document.querySelector('.composer-input')?.value === '')
+    if (await page.getByText('当前有未发送的草稿', { exact: true }).count()) throw Error('草稿阻止了新建会话')
+    await page.getByText('Beta 的会话', { exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('.composer-input')?.value === 'beta 的草稿')
     await page.getByText('项目结构', { exact: true }).click()
     await page.waitForFunction(() => document.querySelector('.project-row.active .project-row-main span')?.textContent === 'alpha')
     if (await page.locator('.composer-input').inputValue() !== 'alpha 的草稿') throw Error('切回会话未恢复草稿')
@@ -234,9 +388,11 @@ async function main() {
     const liveTurn = page.locator('.turn.is-streaming').last()
     const liveToggle = liveTurn.locator('.turn-summary-main')
     if (await liveToggle.getAttribute('aria-expanded') !== 'true') throw Error('运行中的过程默认应展开')
-    const firstLiveSummary = await liveToggle.getAttribute('title')
-    await page.waitForTimeout(1200)
-    if (await liveToggle.getAttribute('title') === firstLiveSummary) throw Error('运行中耗时没有更新')
+    const firstElapsed = await liveTurn.locator('.turn-elapsed').textContent()
+    await page.waitForFunction((previous) => {
+      const elapsed = document.querySelector('.turn.is-streaming .turn-elapsed')?.textContent
+      return elapsed?.startsWith('执行中 ') && elapsed !== previous
+    }, firstElapsed)
     await liveToggle.click()
     if (await liveToggle.getAttribute('aria-expanded') !== 'false') throw Error('运行中不能收起过程')
     await liveToggle.click()
@@ -282,24 +438,10 @@ async function main() {
     await page.locator('.queue-item.is-guiding').getByText('立即调整', { exact: true }).waitFor()
     await page.locator('.queue-item:not(.is-guiding)').getByText('稍后检查', { exact: true }).waitFor()
     await page.locator('.composer-input').fill('')
-    // Background session switching is handled by the Electron main process;
-    // this single-process renderer stub cannot verify that the old task survives.
-    await page.evaluate(() => {
-      Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => false })
-      window.lastNotify = null
-    })
+    // The Electron background-session test covers native notifications.
     await page.evaluate(() => window.emitRecord({ type: 'agent_settled' }))
-    await page.waitForFunction(() => {
-      const payload = window.lastNotify
-      return payload && typeof payload.title === 'string' && String(payload.body || '').startsWith('已完成')
-    })
-    {
-      const payload = await page.evaluate(() => window.lastNotify)
-      if (payload.title === 'pi 完成了' || /wiki:|[A-Za-z0-9_-]{16,}/.test(payload.body || '')) {
-        throw new Error(`通知仍像旧的原始回复: ${JSON.stringify(payload)}`)
-      }
-      if (!payload.sessionPath) throw new Error('通知缺少 sessionPath，点击无法打开会话')
-    }
+    await page.getByRole('button', { name: '停止', exact: true }).waitFor({ state: 'hidden' })
+    if (await page.locator('.queue-item').count()) throw Error('任务结束后仍显示排队消息')
     await page.waitForTimeout(100)
     await page.evaluate(() => { window.mockStreaming = true })
     await page.getByRole('button', { name: '在 beta 中新建对话' }).click()
@@ -411,11 +553,11 @@ async function main() {
     await page.locator('.settings-search input').first().fill('cdp')
     if (!await page.getByText('独立浏览器', { exact: true }).isVisible()) throw Error('搜索 CDP 应找到独立浏览器')
     await page.locator('.settings-search input').first().fill('')
-    await page.locator('.settings-nav-item').filter({ hasText: '网络与沙箱' }).click()
-    if (!await page.getByRole('heading', { name: '运行限制', exact: true }).isVisible()) throw Error('运行限制说明缺失')
-    if (!await page.getByText('现在没有额外限制。打开保护后，才能限制能改哪些文件、能访问哪些网站。', { exact: true }).isVisible()) throw Error('未开启保护时仍应说明当前没有额外限制')
-    if (await page.getByRole('heading', { name: '网络代理', exact: true }).isVisible()) throw Error('未展开高级选项时不应展示网络代理')
-    await page.getByText('高级：网络代理', { exact: true }).click()
+    await page.locator('.settings-nav-item').filter({ hasText: '权限与安全' }).click()
+    if (!await page.getByRole('heading', { name: '新对话默认', exact: true }).isVisible()) throw Error('新对话默认设置缺失')
+    if (await page.getByRole('switch', { name: '联网', exact: true }).getAttribute('aria-checked') !== 'true') throw Error('联网应默认开启')
+    if (await page.getByRole('heading', { name: '网络代理', exact: true }).isVisible()) throw Error('默认不应展示网络代理')
+    await page.getByText('连接与诊断', { exact: true }).click()
     if (!await page.getByRole('heading', { name: '网络代理', exact: true }).isVisible()) throw Error('展开后应显示网络代理')
     await page.locator('.settings-nav-item').filter({ hasText: '模型' }).click()
     await page.getByRole('button', { name: '添加服务商 / 模型' }).click()

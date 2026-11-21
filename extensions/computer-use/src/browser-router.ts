@@ -1,14 +1,19 @@
 import { randomUUID } from 'node:crypto'
+import { browserHost, type BrowserHandoff, type BrowserInteraction } from './browser-interaction.ts'
 
 export type BrowserBackend = 'inapp' | 'cdp' | 'extension'
 export type BrowserViewport = { width: number; height: number }
 export type BrowserAction = { candidateId: string; type: 'click' | 'type' | 'press'; text?: string; key?: string }
 export type BrowserCandidate = { id: string; role?: string; name?: string; secure?: boolean; [key: string]: unknown }
-export type BrowserObservation = { candidates: BrowserCandidate[]; url?: string; title?: string; [key: string]: unknown }
-export type BrowserAdapter = { observe(url?: string, page?: string, viewport?: BrowserViewport): Promise<BrowserObservation>; readText?(observation: BrowserObservation): Promise<{ text: string; truncated: boolean; requiresHuman?: boolean }>; checkFile?(observation: BrowserObservation, candidate: BrowserCandidate): Promise<void>; hashFile?(observation: BrowserObservation, candidate: BrowserCandidate): Promise<{ sha256: string; size: number }>; act(action: BrowserAction, observation: BrowserObservation): Promise<unknown>; close(): Promise<void> }
+export type BrowserObservation = { candidates: BrowserCandidate[]; url?: string; title?: string; interaction?: BrowserInteraction; [key: string]: unknown }
+export type GuardedBrowserAction = BrowserAction & { interaction?: 'login' | 'navigation'; secureApproved?: boolean }
+export type BrowserAdapter = { observe(url?: string, page?: string, viewport?: BrowserViewport): Promise<BrowserObservation>; readText?(observation: BrowserObservation): Promise<{ text: string; truncated: boolean; requiresHuman?: boolean }>; checkFile?(observation: BrowserObservation, candidate: BrowserCandidate): Promise<void>; hashFile?(observation: BrowserObservation, candidate: BrowserCandidate): Promise<{ sha256: string; size: number }>; act(action: GuardedBrowserAction, observation: BrowserObservation): Promise<unknown>; close(): Promise<void> }
 type FileSelection = { file: { name: string; size: number; type: string }; url?: string; contentVerified?: boolean }
-type Session = { id: string; backend: BrowserBackend; observation: BrowserObservation | null; readObservation: BrowserObservation | null; paused: boolean; fileSelectionPending: boolean; fileSelectionPreview?: { value: FileSelection; observation: BrowserObservation; candidate: BrowserCandidate }; fileSelectionTarget?: { name: string; url?: string; hadFile: boolean; recordId?: string; tabId?: number; documentId?: string } }
-type Approval = (session: Readonly<Session>, action: BrowserAction, candidate: BrowserCandidate) => Promise<boolean>
+type Session = { id: string; backend: BrowserBackend; observation: BrowserObservation | null; readObservation: BrowserObservation | null; paused: boolean; handoff?: BrowserHandoff; loginAttempted?: boolean; fileSelectionPending: boolean; fileSelectionPreview?: { value: FileSelection; observation: BrowserObservation; candidate: BrowserCandidate }; fileSelectionTarget?: { name: string; url?: string; hadFile: boolean; recordId?: string; tabId?: number; documentId?: string } }
+type Approval = (session: Readonly<Session>, action: GuardedBrowserAction, candidate: BrowserCandidate) => Promise<boolean>
+/** Sensitive-field approval: passwords and payment fields may be typed or
+ * submitted only after the user allows this specific operation. */
+type SecureApproval = (session: Readonly<Session>, action: BrowserAction, candidate: BrowserCandidate) => Promise<boolean>
 type ActionJournal = {
   pending(backend: BrowserBackend): { id: string } | null
   claim(backend: BrowserBackend): { id: string }
@@ -16,10 +21,12 @@ type ActionJournal = {
   resolve(backend: BrowserBackend, id: string, confirmed: boolean): void
 }
 
-function needsHuman(observation: BrowserObservation): boolean {
-  if (observation.requiresHuman === true) return true
+function browserHandoff(observation: BrowserObservation, loginAttempted?: boolean): BrowserHandoff | undefined {
+  const host = browserHost(observation.url)
   const text = [observation.title ?? '', ...observation.candidates.map((candidate) => candidate.name ?? '')].join(' ').slice(0, 16000)
-  return /verify (?:you are|you're) human|verify you are not a (?:bot|robot)|captcha|security check|just a moment\.{0,3}|人机验证|安全验证|完成验证|滑块验证|验证码/i.test(text)
+  const verificationCode = observation.candidates.some(candidate => /^(?:短信|邮箱|动态|登录)?验证码$|^请输入(?:短信|邮箱|动态|登录)?验证码$/.test(candidate.name?.trim() ?? ''))
+  if (observation.requiresHuman === true || observation.interaction?.blocker === 'verification' || verificationCode || /verify (?:you are|you're) human|verify you are not a (?:bot|robot)|captcha|security check|just a moment\.{0,3}|人机验证|安全验证|完成验证|滑块验证/i.test(text)) return { kind: 'verification', host }
+  if (observation.interaction?.blocker === 'login' || (loginAttempted && observation.interaction?.login)) return { kind: 'login', host }
 }
 function fingerprint(observation: BrowserObservation): string {
   return JSON.stringify({ url: observation.url ?? '', title: observation.title ?? '', candidates: observation.candidates.map((c) => ({ id: c.id, name: c.name, role: c.role, value: c.secure ? undefined : c.value })) })
@@ -30,8 +37,8 @@ export class BrowserRouter {
   private busy = false
   private uncertainAction = false
   private adapters: Record<BrowserBackend, BrowserAdapter>
-  private options: { approve?: Approval; journal?: ActionJournal }
-  constructor(adapters: Record<BrowserBackend, BrowserAdapter>, options: { approve?: Approval; journal?: ActionJournal } = {}) { this.adapters = adapters; this.options = options }
+  private options: { approve?: Approval; secureApprove?: SecureApproval; journal?: ActionJournal }
+  constructor(adapters: Record<BrowserBackend, BrowserAdapter>, options: { approve?: Approval; secureApprove?: SecureApproval; journal?: ActionJournal } = {}) { this.adapters = adapters; this.options = options }
   hasSession(): boolean { return this.session !== null }
   pendingAction(): { id: string } | null { return this.session ? this.options.journal?.pending(this.session.backend) ?? null : null }
   pendingBackends(): BrowserBackend[] { return (['inapp', 'cdp', 'extension'] as const).filter(backend => !!this.options.journal?.pending(backend)) }
@@ -88,7 +95,8 @@ export class BrowserRouter {
         catch (error) { this.uncertainAction = true; throw new Error('The action result is unknown because its navigation record could not be cleared. Inspect the current page and ask the user to verify the result.', { cause: error }) }
       }
       if (!result || !Array.isArray(result.candidates)) throw new Error('Invalid browser observation.')
-      if (needsHuman(result)) { session.paused = true; return { ...result, requiresHuman: true } }
+      const handoff = browserHandoff(result, session.loginAttempted)
+      if (handoff) { session.paused = true; session.handoff = handoff; return { ...result, requiresHuman: true } }
       session.observation = result
       return result
     })
@@ -112,7 +120,8 @@ export class BrowserRouter {
         observations++
         if (options.signal?.aborted) throw new Error('Browser wait cancelled.')
         if (!observed || !Array.isArray(observed.candidates)) throw new Error('Invalid browser observation.')
-        if (needsHuman(observed)) { session.paused = true; throw new Error('Human verification required. Complete it before continuing.') }
+        const handoff = browserHandoff(observed, session.loginAttempted)
+        if (handoff) { session.paused = true; session.handoff = handoff; throw new Error('Human verification required. Complete it before continuing.') }
         const matches = observed.candidates.filter((candidate) => candidate.name === name && (!options.role || candidate.role === options.role))
         if (matches.length > 1) throw new Error('More than one matching candidate. Refine the target and observe again.')
         if (matches.length === 1 && Date.now() <= deadline) { session.observation = observed; return { matched: true, candidate: matches[0], url: observed.url, elapsedMs: Date.now() - started, observations } }
@@ -135,12 +144,18 @@ export class BrowserRouter {
       let result: Awaited<ReturnType<NonNullable<BrowserAdapter['readText']>>>
       try { result = await read(observation) }
       catch (error) { session.readObservation = null; throw error }
-      if (result.requiresHuman) { session.paused = true; session.observation = null; session.readObservation = null; throw new Error('Human verification required. Complete it before continuing.') }
+      if (result.requiresHuman) {
+        session.paused = true
+        session.handoff = { kind: 'verification', host: browserHost(observation.url) }
+        session.observation = null
+        session.readObservation = null
+        throw new Error('Human verification required. Complete it before continuing.')
+      }
       if (typeof result.text !== 'string' || typeof result.truncated !== 'boolean') throw new Error('Invalid page text response.')
       return { text: result.text, truncated: result.truncated, url: observation.url }
     })
   }
-  async act(action: BrowserAction, approve?: Approval): Promise<{ cancelled?: boolean; result?: unknown; verification?: { status: 'changed' | 'no_change' | 'unavailable'; requiresHuman?: boolean; reason?: 'file_selection' } }> {
+  async act(action: BrowserAction, approve?: Approval, secureApprove?: SecureApproval): Promise<{ cancelled?: boolean; result?: unknown; verification?: { status: 'changed' | 'no_change' | 'unavailable'; requiresHuman?: boolean; reason?: 'file_selection' } }> {
     return this.locked(async () => {
       const session = this.requireSession()
       if (session.paused) throw new Error('Human action is required; resume after the user completes it.')
@@ -149,12 +164,29 @@ export class BrowserRouter {
       if (!observation) throw new Error('Observe the browser before acting.')
       const candidate = observation.candidates.find((item) => item.id === action.candidateId)
       if (!candidate) throw new Error('Candidate is not in the latest observation.')
-      if (action.type === 'type' && candidate.secure) throw new Error('Cannot type into a secure field.')
+      // Sensitive fields: default is to pause for the user; Pi may operate when
+      // the user explicitly allows this operation. Never auto-approved by the
+      // routine approval path.
+      let secureApproved = false
+      if (candidate.secure && action.type !== 'click') {
+        const confirmSecure = secureApprove ?? this.options.secureApprove
+        if (!confirmSecure) throw new Error('Cannot type or press keys in a secure field without the user.')
+        if (!(await confirmSecure(session, action, candidate))) return { cancelled: true }
+        secureApproved = true
+      }
       if (action.type === 'click' && candidate.type === 'file' && (typeof observation.documentId !== 'string' || !observation.documentId || (session.backend === 'extension' && !Number.isInteger(observation.tabId)))) throw new Error('Cannot identify the browser document or Chrome tab; observe again.')
       if (action.type === 'type' && String(action.text ?? '').length > 20_000) throw new Error('Input exceeds 20,000 UTF-16 units and cannot be fully reviewed. Use a file or revise the task.')
       if (action.type === 'press' && String(action.key ?? 'Enter').length > 200) throw new Error('Key value exceeds 200 UTF-16 units and cannot be fully reviewed.')
+      const interaction = observation.interaction
+      const guardedAction: GuardedBrowserAction = { candidateId: action.candidateId, type: action.type, text: action.text, key: action.key, ...(secureApproved ? { secureApproved: true } : {}) }
+      if (interaction?.login) {
+        if (action.type !== 'click' || candidate.id !== interaction.login) throw new Error('Use the observed sign-in button for browser-autofilled credentials, or request human takeover.')
+        guardedAction.interaction = 'login'
+      } else if (action.type === 'click' && interaction?.navigation?.includes(candidate.id)) {
+        guardedAction.interaction = 'navigation'
+      }
       const approval = approve ?? this.options.approve
-      if (approval && !(await approval(session, action, candidate))) return { cancelled: true }
+      if (approval && !(await approval(session, guardedAction, candidate))) return { cancelled: true }
       let record: { id: string } | undefined
       try { record = this.options.journal?.claim(session.backend) }
       catch (error) {
@@ -164,7 +196,7 @@ export class BrowserRouter {
       session.observation = null
       session.readObservation = null
       let result: unknown
-      try { result = await this.adapters[session.backend].act(action, observation) }
+      try { result = await this.adapters[session.backend].act(guardedAction, observation) }
       catch (error) {
         if (/Human verification required/i.test(String(error))) session.paused = true
         const problem = error as { name?: string; code?: string; cause?: { code?: string } }
@@ -181,11 +213,12 @@ export class BrowserRouter {
         catch (error) { this.uncertainAction = true; throw new Error('The action result is unknown because its record could not be cleared. Do not repeat it; inspect the current page and ask the user to verify the result.', { cause: error }) }
       }
       if (guarded) {
-        if (rejected === 'human') { session.paused = true; throw new Error('Human verification required. Complete it before continuing.') }
+        if (rejected === 'human') { session.paused = true; session.handoff = { kind: 'verification', host: browserHost(observation.url) }; throw new Error('Human verification required. Complete it before continuing.') }
         if (rejected === 'page_changed') throw new Error('Browser page changed; observe again.')
         if (rejected === 'target_changed') throw new Error('Target changed; observe again.')
         if (rejected === 'view_hidden') throw new Error('Open the in-app browser panel and observe again before choosing a file.')
       }
+      if (guardedAction.interaction === 'login') session.loginAttempted = true
       if (action.type === 'click' && candidate.type === 'file') {
         session.paused = true
         session.fileSelectionPending = true
@@ -193,10 +226,16 @@ export class BrowserRouter {
         return { result, verification: { status: 'unavailable', requiresHuman: true, reason: 'file_selection' } }
       }
       try {
-        const after = await this.adapters[session.backend].observe()
+        let after = await this.adapters[session.backend].observe()
+        if (guardedAction.interaction === 'login' && browserHandoff(after, true)?.kind === 'login') {
+          // Give a sign-in redirect time to finish before declaring that it needs the user.
+          await new Promise(resolve => setTimeout(resolve, 800))
+          after = await this.adapters[session.backend].observe()
+        }
         if (!after || !Array.isArray(after.candidates)) throw new Error('Invalid browser observation.')
-        const requiresHuman = needsHuman(after)
-        if (requiresHuman) session.paused = true
+        const handoff = browserHandoff(after, session.loginAttempted)
+        const requiresHuman = Boolean(handoff)
+        if (handoff) { session.paused = true; session.handoff = handoff }
         const samePage = Boolean(observation.url && after.url === observation.url)
         const sameDocument = typeof observation.documentId === 'string' && observation.documentId.length > 0 && observation.documentId === after.documentId
         const sameTab = session.backend !== 'extension' || (Number.isInteger(observation.tabId) && observation.tabId === after.tabId)
@@ -246,9 +285,9 @@ export class BrowserRouter {
       }
       const observed = await this.adapters[session.backend].observe()
       if (!observed || !Array.isArray(observed.candidates)) throw new Error('Invalid browser observation.')
-      if (needsHuman(observed)) throw new Error('Human verification required. Complete it before continuing.')
       if (observed.url !== target.url) throw new Error('Browser page changed during file selection; ask the user to check it.')
       if (observed.documentId !== target.documentId || (session.backend === 'extension' && observed.tabId !== target.tabId)) throw new Error('Browser tab or document changed during file selection; return to the original page and check it.')
+      if (browserHandoff(observed, session.loginAttempted)) throw new Error('Human verification required. Complete it before continuing.')
       const candidates = observed.candidates.filter(item => item.type === 'file' && String(item.name ?? '') === target.name)
       if (candidates.length !== 1) throw new Error('File input is missing or ambiguous; ask the user to check it.')
       const candidate = candidates[0]
@@ -312,6 +351,7 @@ export class BrowserRouter {
     session.observation = null
     session.readObservation = null
     session.paused = false
+    session.handoff = undefined
     session.fileSelectionPending = false
     session.fileSelectionTarget = undefined
     this.uncertainAction = false

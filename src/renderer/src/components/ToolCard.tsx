@@ -1,5 +1,5 @@
 import { useTranslation } from '../i18n'
-import { memo, useState, type ReactNode } from 'react'
+import { memo, useMemo, useState, type ReactNode } from 'react'
 import {
   ChevronRight,
   ExternalLink,
@@ -7,17 +7,20 @@ import {
   FileText,
   FolderSearch,
   PencilLine,
+  Search,
   Terminal,
   Wrench
 } from 'lucide-react'
 import clsx from 'clsx'
 import type { ContentBlock, ToolCallBlock, ToolResultMessage, ToolRun } from '@shared/types'
 import { baseName, formatDuration } from '../lib/format'
-import { browserActionResultUnknown, computerUseOutcome, contentText, durationOf, editPairs, readRangeLabel, toolImages, toolMeta, toolPhrases } from '../lib/tools'
+import { browserActionResultUnknown, computerUseOutcome, contentText, durationOf, readRangeLabel, toolImages, toolMeta, toolPhrases } from '../lib/tools'
+import { editChange } from '../lib/edit-change'
+import { describeSearch, shellOutput } from '../lib/shell-output'
 import { useElapsed } from '../lib/use-elapsed'
 import { Spinner } from './ui'
 import { CopyButton } from './Markdown'
-import { DiffView } from './Diff'
+import { DiffView, PatchView } from './Diff'
 
 /** Reveal / open a path straight from a tool card. */
 function FileActions({ path }: { path: string }): ReactNode {
@@ -57,6 +60,10 @@ const ICONS = {
   tool: Wrench
 }
 
+function openToolFile(path: string, line?: number): void {
+  window.dispatchEvent(new CustomEvent('pi:tool-file', { detail: { path, line } }))
+}
+
 function CodeOutput({
   text,
   lineNumbers = false,
@@ -94,7 +101,7 @@ function CodeOutput({
       {hidden > 0 && (
         <button className="more-button" onClick={() => setShowAll((value) => !value)}>
           {showAll
-            ? t('只看前几行')
+            ? t(tail ? '只看最后几行' : '只看前几行')
             : t('… 还有 {count} 行 · 显示全部').replace('{count}', String(hidden))}
         </button>
       )}
@@ -119,7 +126,8 @@ export const ToolCard = memo(function ToolCard({
 }): ReactNode {
   const t = useTranslation()
   const args = run?.args && Object.keys(run.args).length ? run.args : (call.arguments ?? {})
-  const meta = toolMeta(call.name, args, run?.resultDetails ?? result?.details)
+  const details = run?.resultDetails ?? result?.details
+  const meta = toolMeta(call.name, args, details)
   const phrases = toolPhrases(call.name)
   const status = run?.status === 'error' || result?.isError ? 'error' : run?.status ?? (result ? 'done' : 'running')
   const resultText = run?.resultText || contentText(result)
@@ -131,57 +139,99 @@ export const ToolCard = memo(function ToolCard({
   const open = expanded ?? internalOpen
   const [fullDiff, setFullDiff] = useState(false)
 
-  const Icon = ICONS[meta.kind]
+  const command = meta.kind === 'bash' && typeof args.command === 'string' ? args.command : ''
+  const search = useMemo(() => describeSearch(command), [command])
   const path = typeof args.path === 'string' ? args.path : ''
+  const nativeSearch = call.name === 'grep' && typeof args.pattern === 'string'
+    ? { scope: path, pattern: args.pattern, files: false } : undefined
+  const searchTarget = search ?? nativeSearch
+  const Icon = searchTarget ? Search : ICONS[meta.kind]
   const range = readRangeLabel(args)
   const rangeText = range
     ? range.end != null
       ? t('第 {start}–{end} 行').replace('{start}', String(range.start)).replace('{end}', String(range.end))
       : t('从第 {start} 行').replace('{start}', String(range.start))
     : ''
-  const pairs = meta.kind === 'edit' ? editPairs(args) : []
-  const outcome = !running && status !== 'error' ? computerUseOutcome(call.name, run?.resultDetails ?? result?.details) : null
+  const edit = useMemo(() => meta.kind === 'edit' && status === 'done' ? editChange(args, details) : null, [meta.kind, status, args, details])
+  const outcome = !running && status !== 'error' ? computerUseOutcome(call.name, details) : null
   const resultUnknown = browserActionResultUnknown(call.name, status === 'error', resultText)
   const outcomeIsTitle = outcome === '已取消' || outcome === '等待人工处理' || outcome === '等待选择文件'
-  const verb = resultUnknown ? '操作结果未知，请核对' : status === 'error' ? phrases.failed : running ? phrases.running : outcomeIsTitle ? outcome : phrases.done
+  const verb = resultUnknown ? '操作结果未知，请核对' : status === 'error' ? phrases.failed
+    : running ? phrases.running : outcomeIsTitle ? outcome : meta.kind === 'edit' ? '已编辑' : phrases.done
+  const label = searchTarget
+    ? t(searchTarget.files
+      ? running ? '正在 {scope} 中查找文件' : '在 {scope} 中查找文件'
+      : running ? '正在 {scope} 中搜索' : status === 'done' ? '已在 {scope} 中搜索' : '在 {scope} 中搜索')
+      .replace('{scope}', searchTarget.scope || t('当前目录')) +
+      (searchTarget.pattern ? ` “${searchTarget.pattern}”` : '')
+    : meta.translateSubtitle ? t(meta.subtitle) : meta.subtitle
+  const shell = meta.kind === 'bash'
+    ? shellOutput(resultText || run?.partialText || '', status === 'error', run?.resultStructured ?? result?.structuredContent, details)
+    : null
+  const exitText = shell?.exitCode === undefined ? '' : t('退出码 {code}').replace('{code}', String(shell.exitCode))
+  const fileRow = Boolean(path && (meta.kind === 'read' || meta.kind === 'edit' || meta.kind === 'write'))
+  const focusLine = edit?.firstChangedLine ?? (meta.kind === 'read' ? range?.start : undefined)
+  const toggle = (): void => {
+    const next = !open
+    setInternalOpen(next)
+    onExpandedChange?.(next)
+  }
+  const head = (
+    <>
+      <span className="tool-chevron"><ChevronRight size={13} /></span>
+      <span className={clsx('tool-icon', `kind-${meta.kind}`)}><Icon size={12} /></span>
+      {!searchTarget && <span className="tool-title">{t(verb)}</span>}
+    </>
+  )
+  const statusView = (
+    <span className="tool-status">
+      {outcome && !outcomeIsTitle && <span className="tool-outcome" title={t(outcome)}>{t(outcome)}</span>}
+      {duration !== undefined && <span className="tool-duration">{formatDuration(duration)}</span>}
+      {status === 'error' && !resultUnknown && <span className="tool-failed">{(!open && exitText) || t('failed')}</span>}
+    </span>
+  )
 
   return (
     <div className={clsx('tool-card', `status-${status}`, open && 'is-open')}>
-      <button
-        type="button"
-        className="tool-head"
-        onClick={() => {
-          const next = !open
-          setInternalOpen(next)
-          onExpandedChange?.(next)
-        }}
-        aria-expanded={open}
-      >
-        <span className="tool-chevron">
-          <ChevronRight size={13} />
-        </span>
-        <span className={clsx('tool-icon', `kind-${meta.kind}`)}>
-          <Icon size={12} />
-        </span>
-        <span className="tool-title">{t(verb)}</span>
-        <span className="tool-subtitle" title={meta.translateSubtitle ? t(meta.subtitle) : meta.subtitle}>
-          {meta.subtitle ? (meta.translateSubtitle ? t(meta.subtitle) : meta.subtitle) : ''}
-        </span>
-        <span className="tool-status">
-          {outcome && !outcomeIsTitle && <span className="tool-outcome" title={t(outcome)}>{t(outcome)}</span>}
-          {duration !== undefined && <span className="tool-duration">{formatDuration(duration)}</span>}
-          {status === 'error' && !running && !resultUnknown && <span className="tool-failed">{t('failed')}</span>}
-        </span>
-      </button>
+      {fileRow ? (
+        <div className="tool-file-row">
+          <button type="button" className="tool-head" aria-expanded={open} onClick={toggle}>{head}</button>
+          <button type="button" className="tool-subtitle tool-file-link" title={path} onClick={() => openToolFile(path, focusLine)}>{baseName(path)}</button>
+          {edit && (edit.additions > 0 || edit.deletions > 0) && (
+            <span className="tool-line-stats"><span>+{edit.additions}</span> <span>−{edit.deletions}</span></span>
+          )}
+          <span className="tool-file-spacer" />
+          {statusView}
+        </div>
+      ) : (
+        <button type="button" className="tool-head" aria-expanded={open} onClick={toggle}>
+          {head}
+          <span className={clsx('tool-subtitle', searchTarget && 'tool-search')} title={searchTarget ? label : command || label}>{label}</span>
+          {statusView}
+        </button>
+      )}
 
       {open && (
         <div className="tool-body">
-          {meta.kind === 'edit' && pairs.length > 0 ? (
-            pairs.map((pair, index) => (
+          {edit?.patch ? (
+            <div className="diff-block">
+              <div className="diff-head">
+                <span>{edit.firstChangedLine
+                  ? t('从第 {start} 行').replace('{start}', String(edit.firstChangedLine))
+                  : baseName(path)}</span>
+                <span className="diff-actions">
+                  <CopyButton text={edit.patch.text} />
+                  <FileActions path={path} />
+                </span>
+              </div>
+              <PatchView patch={edit.patch} />
+            </div>
+          ) : edit?.pairs.length ? (
+            edit.pairs.map((pair, index) => (
               <div className="diff-block" key={index}>
                 <div className="diff-head">
                   <span>{baseName(path) || 'file'}</span>
-                  {pairs.length > 1 && (
+                  {edit.pairs.length > 1 && (
                     <span className="diff-count">
                       {t('change {count}').replace('{count}', String(index + 1))}
                     </span>
@@ -190,9 +240,8 @@ export const ToolCard = memo(function ToolCard({
                     <button
                       className="file-action"
                       onClick={() => setFullDiff((value) => !value)}
-                      title={fullDiff ? t('只看上下文') : t('展开全文件')}
                     >
-                      {fullDiff ? t('全文') : `±${3}`}
+                      {t(fullDiff ? '只看上下文' : '展开片段')}
                     </button>
                     <CopyButton text={pair.newText} />
                     <FileActions path={path} />
@@ -205,15 +254,21 @@ export const ToolCard = memo(function ToolCard({
                 />
               </div>
             ))
-          ) : meta.kind === 'bash' ? (
+          ) : shell ? (
             <div className="bash-body">
               <div className="bash-command">
                 <span className="bash-prompt">$</span>
-                <code>{String(args.command ?? '')}</code>
-                <CopyButton text={String(args.command ?? '')} />
+                <code>{command}</code>
+                <CopyButton text={command} />
               </div>
-              {(resultText || run?.partialText) && (
-                <CodeOutput text={resultText || run?.partialText || ''} maxLines={20} tail />
+              {shell.text && (
+                <CodeOutput text={shell.text} maxLines={20} tail />
+              )}
+              {(exitText || shell.fullOutputPath) && (
+                <div className="bash-result-footer">
+                  {shell.fullOutputPath && <button type="button" className="more-button" onClick={() => openToolFile(shell.fullOutputPath!)}>{t('查看保存的输出')}</button>}
+                  {exitText && <span className={clsx('bash-exit-status', status === 'error' && 'failed')}>{exitText}</span>}
+                </div>
               )}
               {running && !resultText && !run?.partialText && (
                 <div className="bash-running">

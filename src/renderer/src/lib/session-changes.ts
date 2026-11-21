@@ -1,6 +1,5 @@
-import { diffLines } from 'diff'
 import type { AssistantMessage, ToolCallBlock, ToolResultMessage, ToolRun } from '@shared/types'
-import { editPairs } from './tools'
+import { editChange, type EditPatch } from './edit-change'
 import type { Turn } from './turns'
 
 export interface FileChange {
@@ -15,11 +14,8 @@ export interface FileChange {
     name: string
     oldText: string
     newText: string
+    patch?: EditPatch
   }[]
-}
-
-function countLines(text: string): number {
-  return text ? text.replace(/\n$/, '').split('\n').length : 0
 }
 
 export function collectSessionChanges(turns: Turn[], runs: Record<string, ToolRun>, workspace: string): FileChange[] {
@@ -38,7 +34,7 @@ export function collectSessionChanges(turns: Turn[], runs: Record<string, ToolRu
         if (result?.isError || run?.status === 'error' || (!result && run?.status !== 'done')) continue
         const requestedPath = String((call.arguments as { path?: unknown })?.path ?? '')
         if (!requestedPath) continue
-        const path = requestedPath.startsWith('/') ? requestedPath : `${workspace.replace(/\/$/, '')}/${requestedPath}`
+        const path = requestedPath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(requestedPath) ? requestedPath : `${workspace.replace(/\/$/, '')}/${requestedPath}`
         const relative = path.startsWith(`${workspace}/`) ? path.slice(workspace.length + 1) : requestedPath
         const entry =
           files.get(path) ??
@@ -53,11 +49,11 @@ export function collectSessionChanges(turns: Turn[], runs: Record<string, ToolRu
           } satisfies FileChange)
         if (!entry.turnKeys.includes(turn.key)) entry.turnKeys.push(turn.key)
         if (call.name === 'edit') {
-          for (const pair of editPairs(call.arguments)) {
-            for (const part of diffLines(pair.oldText, pair.newText)) {
-              if (part.added) entry.additions += countLines(part.value)
-              if (part.removed) entry.deletions += countLines(part.value)
-            }
+          const edit = editChange(call.arguments, run?.resultDetails ?? result?.details)
+          entry.additions += edit.additions
+          entry.deletions += edit.deletions
+          if (edit.patch) entry.calls.push({ id: call.id, name: 'edit', oldText: '', newText: '', patch: edit.patch })
+          for (const pair of edit.pairs) {
             entry.calls.push({ id: call.id, name: 'edit', oldText: pair.oldText, newText: pair.newText })
           }
         } else {

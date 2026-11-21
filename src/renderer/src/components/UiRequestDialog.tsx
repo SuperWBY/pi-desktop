@@ -1,22 +1,34 @@
 import { useTranslation } from '../i18n'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useApp } from '../store'
-import { Modal } from './ui'
-import { Check, ExternalLink, Monitor, ShieldCheck } from 'lucide-react'
+import { Check, ExternalLink, Monitor, ShieldCheck, X } from 'lucide-react'
+import type { ExtensionUiRequest } from '@shared/types'
 
-export function UiRequestDialog(): ReactNode {
+function signInHandoff(request: ExtensionUiRequest): { kind: 'login' | 'verification'; backend?: string; host?: string } | undefined {
+  if (request.method !== 'confirm' || request.title !== 'Computer Use: Sign-in Handoff') return undefined
+  try {
+    const info = JSON.parse(request.message ?? '') as { kind?: unknown; backend?: unknown; host?: unknown }
+    if (info.kind === 'login' || info.kind === 'verification') return {
+      kind: info.kind,
+      backend: typeof info.backend === 'string' ? info.backend : undefined,
+      host: typeof info.host === 'string' && /^[\w.:\[\]-]{1,253}$/.test(info.host) ? info.host : undefined
+    }
+  } catch { /* Fall back to the standard request. */ }
+}
+
+export function UiRequestDialog({ request, count }: { request: ExtensionUiRequest; count: number }): ReactNode {
   const t = useTranslation()
-  const { state, actions } = useApp()
-  const request = state.uiRequests[0]
+  const { actions } = useApp()
   const [value, setValue] = useState('')
+  const responded = useRef(false)
 
   useEffect(() => {
     if (request) setValue(String(request.prefill ?? request.text ?? ''))
   }, [request])
 
-  if (!request) return null
-
   const respond = (payload: Record<string, unknown>): void => {
+    if (responded.current) return
+    responded.current = true
     actions.respondUi({ type: 'extension_ui_response', id: request.id, ...payload })
   }
 
@@ -25,6 +37,7 @@ export function UiRequestDialog(): ReactNode {
   const permissionGuide = request.method === 'select' && request.title === 'Computer Use: System Permissions'
   const desktopAction = request.method === 'confirm' && request.title === '确认桌面操作'
   const browserAction = request.method === 'confirm' && request.title === 'Computer Use: Browser'
+  const handoff = signInHandoff(request)
   const fileSelection = request.method === 'confirm' && request.title === 'Computer Use: File Selection'
   const fileSelectionCancel = request.method === 'confirm' && request.title === 'Computer Use: Cancel File Selection'
   const desktopFields = desktopAction && typeof request.message === 'string'
@@ -40,9 +53,12 @@ export function UiRequestDialog(): ReactNode {
       }) : []
   const browserLabels = browserFields.map((field) => field.label)
   const structuredBrowserAction = browserFields.length >= 4 && browserFields.length <= 7 && request.message?.split('\n').length === browserFields.length && ['操作', '目标', '浏览器', '页面'].every((label, index) => browserLabels[index] === label) && browserLabels.slice(4).every((label, index, rest) => ['输入内容', '输入预览', '按键', '已选文件', '提示'].includes(label) && rest.indexOf(label) === index)
-  const title = permissionGuide ? t('开启桌面操作权限') : desktopAction ? t('确认桌面操作') : browserAction ? t('确认网页操作') : fileSelection ? t('选择上传文件') : fileSelectionCancel ? t('取消文件选择') : String(request.title ?? request.message ?? t('Pi needs your input'))
+  const title = handoff ? t(handoff.kind === 'verification' ? '请完成验证' : '请完成登录') : permissionGuide ? t('开启桌面操作权限') : desktopAction ? t('确认桌面操作') : browserAction ? t('确认网页操作') : fileSelection ? t('选择上传文件') : fileSelectionCancel ? t('取消文件选择') : String(request.title ?? request.message ?? t('Pi needs your input'))
   const subtitle =
     typeof request.message === 'string' && request.message !== title ? request.message : undefined
+  const commandDescription = request.method === 'confirm' && request.title === '确认执行危险命令'
+    ? subtitle?.match(/^(检测到[^\n]+。)\n\n([\s\S]+)\n\n(只在你确认这条命令安全时继续。)$/)
+    : null
 
   const body = (): ReactNode => {
     switch (request.method) {
@@ -85,6 +101,19 @@ export function UiRequestDialog(): ReactNode {
           </div>
         )
       case 'confirm':
+        if (handoff) {
+          const destination = handoff.backend === 'inapp' ? '应用内浏览器' : handoff.backend === 'cdp' ? '独立 Chrome' : handoff.backend === 'extension' ? '日常 Chrome' : '当前应用'
+          return <>
+            <p className="conversation-prompt-description">
+              {t('请在 {destination} 中完成这一步，完成后 Pi 会继续。').replace('{destination}', [t(destination), handoff.host].filter(Boolean).join(' · '))}
+            </p>
+            <div className="confirm-actions">
+              {handoff.backend === 'inapp' && <button className="button ghost" onClick={() => window.dispatchEvent(new Event('pi:reveal-browser'))}>{t('打开工作面板')}</button>}
+              <button className="button ghost" onClick={() => respond({ confirmed: false })}>{t('稍后再说')}</button>
+              <button className="button primary" onClick={() => respond({ confirmed: true })}>{t('我已完成')}</button>
+            </div>
+          </>
+        }
         return (
           <>
             {fileSelection && <div className="input-request">
@@ -115,7 +144,6 @@ export function UiRequestDialog(): ReactNode {
         return (
           <div className="input-request">
             <input
-              autoFocus
               className="text-input"
               value={value}
               placeholder={request.placeholder}
@@ -134,7 +162,6 @@ export function UiRequestDialog(): ReactNode {
         return (
           <div className="input-request">
             <textarea
-              autoFocus
               className="text-area"
               rows={8}
               value={value}
@@ -160,8 +187,20 @@ export function UiRequestDialog(): ReactNode {
   }
 
   return (
-    <Modal open title={title} subtitle={permissionGuide || structuredDesktopAction || browserAction ? undefined : subtitle} onClose={cancel} width={permissionGuide ? 560 : 480}>
+    <section className="conversation-prompt-content" role="region" aria-label={title} data-request-id={request.id}>
+      <div className="conversation-prompt-head">
+        <div><span className="conversation-prompt-kind">{t(handoff ? '需要处理' : request.method === 'confirm' || permissionGuide ? '等待确认' : '等待回复')}</span><h2>{title}</h2></div>
+        <div className="conversation-prompt-meta">
+          {count > 1 && <span>{t('还有 {count} 项待处理').replace('{count}', String(count - 1))}</span>}
+          <button type="button" className="icon-button" aria-label={t('取消请求')} onClick={cancel}><X size={15} /></button>
+        </div>
+      </div>
+      {!(handoff || permissionGuide || structuredDesktopAction || browserAction) && subtitle && (commandDescription
+        ? <div className="conversation-prompt-description conversation-command-description">
+            <span>{commandDescription[1]}</span><span>{commandDescription[2]}</span><span>{commandDescription[3]}</span>
+          </div>
+        : <p className="conversation-prompt-description">{subtitle}</p>)}
       {body()}
-    </Modal>
+    </section>
   )
 }

@@ -9,6 +9,7 @@ import {
 import { randomUUID } from 'node:crypto'
 import type { BrowserState, BrowserBounds } from '@shared/types'
 import { browserChallengeCode } from '../../extensions/computer-use/src/browser-challenge'
+import { browserInteractionCode, type BrowserInteraction } from '../../extensions/computer-use/src/browser-interaction'
 import { browserTargetGuardCode } from '../../extensions/computer-use/src/browser-target'
 import { browserPageTextCode } from '../../extensions/computer-use/src/browser-page-text'
 import { browserFileSnapshotCode, browserFileHashCode } from '../../extensions/computer-use/src/browser-file-context'
@@ -23,32 +24,10 @@ export function browserDownloads(after = 0): { epoch: string; cursor: number; tr
   return { epoch: downloadEpoch, cursor: downloadSequence, truncated: after < first - 1, downloads: downloads.filter((item) => item.sequence > after).map((item) => ({ ...item })) }
 }
 
-function isLocalhost(hostname: string): boolean {
-  const value = hostname.toLowerCase()
-  return value === 'localhost' || value.endsWith('.localhost') || value === '127.0.0.1' || value === '::1'
-}
-
-function isPrivateHost(hostname: string): boolean {
-  if (isLocalhost(hostname)) return true
-  if (/^10\./.test(hostname) || /^192\.168\./.test(hostname)) return true
-  if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)) return true
-  if (/^169\.254\./.test(hostname)) return true
-  return false
-}
-
-export function normalizeBrowserUrl(input: string): string | null {
-  const raw = input.trim()
-  if (!raw) return null
-  try {
-    const url = new URL(raw)
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
-    if (url.username || url.password) return null
-    if (isPrivateHost(url.hostname) && !isLocalhost(url.hostname)) return null
-    return url.toString()
-  } catch {
-    return null
-  }
-}
+// URL guards live in shared/url-guard.ts (pure, unit-testable); the browser
+// panel re-exports the ones it uses.
+import { normalizeBrowserUrl } from '@shared/url-guard'
+export { normalizeBrowserUrl }
 
 function assertSafe(url: string): string {
   const safe = normalizeBrowserUrl(url)
@@ -63,6 +42,8 @@ export function initBrowser(window: BrowserWindow): void {
 let displayedKey = 'main'
 let panelVisible = false
 let panelBounds: BrowserBounds | undefined
+let controlled: { key: string; state: 'active' | 'waiting'; timer: ReturnType<typeof setTimeout> } | undefined
+let otherTabKey: string | undefined
 
 export function setPanelBounds(bounds: BrowserBounds) {
   panelBounds = bounds
@@ -79,6 +60,7 @@ function selectPanel(key: string) {
   panelPage().browserSetVisible(false)
   const previous = displayedKey
   displayedKey = key
+  if (controlled && key !== controlled.key) otherTabKey = key
   if (previous === '@retained') { pages.get(previous)?.browserClose(); pages.delete(previous) }
   if (panelBounds) panelPage().browserBounds(panelBounds)
   panelPage().browserSetVisible(panelVisible)
@@ -86,6 +68,24 @@ function selectPanel(key: string) {
 }
 let popupSequence = 0
 const pages = new Map<string, ReturnType<typeof createPage>>()
+
+export function setBrowserControl(key: string, state: 'active' | 'waiting' | null): void {
+  if (!state && controlled?.key !== key) return
+  if (state && !pages.get(key)?.tabInfo()) return
+  if (controlled) clearTimeout(controlled.timer)
+  const changed = controlled?.key !== key || controlled?.state !== state
+  if (state && displayedKey !== key) otherTabKey = displayedKey
+  controlled = state ? { key, state, timer: setTimeout(() => setBrowserControl(key, null), 18000) } : undefined
+  if (changed) panelPage().publishState()
+}
+
+function controlledTabs(): Pick<BrowserState, 'controlledTab' | 'otherTab'> {
+  if (!controlled) return {}
+  const target = pages.get(controlled.key)?.tabInfo()
+  if (!target) return {}
+  const alternate = otherTabKey !== controlled.key && otherTabKey ? pages.get(otherTabKey)?.tabInfo() : undefined
+  return { controlledTab: { ...target, state: controlled.state }, otherTab: alternate }
+}
 
 export function taskPage(key = 'main') {
   if (!/^[a-zA-Z0-9_-]{1,48}$/.test(key)) throw new Error('Invalid page name.')
@@ -119,6 +119,7 @@ export function revealPage(doc: string, openPanel = true) {
 }
 
 export function releaseTaskPages() {
+  if (controlled) setBrowserControl(controlled.key, null)
   if (!displayedKey.startsWith('@') && (displayedKey !== 'main' || (panelVisible && panelPage().hasTaskViewport()))) {
     if (panelVisible) {
       const retained = panelPage()
@@ -150,6 +151,7 @@ function createPage(key: string) {
   let rendererReady = false
   let emulationScale: string | undefined
   let attached = false
+  let currentError: string | null = null
 
   function setTaskViewport(width: unknown, height: unknown) {
     if (typeof width !== 'number' || typeof height !== 'number' || ![width, height].every(n => Number.isInteger(n) && n >= 240 && n <= 2560)) throw new Error('Invalid viewport dimensions.')
@@ -184,7 +186,12 @@ function createPage(key: string) {
   let detachDownload: (() => void) | null = null
 
   function send(state: Partial<BrowserState>): void {
-    if (!host || host.isDestroyed() || key !== displayedKey) return
+    if (state.error !== undefined) currentError = state.error
+    if (!host || host.isDestroyed()) return
+    if (key !== displayedKey) {
+      if (key === controlled?.key || (controlled && key === otherTabKey)) panelPage().publishState()
+      return
+    }
     host.webContents.send('browser:state', {
       ...getFallbackState(),
       ...state
@@ -200,7 +207,9 @@ function createPage(key: string) {
       loading: false,
       canGoBack: false,
       canGoForward: false,
-      error: null
+      error: currentError,
+      documentId: view ? documentIdentity : undefined,
+      ...controlledTabs()
     }
   }
 
@@ -213,8 +222,7 @@ function createPage(key: string) {
       title: wc.getTitle(),
       loading: wc.isLoading(),
       canGoBack: wc.navigationHistory.canGoBack(),
-      canGoForward: wc.navigationHistory.canGoForward(),
-      error: null
+      canGoForward: wc.navigationHistory.canGoForward()
     })
   }
 
@@ -243,6 +251,7 @@ function createPage(key: string) {
     wc.on('did-start-loading', () => send({ loading: true, error: null }))
     wc.on('did-stop-loading', () => emitState())
     wc.on('did-navigate', (_event, url) => {
+      if (!normalizeBrowserUrl(url)) return
       currentUrl = url
       emitState()
     })
@@ -254,7 +263,8 @@ function createPage(key: string) {
     wc.on('page-favicon-updated', (_event, favicons) => send({ favicon: favicons[0] ?? null }))
     wc.on('did-fail-load', (_event, code, description, validatedURL, isMainFrame) => {
       if (!isMainFrame || code === -3) return
-      send({ loading: false, error: `${description} (${code})`, url: validatedURL })
+      currentUrl = validatedURL
+      send({ loading: false, error: `${description} (${code})` })
     })
     wc.on('render-process-gone', () => { if (view?.webContents === wc) { rendererReady = false; emulationScale = undefined; documentIdentity = randomUUID() } send({ loading: false, error: 'The page crashed.' }) })
     wc.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
@@ -312,6 +322,7 @@ function createPage(key: string) {
     else if (background) next.setBounds({ x: 0, y: 0, width: 1024, height: 768 })
     next.setVisible(!background || (key === displayedKey && panelVisible))
     currentUrl = url
+    currentError = null
     void next.webContents.loadURL(url).catch((error: unknown) => {
       send({ loading: false, error: error instanceof Error ? error.message : String(error) })
     })
@@ -340,6 +351,7 @@ function createPage(key: string) {
     if (!view) return browserOpen(input, background)
     const url = assertSafe(input)
     currentUrl = url
+    currentError = null
     void view.webContents.loadURL(url).catch((error: unknown) => {
       send({ loading: false, error: error instanceof Error ? error.message : String(error) })
     })
@@ -371,6 +383,7 @@ function createPage(key: string) {
     }
     view?.webContents.close()
     view = null
+    if (key === controlled?.key) setBrowserControl(key, null)
     rendererReady = false
     requestedSize = undefined
     emulationScale = undefined
@@ -390,7 +403,9 @@ function createPage(key: string) {
       const style = getComputedStyle(el)
       if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue
       const type = (el.getAttribute('type') || '').toLowerCase()
-      const secure = type === 'password' || (el.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/).some(token => ['current-password', 'new-password', 'one-time-code'].includes(token))
+      // Sensitive-field predicate; keep in sync with chrome-bridge/background.js
+      // and computer-use/index.ts (passwords, OTP, payment fields).
+      const secure = (el.getAttribute('type') || '').toLowerCase() === 'password' || /(?:^|\\s)(?:current-password|new-password|one-time-code|cc-[a-z]+)(?:\\s|$)/i.test(el.getAttribute('autocomplete') || '') || /(?:^|[^a-z])(?:card[-_ ]?(?:number|no|expiry|exp|code|csc)|cv[vc]|csc|security[-_ ]?code|有效期|安全码|信用卡)(?:[^a-z]|$)/i.test((el.getAttribute('autocomplete') || '') + ' ' + (el.getAttribute('name') || '') + ' ' + (el.getAttribute('id') || ''))
       const name = (el.getAttribute('aria-label') || Array.from(el.labels || [], label => { const copy = label.cloneNode(true); copy.querySelectorAll('input,textarea,select,button').forEach(node => node.remove()); return copy.textContent || '' }).join(' ').trim() || el.getAttribute('placeholder') || (!secure && el.innerText) || (!secure && type !== 'file' && el.value) || el.getAttribute('name') || el.getAttribute('title') || '').replace(/\\s+/g, ' ').trim().slice(0, 160)
       const id = 'b' + (candidates.length + 1)
       el.setAttribute('data-pi-cua-id', id)
@@ -436,19 +451,19 @@ function createPage(key: string) {
     const frame = await page.capturePage(undefined, { stayHidden: true })
     if (!matches() || frame.isEmpty()) return null
     const { width, height } = frame.getSize()
-    const thumb = frame.resize(height > width ? { height: 600 } : { width: 480 })
+    const thumb = frame.resize(height > width ? { height: 960 } : { width: 960 })
     return { width, height, image: 'data:image/jpeg;base64,' + thumb.toJPEG(72).toString('base64'), point: point ?? latestPoint, at: Date.now() }
   }
 
-  async function browserDomObserve(snapshotId?: string): Promise<{ candidates: Array<Record<string, unknown>>; requiresHuman: boolean; documentId: string; viewport: { width: number; height: number } }> {
+  async function browserDomObserve(snapshotId?: string): Promise<{ candidates: Array<Record<string, unknown>>; requiresHuman: boolean; interaction?: BrowserInteraction; documentId: string; viewport: { width: number; height: number } }> {
     if (!view) throw new Error('Open the in-app browser before observing a page.')
     const currentView = view
     const documentId = documentIdentity
-    const code = `(() => { ${snapshotId ? `document.documentElement.setAttribute('data-pi-session-snapshot', ${JSON.stringify(snapshotId)});` : ''} return { viewport: { width: innerWidth, height: innerHeight }, candidates: ${domObserveCode}, requiresHuman: ${browserChallengeCode} }; })()`
+    const code = `(() => { ${snapshotId ? `document.documentElement.setAttribute('data-pi-session-snapshot', ${JSON.stringify(snapshotId)});` : ''} return { viewport: { width: innerWidth, height: innerHeight }, candidates: ${domObserveCode}, interaction: (${browserInteractionCode})('data-pi-cua-id'), requiresHuman: ${browserChallengeCode} }; })()`
     const result = await currentView.webContents.executeJavaScript(code, true)
     if (view !== currentView || documentIdentity !== documentId) throw new Error('Browser document changed during observation; observe again.')
     if (!result || !Array.isArray(result.candidates)) throw new Error('Invalid browser observation.')
-    return { viewport: result.viewport, candidates: result.candidates, requiresHuman: result.requiresHuman === true, documentId }
+    return { viewport: result.viewport, candidates: result.candidates, interaction: result.interaction, requiresHuman: result.requiresHuman === true, documentId }
   }
 
   async function browserDomReadText(snapshotId: string, expectedUrl: string): Promise<{ text: string; truncated: boolean; requiresHuman?: boolean }> {
@@ -513,11 +528,20 @@ function createPage(key: string) {
       code = `(() => { const el = document.querySelector('${selector}'); if (!el) throw new Error('candidate not found'); el.scrollIntoView({block:'center'}); const r = el.getBoundingClientRect(); const piPoint = { x:(r.left+r.width/2)/innerWidth, y:(r.top+r.height/2)/innerHeight }; el.click(); return { ok: true, piPoint, title: document.title, url: location.href }; })()`
     } else if (type === 'type') {
       if (!text) throw new Error('type requires text')
-      code = `(() => { const el = document.querySelector('${selector}'); if (!el) throw new Error('candidate not found'); if ((el.getAttribute('type') || '').toLowerCase() === 'password' || (el.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/).some(token => ['current-password', 'new-password', 'one-time-code'].includes(token))) throw new Error('secure field'); el.focus(); if (el.isContentEditable) el.textContent = ${JSON.stringify(text)}; else { const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set; if (setter) setter.call(el, ${JSON.stringify(text)}); else el.value = ${JSON.stringify(text)}; } el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return { ok: true, value: el.value }; })()`
+      // secureApproved marks a sensitive-field operation the user explicitly
+      // allowed (same predicate as the observation above).
+      const secureCheck = action.secureApproved === true ? 'false' : `((el.getAttribute('type') || '').toLowerCase() === 'password' || /(?:^|\\s)(?:current-password|new-password|one-time-code|cc-[a-z]+)(?:\\s|$)/i.test(el.getAttribute('autocomplete') || '') || /(?:^|[^a-z])(?:card[-_ ]?(?:number|no|expiry|exp|code|csc)|cv[vc]|csc|security[-_ ]?code|有效期|安全码|信用卡)(?:[^a-z]|$)/i.test((el.getAttribute('autocomplete') || '') + ' ' + (el.getAttribute('name') || '') + ' ' + (el.getAttribute('id') || '')))`
+      code = `(() => { const el = document.querySelector('${selector}'); if (!el) throw new Error('candidate not found'); if (${secureCheck}) throw new Error('secure field'); el.focus(); if (el.isContentEditable) el.textContent = ${JSON.stringify(text)}; else { const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set; if (setter) setter.call(el, ${JSON.stringify(text)}); else el.value = ${JSON.stringify(text)}; } el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return { ok: true, value: el.value }; })()`
     } else if (type === 'press') {
-      code = `(() => { const el = document.querySelector('${selector}'); if (!el) throw new Error('candidate not found'); el.focus(); const key = ${JSON.stringify(key)}; el.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles:true})); el.dispatchEvent(new KeyboardEvent('keyup', {key, bubbles:true})); if (key === 'Enter' && el.form) el.form.requestSubmit(); return { ok: true }; })()`
+      const secureCheck = action.secureApproved === true ? 'false' : `((el.getAttribute('type') || '').toLowerCase() === 'password' || /(?:^|\\s)(?:current-password|new-password|one-time-code|cc-[a-z]+)(?:\\s|$)/i.test(el.getAttribute('autocomplete') || '') || /(?:^|[^a-z])(?:card[-_ ]?(?:number|no|expiry|exp|code|csc)|cv[vc]|csc|security[-_ ]?code|有效期|安全码|信用卡)(?:[^a-z]|$)/i.test((el.getAttribute('autocomplete') || '') + ' ' + (el.getAttribute('name') || '') + ' ' + (el.getAttribute('id') || '')))`
+      const formCheck = action.secureApproved === true ? 'false' : `Array.from(el.form.elements).some(f => f instanceof HTMLInputElement && (f.type === 'password' || /(?:^|\\s)(?:current-password|new-password|one-time-code|cc-[a-z]+)(?:\\s|$)/i.test(f.getAttribute('autocomplete') || '') || /(?:^|[^a-z])(?:card[-_ ]?(?:number|no|expiry|exp|code|csc)|cv[vc]|csc|security[-_ ]?code|有效期|安全码|信用卡)(?:[^a-z]|$)/i.test((f.getAttribute('autocomplete') || '') + ' ' + (f.getAttribute('name') || '') + ' ' + (f.getAttribute('id') || ''))))`
+      code = `(() => { const el = document.querySelector('${selector}'); if (!el) throw new Error('candidate not found'); if (${secureCheck}) throw new Error('secure field'); el.focus(); const key = ${JSON.stringify(key)}; el.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles:true})); el.dispatchEvent(new KeyboardEvent('keyup', {key, bubbles:true})); if (key === 'Enter' && el.form) { if (${formCheck}) throw new Error('secure form'); el.form.requestSubmit(); } return { ok: true }; })()`
     } else {
       throw new Error(`Unknown browser action: ${type}`)
+    }
+    if (action.interaction === 'login' || action.interaction === 'navigation') {
+      const check = action.interaction === 'login' ? 'current.login === id' : 'current.navigation?.includes(id)'
+      code = `(() => { const id = ${JSON.stringify(candidateId)}; const current = (${browserInteractionCode})('data-pi-cua-id'); if (!(${check})) return { __piGuardRejected: 'target_changed' }; return ${code}; })()`
     }
     if (typeof action.snapshotId === 'string' && typeof action.expectedUrl === 'string') {
       code = `(() => { if (location.href !== ${JSON.stringify(action.expectedUrl)} || document.documentElement.getAttribute('data-pi-session-snapshot') !== ${JSON.stringify(action.snapshotId)}) return { __piGuardRejected: 'page_changed' }; document.documentElement.removeAttribute('data-pi-session-snapshot'); if (${browserChallengeCode}) return { __piGuardRejected: 'human' }; if (!(${browserTargetGuardCode})(${JSON.stringify(candidateId)}, ${JSON.stringify(selector)}, '__piInappTargets', true)) return { __piGuardRejected: 'target_changed' }; return ${code}; })()`
@@ -537,5 +561,6 @@ function createPage(key: string) {
   }
 
   const publishState = () => view ? emitState() : send(getFallbackState())
-  return { hasTaskViewport: () => !!requestedSize, setKey: (value: string) => { key = value }, setTaskViewport, resetTaskViewport, openedPages: () => [...popups].filter(name => pages.has(name)), getFallbackState, publishState, browserOpen, browserBounds, browserSetVisible, browserNavigate, browserBack, browserForward, browserReload, browserStop, browserClose, browserState, browserPreview, browserDomObserve, browserDomReadText, browserDomCheckFile, browserDomHashFile, browserDomAct, ownsDocument: (doc: string) => view !== null && documentIdentity === doc }
+  const tabInfo = () => view && !view.webContents.isDestroyed() ? { documentId: documentIdentity, title: view.webContents.getTitle() || currentUrl } : undefined
+  return { tabInfo, hasTaskViewport: () => !!requestedSize, setKey: (value: string) => { key = value }, setTaskViewport, resetTaskViewport, openedPages: () => [...popups].filter(name => pages.has(name)), getFallbackState, publishState, browserOpen, browserBounds, browserSetVisible, browserNavigate, browserBack, browserForward, browserReload, browserStop, browserClose, browserState, browserPreview, browserDomObserve, browserDomReadText, browserDomCheckFile, browserDomHashFile, browserDomAct, ownsDocument: (doc: string) => view !== null && documentIdentity === doc }
 }

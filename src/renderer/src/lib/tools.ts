@@ -82,7 +82,7 @@ export function toolPhrases(name: string): ToolPhrases {
     case 'bash':
       return { running: '运行', done: '运行', failed: '运行失败', group: '运行了 {count} 条命令' }
     case 'read':
-      return { running: '读取', done: '读取', failed: '读取失败', group: '读取了 {count} 个文件' }
+      return { running: '读取', done: '已读取', failed: '读取失败', group: '读取了 {count} 个文件' }
     case 'write':
       return { running: '写入', done: '写入', failed: '写入失败', group: '写入了 {count} 个文件' }
     case 'edit':

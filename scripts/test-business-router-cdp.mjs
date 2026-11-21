@@ -1,3 +1,4 @@
+import { browserInteractionCode } from '../extensions/computer-use/src/browser-interaction.ts'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { createHash, randomUUID } from 'node:crypto'
@@ -30,14 +31,14 @@ try {
   await page.addInitScript(() => { globalThis.__piDocumentIdentity = 'forged' })
   const source=await readFile(new URL('../extensions/computer-use/index.ts',import.meta.url),'utf8')
   const cdpSource=source.slice(source.indexOf('const cdpProfileDir ='),source.indexOf('const chromeBridgePort ='))+source.slice(source.indexOf('async function ensureCdpPage'),source.indexOf('async function audit('))
-  const cdp=runInNewContext(`${stripTypeScriptTypes(cdpSource)}\n({ ensureCdpPage, releaseCdpSocket, cdpSend, cdpEval, cdpAction, closeCdp, cdpObserveCode, wrapEval: (wrap) => { cdpEval = wrap(cdpEval) } })`,{browserChallengeCode,browserTargetGuardCode,browserFileSnapshotCode,homedir,join,spawn,mkdir,unlink,fetch,WebSocket,AbortSignal,setTimeout,clearTimeout,process:{env:{PI_CDP_PORT:String(port)}}})
+  const cdp=runInNewContext(`${stripTypeScriptTypes(cdpSource)}\n({ ensureCdpPage, releaseCdpSocket, cdpSend, cdpEval, cdpAction, closeCdp, cdpObserveCode, wrapEval: (wrap) => { cdpEval = wrap(cdpEval) } })`,{browserChallengeCode,browserTargetGuardCode,browserInteractionCode,browserFileSnapshotCode,homedir,join,spawn,mkdir,unlink,fetch,WebSocket,AbortSignal,setTimeout,clearTimeout,process:{env:{PI_CDP_PORT:String(port)}}})
   const start=source.indexOf('export default function computerUse(')
   const end=source.indexOf("  pi.registerTool({\n    name: 'computer_use_apps'",start)
   const registration=stripTypeScriptTypes(source.slice(start,end).replace('export default function','function')+'\n}')
   const definitions=new Map()
   const Type=new Proxy({}, {get:()=> (...args)=>({args})})
   journal=new BrowserActionJournal(join(temp,'actions.sqlite'))
-  const factory=runInNewContext(`${registration}\ncomputerUse`,{...cdp,BrowserRouter,browserChallengeCode,browserTargetGuardCode,browserPageTextCode,browserFileHashCode,judgeWithJev,Type,createBrowserActionJournal:()=>journal,approvalMode:'always',audit:async()=>{},process:{env:{}},randomUUID,URL,setTimeout})
+  const factory=runInNewContext(`${registration}\ncomputerUse`,{...cdp,BrowserRouter,browserChallengeCode,browserInteractionCode,browserTargetGuardCode,browserPageTextCode,browserFileHashCode,judgeWithJev,Type,createBrowserActionJournal:()=>journal,approvalMode:'always',manualBrowserApproval:false,allowRoutineActions:false,audit:async()=>{},process:{env:{}},randomUUID,URL,setTimeout})
   factory({registerTool:definition=>definitions.set(definition.name,definition),on:()=>{}})
   const invoke=async(name,params={})=>definitions.get(name).execute('test',params,undefined,undefined,{ui:{confirm:async()=>true}})
   await invoke('computer_use_session_open',{backend:'cdp'})

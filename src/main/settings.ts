@@ -65,8 +65,10 @@ export function loadSettings(): Settings {
     cached = {
       ...defaults,
       ...parsed,
+      // Retire the workshop tab without reopening an empty side panel on upgrade.
+      ...(parsed.workPanelTab === 'creator' ? { workPanelOpen: false, workPanelTab: 'home' as const } : {}),
+      ...(parsed.workPanelTabs ? { workPanelTabs: parsed.workPanelTabs.filter(tab => tab !== 'creator') } : {}),
       toolApprovalMode: parsed.toolApprovalMode === 'all' ? 'all' : 'dangerous',
-      allowFullAccess: parsed.allowFullAccess === true,
       computerUseEnabled: parsed.computerUseEnabled === true,
       language: parsed.language === 'en' ? 'en' : 'zh-CN',
       workspaces,
@@ -85,7 +87,6 @@ export function saveSettings(patch: Partial<Settings>): Settings {
   }
   if (next.language !== 'en') next.language = 'zh-CN'
   next.toolApprovalMode = next.toolApprovalMode === 'all' ? 'all' : 'dangerous'
-  next.allowFullAccess = next.allowFullAccess === true
   if (patch.workspaces || patch.workspaceNames) {
     next.workspaces = projectFolders(next.workspaces, next.workspaceNames)
     next.workspaceNames = remapWorkspaceNames(next.workspaceNames, next.workspaces)

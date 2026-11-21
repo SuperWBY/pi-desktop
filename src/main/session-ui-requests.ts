@@ -3,7 +3,7 @@ import type { PiRecord } from '@shared/types'
 
 type Request = { owner: object; originalId: string; record: PiRecord; timer?: ReturnType<typeof setTimeout> }
 type JournalHooks = { begin: (owner: object, token: string) => void; finish: (token: string) => void; interrupt: (token: string) => void; error: () => void }
-const informational = new Set(['notify', 'setStatus', 'setTitle', 'setWidget', 'set_editor_text'])
+const informational = new Set(['creator_result', 'creator_state', 'notify', 'setStatus', 'setTitle', 'setWidget', 'set_editor_text'])
 
 /** Keeps UI requests bound to the Pi process that emitted them. */
 export class SessionUiRequests {

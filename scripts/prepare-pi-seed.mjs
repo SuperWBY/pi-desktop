@@ -105,18 +105,33 @@ function prepare() {
   return { version, target }
 }
 
+function resourcesDir(bundle) {
+  const mac = join(bundle, 'Contents', 'Resources')
+  if (existsSync(mac)) return mac
+  const winOrLinux = join(bundle, 'resources')
+  if (existsSync(winOrLinux)) return winOrLinux
+  return ''
+}
+
 const embedArg = process.argv.find((arg) => arg.startsWith('--embed='))
 const built = prepare()
 if (embedArg) {
   const bundle = embedArg.slice('--embed='.length).replace(/^"|"$/g, '')
-  const resources = join(bundle, 'Contents', 'Resources')
-  if (!existsSync(resources)) {
-    console.error(`Not a macOS app bundle: ${bundle}`)
+  const resources = resourcesDir(bundle)
+  if (!resources) {
+    console.error(`App resources not found for: ${bundle}`)
     process.exit(1)
   }
   const destination = join(resources, 'pi-seed')
   rmSync(destination, { recursive: true, force: true })
-  mkdirSync(destination, { recursive: true })
-  cpSync(seedRoot, destination, { recursive: true, dereference: true })
-  console.log(`Embedded Pi seed into ${destination}`)
+  mkdirSync(join(destination, built.version), { recursive: true })
+  // Embed only the version prepared above — never ship leftover e2e stubs.
+  cpSync(built.target, join(destination, built.version), { recursive: true, dereference: true })
+  console.log(`Embedded Pi seed into ${join(destination, built.version)}`)
+  const authModule = join(destination, built.version, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'index.js')
+  if (!existsSync(authModule)) {
+    console.error(`Packaged seed is missing auth module: ${authModule}`)
+    process.exit(1)
+  }
+  console.log(`Verified auth module at ${authModule}`)
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Cable, ChevronRight, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
+import { userFacingError } from '@shared/errors'
 import type { ConnectorEntry, McpConnectionTest, McpConnector, McpConnectorInput } from '@shared/types'
 import { useTranslation } from '../i18n'
 import { Modal } from './ui'
@@ -23,7 +24,7 @@ function testLabel(result: McpConnectionTest | undefined): string {
 }
 
 function errorText(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': Error: /, '')
+  return userFacingError(error)
 }
 
 function ConnectionEditor({ connector, onClose, onSaved }: {

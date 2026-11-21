@@ -2,9 +2,10 @@ import { app } from 'electron'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { Settings } from '@shared/types'
+import { canonicalWorkspacePath, projectReadOnly } from '@shared/paths'
 import { agentDir } from './pi-settings'
 import { sessionsRoot } from './sessions'
 
@@ -30,6 +31,7 @@ const MODEL_DOMAINS = [
   '*.googleapis.com',
   'openrouter.ai',
   '*.openrouter.ai',
+  'opencode.ai',
   'api.deepseek.com',
   '*.deepseek.com',
   'api.groq.com',
@@ -103,6 +105,10 @@ function validDomain(value: string): boolean {
   return /^(\*\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?::[0-9]{1,5})?$/i.test(value)
 }
 
+export function validNetworkHost(value: string): boolean {
+  return !value.includes('*') && !value.includes(':') && validDomain(value)
+}
+
 function allowedDomains(settings: Settings): string[] {
   if (settings.sandboxNetwork === 'off') return []
   const custom = Array.isArray(settings.sandboxAllowedDomains)
@@ -115,15 +121,19 @@ export function createSandbox(cwd: string, settings: Settings, additionalRuntime
   if (!sandboxAvailable()) return null
   const workspace = resolve(cwd || homedir())
   const runtimeWrites = [agentDir(), sessionsRoot(), join(app.getPath('userData'), 'computer-use-sessions'), tmpdir(), ...additionalRuntimeWrites]
-  const writes = settings.sandboxMode === 'read-only'
-    ? runtimeWrites
-    : [workspace, ...runtimeWrites]
+  const readOnly = projectReadOnly(settings, cwd)
+  const writes = readOnly ? runtimeWrites : [workspace, ...runtimeWrites]
+  const insideRuntimeWrite = runtimeWrites.some((path) => {
+    const child = relative(canonicalWorkspacePath(path), canonicalWorkspacePath(workspace))
+    return child && !isAbsolute(child) && child !== '..' && !child.startsWith(`..${sep}`)
+  })
   const config = {
     filesystem: {
       denyRead: SECRET_PATHS.filter((path) => existsSync(path)),
       allowRead: ['/'],
       allowWrite: [...new Set(writes)],
-      denyWrite: []
+      // A project in the temporary directory is still read-only.
+      denyWrite: readOnly && insideRuntimeWrite ? [workspace] : []
     },
     network: {
       allowedDomains: allowedDomains(settings),

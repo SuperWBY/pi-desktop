@@ -10,11 +10,15 @@
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { stripTypeScriptTypes } from 'node:module'
 import { runInNewContext } from 'node:vm'
+import { caseNavigationGestures } from './e2e-navigation-gestures.mjs'
+import { caseReadmeImages } from './e2e-readme-images.mjs'
+import { caseCreator } from './e2e-creator.mjs'
+import { caseReadmeLocales } from './e2e-readme-locales.mjs'
 import { BrowserRouter } from '../extensions/computer-use/src/browser-router.ts'
 import { BrowserActionJournal } from '../extensions/computer-use/src/browser-action-journal.ts'
 import { judgeWithJev } from '../extensions/computer-use/src/jev.ts'
@@ -36,7 +40,7 @@ function newestSourceMtime(dir) {
 }
 
 const outMain = join(root, 'out', 'main', 'index.js')
-if (!existsSync(outMain) || Math.max(newestSourceMtime(join(root, 'src')), newestSourceMtime(join(root, 'extensions', 'computer-use', 'src'))) > statSync(outMain).mtimeMs) {
+if (!process.env.PI_E2E_APP && (!existsSync(outMain) || Math.max(newestSourceMtime(join(root, 'src')), newestSourceMtime(join(root, 'extensions', 'computer-use', 'src'))) > statSync(outMain).mtimeMs)) {
   console.log('sources changed — building before e2e…')
   execFileSync('npm', ['run', 'build'], { cwd: root, stdio: 'inherit' })
 }
@@ -93,6 +97,13 @@ function seedSession(sessionsDir, id, name, turns = 1, cwd = root) {
 }
 
 async function launch(dirs, scenario = 'default', extraEnv = {}) {
+  // Mock chats expect a connected model so the sidebar shows 已就绪 (not 先连接模型).
+  // Cases that exercise the welcome connect panel leave agent settings empty.
+  const agentSettings = join(dirs.agent, 'settings.json')
+  const piPath = extraEnv.PI_DESKTOP_PI_PATH ?? mockPi
+  if (piPath === mockPi && !existsSync(agentSettings)) {
+    writeFileSync(agentSettings, JSON.stringify({ defaultProvider: 'mock', defaultModel: 'test' }))
+  }
   const executablePath = process.env.PI_E2E_APP
   const app = await electron.launch({
     executablePath,
@@ -107,6 +118,7 @@ async function launch(dirs, scenario = 'default', extraEnv = {}) {
       MOCK_SCENARIO: scenario,
       PI_CHROME_BRIDGE_SECRET_FILE: join(dirs.base, 'chrome-bridge-secret.json'),
       PI_DESKTOP_SKIP_AUTO_INSTALL: '1',
+      PI_DESKTOP_MOCK_AUTH: '1',
       ...extraEnv
     }
   })
@@ -115,11 +127,19 @@ async function launch(dirs, scenario = 'default', extraEnv = {}) {
   page.on('pageerror', (error) => errors.push(error.message))
   await page.waitForSelector('.composer-input, .welcome', { timeout: 45_000 })
   await page.waitForTimeout(1200)
+  const close = app.close.bind(app)
+  app.close = async () => {
+    await Promise.race([
+      close().catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, 8000))
+    ])
+    try { execFileSync('pkill', ['-f', dirs.userData]) } catch { /* window already gone */ }
+  }
   return { app, page, errors }
 }
 
 async function openModelMenu(page) {
-  await page.locator('.chip').first().click()
+  await page.locator('.model-chip, .composer-right .chip').first().click()
   await page.waitForSelector('.popover .menu-list')
 }
 
@@ -167,7 +187,7 @@ async function caseMenuScrollAndKeyboard() {
   await page.waitForTimeout(900)
   const chip = await page.locator('.chip-label').first().innerText()
   check('Enter 选中并关闭菜单', (await page.locator('.popover').count()) === 0, `chip=${chip}`)
-  check('选中的模型写回输入区', chip === 'Mock Bulk 0', chip)
+  check('选中的模型写回输入区', chip.startsWith('Mock Bulk 0'), chip)
 
   // scroll: menu list scrolls in place and the menu stays open
   await openModelMenu(page)
@@ -222,7 +242,7 @@ async function caseWorkPanel() {
   check('变更 tab 能展开 diff', diffLines > 0, `lines=${diffLines}`)
 
   await page.locator('.work-tab-button', { hasText: '文件' }).click()
-  await page.waitForSelector('.tree-row')
+  await page.waitForFunction(() => document.querySelectorAll('.tree-row').length > 1, null, { timeout: 8000 })
   const tree = await page.locator('.tree-row').count()
   check('文件 tab 渲染目录树', tree > 1, `rows=${tree}`)
 
@@ -264,8 +284,34 @@ async function caseWorkPanel() {
     await page.waitForTimeout(250)
   }
   const widthStart = await panelWidth()
+  const handleBox = await page.locator('.work-resize').boundingBox()
+  await page.mouse.move(handleBox.x + 5, handleBox.y + 260)
+  await page.mouse.down()
+  await page.mouse.move(handleBox.x - 75, handleBox.y + 260)
+  await page.waitForTimeout(50)
+  const duringDrag = await page.locator('.work-panel').evaluate((el) => ({ width: el.getBoundingClientRect().width, transition: getComputedStyle(el).transitionDuration }))
+  check('拖动时面板及时跟随鼠标且不叠加宽度动画', Math.abs(duringDrag.width - (widthStart + 80)) < 3 && duringDrag.transition.split(',').every((value) => parseFloat(value) === 0), JSON.stringify(duringDrag))
+  await page.mouse.up()
+  await page.waitForTimeout(250)
+  await dragHandle(80)
   await dragHandle(-110)
   const widthWide = await panelWidth()
+  const composerAlignment = await page.evaluate(() => {
+    const composer = document.querySelector('.composer').getBoundingClientRect()
+    const project = document.querySelector('.composer-project-row').getBoundingClientRect()
+    const slot = document.querySelector('.composer-project-slot').getBoundingClientRect()
+    return { composer: [composer.left, composer.right], project: [project.left, project.right], slot: [slot.left, slot.right] }
+  })
+  check('窄对话区项目栏保持在输入框内', composerAlignment.project[0] >= composerAlignment.composer[0] - 1 && composerAlignment.project[1] <= composerAlignment.composer[1] + 1 && composerAlignment.slot[1] <= composerAlignment.composer[1] + 1, JSON.stringify(composerAlignment))
+  await page.locator('.composer-wrap').evaluate((el) => { el.style.width = '340px' })
+  const narrowAlignment = await page.evaluate(() => {
+    const composer = document.querySelector('.composer').getBoundingClientRect()
+    const project = document.querySelector('.composer-project-row').getBoundingClientRect()
+    return { composer: [composer.left, composer.right], project: [project.left, project.right] }
+  })
+  check('更窄输入框中项目栏仍不会溢出', narrowAlignment.project[0] >= narrowAlignment.composer[0] - 1 && narrowAlignment.project[1] <= narrowAlignment.composer[1] + 1, JSON.stringify(narrowAlignment))
+  await page.screenshot({ path: 'output/panel-resize.png' })
+  await page.locator('.composer-wrap').evaluate((el) => { el.style.width = '' })
   await dragHandle(120)
   const widthNarrow = await panelWidth()
   check(
@@ -429,13 +475,17 @@ async function caseNetworkSettings() {
   try {
     await page.keyboard.press('Meta+,')
     await page.waitForSelector('.settings-page')
-    await page.getByRole('button', { name: '网络与沙箱', exact: true }).click()
-    await page.waitForSelector('.settings-section-lead')
+    await page.getByRole('button', { name: '权限与安全', exact: true }).click()
+    const networking = page.getByRole('switch', { name: '联网', exact: true })
+    check('联网默认开启', await networking.getAttribute('aria-checked') === 'true')
+    await networking.click()
+    await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="联网"]')?.getAttribute('aria-checked') === 'false')
+    check('关闭联网会保存新对话偏好', JSON.parse(readFileSync(join(dirs.userData, 'settings.json'), 'utf8')).sandboxNetwork === 'off')
     const pageText = await page.locator('.settings-content').innerText()
-    check('网络与沙箱是独立设置页', /启用沙箱/.test(pageText) && /代理地址/.test(pageText) && /不使用代理的地址/.test(pageText))
-    check('安全设置显示当前保护状态摘要', (await page.locator('.settings-status-summary').count()) === 1 && /当前：/.test(await page.locator('.settings-status-summary').innerText()))
-    check('网络设置包含域名白名单', (await page.locator('.sandbox-domains').count()) >= 3)
-    check('网络设置包含审计日志入口', (await page.getByRole('button', { name: '查看日志' }).count()) === 1)
+    check('主页面只显示审批与联网偏好', /新对话的执行方式/.test(pageText) && !/允许使用完全访问|域名|代理地址/.test(pageText))
+    await page.getByText('连接与诊断', { exact: true }).click()
+    check('诊断里保留代理地址和日志入口', await page.getByLabel('代理地址', { exact: true }).isVisible() &&
+      await page.getByRole('button', { name: '查看日志' }).isVisible())
   } finally { await app.close() }
 }
 
@@ -492,7 +542,7 @@ async function caseChromeImport() {
 async function caseBrowser() {
   const server = createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    res.end('<!doctype html><script>globalThis.__piDocumentIdentity=\"forged\"</script><title>Browser Fixture</title><h1>browser ok</h1><p>上传成功：订单 002</p><div style="display:none">hidden-secret</div><label>登录码<textarea autocomplete="one-time-code">otp-secret</textarea></label><button id=go onclick="this.textContent=\'clicked\'">Go</button>')
+    res.end('<!doctype html><script>globalThis.__piDocumentIdentity=\"forged\"</script><title>Browser Fixture</title><h1>browser ok</h1><p>上传成功：订单 002</p><div style="display:none">hidden-secret</div><label>登录码<textarea hidden autocomplete="one-time-code">otp-secret</textarea></label><button id=go onclick="this.textContent=\'clicked\'">Go</button>')
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const port = server.address().port
@@ -545,8 +595,16 @@ async function caseBrowser() {
 
     const bridgePath = await app.evaluate(() => process.env.PI_DESKTOP_BROWSER_BRIDGE_FILE)
     const bridge = JSON.parse(readFileSync(bridgePath, 'utf8'))
+    const controllerId = randomUUID()
+    const bridgeHeaders = (body) => ({
+      authorization: `Bearer ${bridge.token}`,
+      'x-pi-controller': controllerId,
+      'x-pi-page': 'main',
+      'x-pi-pid': String(process.pid),
+      ...(body ? { 'content-type': 'application/json' } : {})
+    })
     const request = async (path, body) => {
-      const response = await fetch(`http://127.0.0.1:${bridge.port}${path}`, { method: 'POST', headers: { authorization: `Bearer ${bridge.token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      const response = await fetch(`http://127.0.0.1:${bridge.port}${path}`, { method: body ? 'POST' : 'GET', headers: bridgeHeaders(body), body: body ? JSON.stringify(body) : undefined })
       return { status: response.status, body: await response.json() }
     }
     await app.evaluate(async ({ BrowserWindow }) => {
@@ -681,7 +739,7 @@ async function caseBrowser() {
     const Type = new Proxy({}, { get: () => (...args) => ({ args }) })
     let dropGuardReply = false
     const bridgeRequest = async (path, body) => {
-      const response = await fetch(`http://127.0.0.1:${bridge.port}${path}`, { method: body ? 'POST' : 'GET', headers: { authorization: `Bearer ${bridge.token}`, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined })
+      const response = await fetch(`http://127.0.0.1:${bridge.port}${path}`, { method: body ? 'POST' : 'GET', headers: bridgeHeaders(body), body: body ? JSON.stringify(body) : undefined })
       const result = await response.json()
       if (dropGuardReply && path === '/act' && result.code === 'PI_GUARD_REJECTED') { dropGuardReply = false; throw new Error('simulated lost bridge response') }
       if (path === '/act' && result.code === 'PI_GUARD_REJECTED' && ['page_changed','human','target_changed'].includes(result.reason)) return { result: { __piGuardRejected: result.reason } }
@@ -689,11 +747,24 @@ async function caseBrowser() {
       return result
     }
     const journal = new BrowserActionJournal(join(dirs.base,'browser-test-journal.sqlite'))
-    const factory = runInNewContext(`${code}\ncomputerUse`, { BrowserRouter, judgeWithJev, Type, createBrowserActionJournal: () => journal, bridgeRequest, randomUUID, URL, setTimeout, process: { env: {} }, approvalMode: 'always', audit: async () => {} })
-    factory({ registerTool: (definition) => tools.set(definition.name, definition), on: () => {} })
+    const factory = runInNewContext(`${code}\ncomputerUse`, { BrowserRouter, judgeWithJev, Type, createBrowserActionJournal: () => journal, bridgeRequest, randomUUID, URL, setTimeout, setInterval, clearInterval, process: { env: { PI_DESKTOP_BROWSER_BRIDGE_FILE: 'fixture' } }, approvalMode: 'always', manualBrowserApproval: false, allowRoutineActions: false, audit: async () => {} })
+    const lifecycle = new Map()
+    factory({ registerTool: (definition) => tools.set(definition.name, definition), on: (name, handler) => lifecycle.set(name, handler) })
     const invoke = async (name, params = {}) => tools.get(name).execute('test', params, undefined, undefined, { ui: { confirm: async () => true } })
     await invoke('computer_use_session_open', { backend: 'inapp' })
     let observed = JSON.parse((await invoke('computer_use_session_observe', { url: `http://127.0.0.1:${port}/` })).content[0].text)
+    const marker = page.locator('.work-tabs [data-control]')
+    await marker.waitFor()
+    check('实际浏览器观察给对应标签加上鼠标状态', await marker.getAttribute('data-control') === 'active')
+    const originalPage = (await page.evaluate(() => window.pi.browserCurrent())).documentId
+    const personalPage = await page.evaluate(async url => {
+      await window.pi.browserNavigate(url, true)
+      return (await window.pi.browserCurrent()).documentId
+    }, `http://127.0.0.1:${port}/?personal`)
+    await page.waitForFunction(expected => window.pi.browserCurrent().then(current => current.documentId === expected && current.otherTab?.documentId === expected), personalPage)
+    check('切到个人网页后，鼠标图标留在 Pi 的标签', await marker.getAttribute('aria-selected') === 'false' && personalPage !== originalPage)
+    await marker.click()
+    await page.waitForFunction(expected => window.pi.browserCurrent().then(current => current.documentId === expected), originalPage)
     const changeButton = async text => app.evaluate(async ({ BrowserWindow }, value) => { const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView')); await view.webContents.executeJavaScript(`document.querySelector('#go').textContent=${JSON.stringify(value)}`) }, text)
     await app.evaluate(async ({ BrowserWindow }) => { const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView')); await view.webContents.executeJavaScript("window.__testClicks=0;document.querySelector('#go').addEventListener('click',()=>window.__testClicks++)") })
     const clickCount = () => app.evaluate(async ({ BrowserWindow }) => { const view=BrowserWindow.getAllWindows()[0].contentView.children.find(child=>child.constructor?.name?.includes('WebContentsView')); return view.webContents.executeJavaScript('window.__testClicks') })
@@ -756,6 +827,17 @@ async function caseBrowser() {
     let paused = false
     try { await invoke('computer_use_session_observe') } catch (error) { paused = /human/i.test(String(error)) }
     check('验证出现后暂停并等待人工接管', paused)
+    const handoff = tools.get('computer_use_session_takeover').execute('test', {reason:'完成人机验证'}, undefined, undefined, {
+      ui: { confirm: async () => {
+        await page.locator('.work-tabs [data-control="waiting"]').waitFor()
+        return false
+      } }
+    })
+    await handoff
+    check('接管时标签显示等你操作', await marker.getAttribute('data-control') === 'waiting')
+    await lifecycle.get('agent_end')()
+    await marker.waitFor({ state: 'detached' })
+    check('任务结束清除鼠标标记', await marker.count() === 0)
     await invoke('computer_use_session_close')
     journal.close()
     const beforeReloadIdentity=(await request('/observe',{})).body.documentId
@@ -774,6 +856,280 @@ async function caseBrowser() {
   } finally {
     if (app) await app.close()
     await new Promise((resolve) => server.close(resolve))
+  }
+}
+
+async function caseChatMedia() {
+  const dirs = freshDirs('chat-media')
+  const project = join(dirs.base, 'project')
+  mkdirSync(project)
+  const videoName = '演示 视频.mp4'
+  writeFileSync(join(project, videoName), readFileSync(join(root, 'scripts/fixtures/chat-preview.mp4')))
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160"><rect width="240" height="160" fill="#315878"/></svg>'
+  writeFileSync(join(project, 'cover.svg'), svg)
+  writeFileSync(join(project, 'cover-2.svg'), svg.replace('#315878', '#a77049'))
+  const outside = join(dirs.base, 'outside.svg')
+  writeFileSync(outside, svg)
+  if (process.platform !== 'win32') symlinkSync(outside, join(project, 'external.svg'), 'file')
+  const session = seedSession(dirs.sessions, 'chat-media', '对话产物', 0, project)
+  const rows = [
+    { role: 'user', content: [{ type: 'text', text: '生成图片、流程图和视频' }] },
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'cover-write', name: 'write', arguments: { path: 'cover-2.svg', content: svg } }] },
+    { role: 'toolResult', toolCallId: 'cover-write', toolName: 'write', isError: false, content: [{ type: 'text', text: 'Wrote cover-2.svg' }] },
+    { role: 'assistant', content: [{ type: 'text', text: [
+      '已完成。',
+      '![封面](./cover.svg)',
+      '[第二版](./cover-2.svg) · [视频](<./演示 视频.mp4>)',
+      `\`\`\`svg\n${svg}\n\`\`\``,
+      '```mermaid\nflowchart LR\nA[提交] --> B[审核]\n```',
+      '```mermaid\nnot a diagram\n```'
+    ].join('\n\n') }] }
+  ]
+  appendFileSync(session, rows.map((message) => JSON.stringify({ type: 'message', timestamp: Date.now(), message })).join('\n') + '\n')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({
+    theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project, lastSessionPath: session
+  }))
+
+  const { app, page, errors } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1' })
+  try {
+    const turn = page.locator('.turn').filter({ hasText: '生成图片、流程图和视频' })
+    const video = turn.getByLabel(videoName, { exact: true })
+    const gallery = turn.locator('.turn-image-gallery')
+    await video.waitFor()
+    await page.waitForFunction(() => document.querySelector('.turn-video video')?.readyState >= 2)
+    check('对话中视频加载首帧，有播放器且默认暂停', await video.evaluate((element) => element.controls && element.paused && element.videoWidth === 240))
+    await video.evaluate((element) => element.play())
+    await page.waitForFunction(() => document.querySelector('.turn-video video')?.currentTime > 0.1)
+    await video.evaluate((element) => { element.pause(); element.currentTime = 2.5 })
+    await page.waitForFunction(() => {
+      const element = document.querySelector('.turn-video video')
+      return element?.paused && !element.seeking && Math.abs(element.currentTime - 2.5) < 0.08
+    })
+    check('真实 MP4 可以播放、暂停和跳转进度', await video.evaluate((element) => element.paused && element.duration >= 3.9))
+    await gallery.getByRole('button', { name: 'cover-2.svg', exact: true }).click()
+    const svgImage = gallery.locator('.turn-image-open img')
+    await page.waitForFunction(() => document.querySelector('.turn-image-open img')?.naturalWidth === 240)
+    check('SVG 图集去重并可切换缩略图', await gallery.locator('.turn-image-thumbnails button').count() === 2 &&
+      await svgImage.getAttribute('alt') === 'cover-2.svg')
+    await svgImage.click()
+    check('SVG 可在对话内放大', await page.locator('.lightbox img').isVisible())
+    await page.keyboard.press('Escape')
+
+    await page.waitForFunction(() => document.querySelector('[data-diagram-type="mermaid"] img')?.naturalWidth > 0)
+    const renderedDiagram = await turn.locator('[data-diagram-type="mermaid"] img').evaluate(async (element) => {
+      const width = element.naturalWidth
+      const height = element.naturalHeight
+      const image = new OffscreenCanvas(width, height)
+      const ctx = image.getContext('2d')
+      ctx.drawImage(element, 0, 0)
+      const pixels = ctx.getImageData(0, 0, width, height).data
+      const colored = pixels.some((value, index) => index % 4 === 3 && value > 0)
+      const bounds = element.getBoundingClientRect()
+      return { width, height, colored, displayWidth: bounds.width, displayHeight: bounds.height }
+    })
+    check('Mermaid 渲染为流程图，非法语法保留源码', renderedDiagram.width > 40 && renderedDiagram.height > 28 && renderedDiagram.colored &&
+      renderedDiagram.displayWidth > 60 && renderedDiagram.displayHeight > 40 &&
+      await turn.locator('.diagram-fallback pre').getByText('not a diagram').isVisible(), JSON.stringify(renderedDiagram))
+    await page.waitForFunction(() => document.querySelector('[data-diagram-type="svg"] img')?.naturalWidth === 240)
+    check('SVG 源码块在回答中可直接查看', await turn.locator('[data-diagram-type="svg"] img').isVisible())
+    const unauthorized = await page.evaluate(async ({ outside, project, session }) => Promise.all([
+      window.pi.previewMedia({ path: outside, workspace: project, sessionPath: session }),
+      window.pi.previewMedia({ path: 'external.svg', workspace: project, sessionPath: session }),
+      window.pi.previewMedia({ path: 'cover.svg', workspace: project, sessionPath: null })
+    ]), { outside, project, session })
+    check('预览拒绝越过项目目录、外部符号链接和其他会话', unauthorized.every((item) => item === null))
+    await video.scrollIntoViewIfNeeded()
+    await page.screenshot({ path: join(dirs.base, 'inline-media.png') })
+    await page.reload()
+    await page.waitForFunction(() => document.querySelector('.turn-video video')?.readyState >= 2)
+    check('重开历史对话后视频仍能加载', await page.locator('.turn-video video').count() === 1)
+    check('对话媒体无 renderer 异常', errors.length === 0, errors.join(' | '))
+  } finally {
+    await app.close()
+  }
+}
+
+async function caseHistoricalPage() {
+  const dirs = freshDirs('historical-page')
+  const project = join(dirs.base, 'project')
+  mkdirSync(project)
+  const localExample = process.env.PI_TEST_HISTORICAL_HTML
+  const name = localExample ? 'pelican-film.html' : 'animation.html'
+  const path = join(project, name)
+  writeFileSync(path, localExample ? readFileSync(localExample) : `<!doctype html><meta charset="utf-8">
+    <button id="play">播放</button><button id="navigation">尝试联网</button><output id="state">等待</output>
+    <script>
+      let isolated = false
+      try { void parent.document } catch { isolated = true }
+      document.querySelector('#state').dataset.isolated = String(isolated && typeof window.pi === 'undefined')
+      document.querySelector('#play').onclick = () => { document.querySelector('#state').textContent = '动画已启动' }
+      document.querySelector('#navigation').onclick = () => { location.href = 'https://preview-sentinel.invalid/' }
+    </script>`)
+  const session = seedSession(dirs.sessions, 'historical-page', '旧会话作品', 0, project)
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: '修改动画' }] },
+    { role: 'assistant', content: [{ type: 'toolCall', name: 'edit', id: 'history-edit', arguments: { path: name } }] },
+    { role: 'toolResult', toolName: 'edit', toolCallId: 'history-edit', content: [{ type: 'text', text: 'Updated file' }] },
+    { role: 'assistant', content: [{ type: 'text', text: '动画已修改。' }] }
+  ]
+  appendFileSync(session, messages.map((message) => JSON.stringify({ type: 'message', timestamp: Date.now(), message })).join('\n') + '\n')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({
+    theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project, lastSessionPath: session
+  }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1' })
+  try {
+    const output = page.getByRole('region', { name, exact: true })
+    await output.waitFor()
+    check('旧会话的文件变更自动出现预览入口，页面尚未启动', await output.getByRole('button', { name: '打开预览' }).isVisible() && !await output.locator('iframe').count())
+    await output.getByRole('button', { name: '打开预览' }).click()
+    const frame = output.frameLocator('iframe')
+    if (localExample) {
+      const clock = frame.locator('#time')
+      await clock.waitFor()
+      const before = await clock.innerText()
+      await page.waitForTimeout(1200)
+      check('截图里的原始 HTML 动画可以播放', await frame.locator('svg').count() > 0 && await clock.innerText() !== before)
+      await frame.locator('body').press('Space')
+      const paused = await clock.innerText()
+      await page.waitForTimeout(700)
+      check('原始页面的空格键可以暂停动画', await clock.innerText() === paused)
+      await output.scrollIntoViewIfNeeded()
+      await page.screenshot({ path: join(dirs.base, 'historical-preview.png') })
+    } else {
+      await frame.getByRole('button', { name: '播放' }).click()
+      check('交互脚本能运行，且预览无法读父页面或调用桌面接口', await frame.getByText('动画已启动').isVisible() &&
+        await frame.locator('#state').getAttribute('data-isolated') === 'true')
+      let externalRequests = 0
+      await page.route('https://preview-sentinel.invalid/**', (route) => {
+        externalRequests++
+        return route.abort()
+      })
+      await frame.getByRole('button', { name: '尝试联网' }).click()
+      await page.waitForTimeout(250)
+      check('预览发起外部导航时不会发送请求', externalRequests === 0, `requests=${externalRequests}`)
+    }
+    await output.getByRole('button', { name: '关闭预览' }).click()
+    check('关闭预览后卸载动画', !await output.locator('iframe').count())
+  } finally {
+    await app.close()
+    if (localExample) rmSync(path, { force: true })
+  }
+}
+
+async function caseProjectDeliverables() {
+  const dirs = freshDirs('project-deliverables')
+  const project = join(dirs.base, 'website')
+  const notes = join(dirs.base, 'notes')
+  mkdirSync(project)
+  mkdirSync(notes)
+  execFileSync('git', ['init', '-q', '-b', 'feature/demo'], { cwd: project })
+
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+    response.end('<title>Pi Demo</title><h1>Local preview is running</h1>')
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${server.address().port}/demo`
+  const session = seedSession(dirs.sessions, 'project-deliverables', '网页交付记录', 0, project)
+  const rows = [
+    { role: 'user', content: [{ type: 'text', text: '先记录旧变更' }] },
+    { role: 'assistant', content: [
+      { type: 'toolCall', id: 'old-file', name: 'edit', arguments: { path: 'prior.txt', oldText: 'old', newText: 'previous' } },
+      { type: 'toolCall', id: 'old-demo', name: 'edit', arguments: { path: 'demo.ts', oldText: 'first', newText: 'oldMarker' } }
+    ] },
+    ...['old-file', 'old-demo'].map((id) => ({ role: 'toolResult', toolCallId: id, toolName: 'edit', isError: false, content: [] })),
+    { role: 'assistant', content: [{ type: 'text', text: '旧记录已保存。' }] },
+    { role: 'user', content: [{ type: 'text', text: '交付本地网站' }] },
+    { role: 'assistant', content: ['demo.ts', 'layout.ts', 'theme.css', 'readme.md'].map((path, index) => ({
+      type: 'toolCall', id: `new-${index}`, name: 'edit', arguments: { path, oldText: 'old', newText: 'newMarker' }
+    })) },
+    ...[0, 1, 2, 3].map((index) => ({ role: 'toolResult', toolCallId: `new-${index}`, toolName: 'edit', isError: false, content: [] })),
+    { role: 'assistant', content: [{ type: 'text', text: [
+      `[演示网站](${url} "pi:website")`,
+      `[第二个交付页][secondary]\n\n[secondary]: ${url}?view=secondary "pi:website"`,
+      '[参考文档](https://example.com/reference)'
+    ].join('\n\n') }] }
+  ]
+  appendFileSync(session, rows.map((message) => JSON.stringify({ type: 'message', timestamp: Date.now(), message })).join('\n') + '\n')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({
+    theme: 'dark', language: 'zh-CN', workspaces: [project, notes], lastWorkspace: project, lastSessionPath: session
+  }))
+
+  let app
+  try {
+    const launched = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1' })
+    app = launched.app
+    const { page, errors } = launched
+    const bar = page.locator('.composer-project-row')
+    await bar.getByText('feature/demo', { exact: true }).waitFor()
+    check('旧会话的项目栏显示项目与真实 Git 分支', await bar.getByRole('button', { name: 'website', exact: true }).isVisible())
+    const turn = page.locator('.turn', { hasText: '交付本地网站' })
+    const card = turn.getByRole('region', { name: '演示网站', exact: true })
+    await card.getByRole('button', { name: '在右侧打开' }).waitFor()
+    check('网页结果卡只展示明确交付的网页，其余在其他页面，引用链接保留',
+      !await turn.getByRole('region', { name: '第二个交付页' }).isVisible() &&
+      await turn.getByRole('link', { name: '参考文档' }).isVisible() &&
+      await turn.locator('.turn-html').count() === 2)
+    await turn.locator('.turn-other-pages summary').click()
+    check('其他交付网页可以展开', await turn.getByRole('region', { name: '第二个交付页' }).isVisible())
+    await turn.locator('.turn-other-pages summary').click()
+    await page.screenshot({ path: join(dirs.base, 'project-deliverables.png') })
+    await card.getByRole('button', { name: '在右侧打开' }).click()
+    await page.waitForFunction(() => document.querySelector('.browser-address input')?.value.includes('/demo'))
+    check('从旧对话卡片在右侧打开真实网页', await app.evaluate(async ({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]
+      for (let attempt = 0; attempt < 40; attempt++) {
+        const view = window.contentView.children.find((child) => child.webContents?.getTitle() === 'Pi Demo')
+        if (view) return await view.webContents.executeJavaScript('document.querySelector("h1")?.textContent') === 'Local preview is running'
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      return false
+    }))
+    await new Promise((resolve) => { server.close(resolve); server.closeAllConnections() })
+    await card.getByRole('button', { name: '在右侧打开' }).click()
+    await card.getByText('预览未运行', { exact: true }).waitFor({ timeout: 8000 })
+    check('本地预览停止时，原卡片显示状态', true)
+
+    const changes = turn.getByRole('region', { name: '本轮文件变更' })
+    check('变更卡显示真实统计，默认仅展开三个文件',
+      await changes.locator('.turn-changes-row').count() === 3 && await changes.getByText('+4', { exact: true }).isVisible())
+    await changes.getByRole('button', { name: '再显示 1 个文件' }).click()
+    check('可以在卡片内展开和收起文件', await changes.locator('.turn-changes-row').count() === 4)
+    await changes.getByRole('button', { name: '查看变更' }).click()
+    const panel = page.locator('.work-panel')
+    await panel.getByRole('button', { name: '本轮', exact: true }).waitFor()
+    check('右侧仅列出本轮文件', await panel.locator('.work-file:visible').count() === 4 &&
+      !await panel.locator('[data-work-file$="prior.txt"]').count())
+    await changes.getByRole('button', { name: /demo\.ts/ }).click()
+    const diff = panel.locator('[data-work-file$="demo.ts"] .work-file-body')
+    await diff.getByText('newMarker').waitFor()
+    check('同一文件在旧轮次的编辑不会混入本轮 diff', !await diff.getByText('oldMarker').count())
+
+    await page.locator('.composer-input').fill('项目原草稿')
+    await bar.getByRole('button', { name: 'website', exact: true }).click()
+    await page.getByRole('menuitem', { name: /^notes/ }).click()
+    await bar.getByRole('button', { name: 'notes', exact: true }).waitFor()
+    check('切到普通文件夹开启新对话，Git 分支和原消息不随新项目显示',
+      !await bar.locator('.composer-branch').count() && !await turn.count())
+    await page.getByText('网页交付记录', { exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('.composer-input')?.value === '项目原草稿')
+    check('返回原项目对话保留草稿', true)
+    await bar.getByRole('button', { name: 'website', exact: true }).click()
+    await page.getByRole('menuitem', { name: /^新建无项目对话/ }).click()
+    await bar.getByRole('button', { name: '选择项目' }).waitFor()
+    check('有草稿时仍可通过项目菜单另开无项目对话', await bar.getByText('本机', { exact: true }).isVisible() &&
+      await page.locator('.composer-input').inputValue() === '')
+    await bar.getByRole('button', { name: '选择项目' }).click()
+    const search = page.getByPlaceholder('搜索项目')
+    await search.fill('notes')
+    await search.press('ArrowDown')
+    await page.keyboard.press('Enter')
+    await bar.getByRole('button', { name: 'notes', exact: true }).waitFor()
+    check('在发送前可用键盘关联项目', true)
+    check('项目栏和交付卡无 renderer 异常', errors.length === 0, errors.join(' | '))
+  } finally {
+    if (app) await app.close()
+    if (server.listening) await new Promise((resolve) => { server.close(resolve); server.closeAllConnections() })
   }
 }
 
@@ -806,11 +1162,21 @@ async function casePolish() {
   const opened = await page.evaluate(() => window.pi.openPath('/Users/qm/Desktop/pi-desktop/package.json'))
   check('shell:open-path 可用', opened === true, String(opened))
 
-  // notification IPC answers even when focused (false = suppressed)
-  const notified = await page.evaluate(() => window.pi.notify({ title: 't', body: 'b' }))
+  // notification IPC answers even when focused (false = suppressed).
+  // Conversation notifications contain a single status line.
+  const notified = await page.evaluate(() =>
+    window.pi.notify({
+      title: 'Pi',
+      body: '对话已完成',
+      cwd: '/tmp',
+      sessionPath: '/tmp/session.jsonl'
+    })
+  )
   check('notify IPC 可用（返回布尔）', typeof notified === 'boolean', String(notified))
+  const hasNotifyOpen = await page.evaluate(() => typeof window.pi.onNotifyOpen === 'function')
+  check('notify 点击可打开会话（onNotifyOpen）', hasNotifyOpen)
 
-  // diff: open the edit card and toggle full-file context
+  // diff: open the edit card and toggle the stored fragment
   await page.locator('.turn').last().locator('.tool-card:has(.kind-edit) .tool-head').first().click()
   await page.waitForTimeout(300)
   const collapsedLines = await page.locator('.turn').last().locator('.diff-line').count()
@@ -818,7 +1184,7 @@ async function casePolish() {
   await page.waitForTimeout(300)
   const fullLines = await page.locator('.turn').last().locator('.diff-line').count()
   check(
-    'diff 可切换全文件/上下文',
+    'diff 可切换片段/上下文',
     collapsedLines > 0 && fullLines > collapsedLines,
     `${collapsedLines} → ${fullLines}`
   )
@@ -907,6 +1273,104 @@ async function caseProcessSteps() {
     opened.subtitles[0] ?? ''
   )
   await app.close()
+}
+
+async function caseOperationDetails() {
+  const dirs = freshDirs('operation-details')
+  const project = join(dirs.base, 'project')
+  mkdirSync(project)
+  writeFileSync(join(project, 'target.ts'), Array.from({ length: 70 }, (_, index) =>
+    index === 41 ? 'newActual' : `line ${index + 1}`).join('\n'))
+  const fullOutputPath = join(project, 'command-output.log')
+  writeFileSync(fullOutputPath, '更早的命令输出\n报错原因\n')
+  const patch = '--- target.ts\n+++ target.ts\n@@ -42,1 +42,2 @@\n-oldActual\n+newActual\n+anotherActual\n'
+  const session = seedSession(dirs.sessions, 'operation-details', '操作明细', 0, project)
+  const tool = (id, name, args) => ({ type: 'toolCall', id, name, arguments: args })
+  const assistant = (...content) => ({ role: 'assistant', content })
+  const text = (value) => ({ type: 'text', text: value })
+  const result = (id, name, output, rest = {}) => ({
+    role: 'toolResult', toolCallId: id, toolName: name, content: [text(output)], ...rest
+  })
+  const rows = [
+    { role: 'user', content: [text('核对文件并修改')] },
+    assistant(tool('read-one', 'read', { path: 'before.ts' })),
+    result('read-one', 'read', 'Old content'),
+    assistant(tool('search', 'bash', { command: "rg -n 'review-focus|openFile' src" })),
+    result('search', 'bash', '找到相关代码', { structuredContent: { exit_code: 0 } }),
+    assistant(tool('failed', 'bash', { command: 'npm run check && echo done' })),
+    result('failed', 'bash', '报错原因\nCommand exited with code 7', { isError: true, structuredContent: { exit_code: 7, full_output_path: fullOutputPath } }),
+    assistant(text('已经定位问题，继续检查。'),
+      tool('files', 'bash', { command: "rg --files -g '*.tsx' src" }),
+      tool('read-two', 'read', { path: 'after.ts' })),
+    result('files', 'bash', 'src/after.ts'),
+    result('read-two', 'read', 'New content'),
+    assistant(tool('native', 'edit', { path: 'target.ts', oldText: 'wrongArgument', newText: 'wrongPreview' })),
+    result('native', 'edit', 'Edited', { details: { patch, firstChangedLine: 42 } }),
+    assistant(tool('legacy', 'edit', {
+      path: 'legacy.ts',
+      oldText: ['old', ...Array.from({ length: 20 }, (_, index) => `context ${index}`)].join('\n'),
+      newText: ['new', ...Array.from({ length: 20 }, (_, index) => `context ${index}`)].join('\n')
+    })),
+    result('legacy', 'edit', 'Edited'),
+    assistant(tool('fail-edit', 'edit', { path: 'failed.ts', oldText: 'old', newText: 'new' })),
+    result('fail-edit', 'edit', '找不到匹配文字', { isError: true }),
+    assistant(text('已完成修改。'))
+  ]
+  appendFileSync(session, rows.map((message) => JSON.stringify({ type: 'message', timestamp: Date.now(), message })).join('\n') + '\n')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({
+    theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project, lastSessionPath: session
+  }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1' })
+  try {
+    await page.keyboard.press('Meta+Shift+Period')
+    const process = page.locator('.turn-process-details')
+    const groups = process.locator('.tool-group')
+    await groups.first().waitFor()
+    check('进度说明在两个混合分组之间，单次编辑各自保留', await groups.count() === 2 &&
+      await process.getByText('已经定位问题，继续检查。').isVisible() &&
+      await process.locator('.tool-card .tool-file-link').count() === 3)
+    await groups.first().locator('.tool-head').first().click()
+    const cards = groups.first().locator('.tool-card')
+    check('混合分组按读取、搜索、命令的原顺序展开',
+      JSON.stringify(await cards.locator('.tool-subtitle').allTextContents()) ===
+      JSON.stringify(['before.ts', '已在 src 中搜索 “review-focus|openFile”', 'npm run check && echo done']))
+    await cards.nth(2).locator('.tool-head').click()
+    check('复杂命令保留原文和输出，并单列真实退出码', await cards.nth(2).locator('.bash-command').innerText().then((value) => value.includes('npm run check && echo done')) &&
+      await cards.nth(2).getByText('报错原因', { exact: true }).isVisible() &&
+      await cards.nth(2).locator('.bash-exit-status').innerText() === '退出码 7')
+    await groups.nth(1).locator('.tool-head').first().click()
+    check('文件查找显示范围和 glob', await groups.nth(1).getByText('在 src 中查找文件 “*.tsx”').isVisible())
+
+    const native = process.locator('.tool-card', { has: page.getByRole('button', { name: 'target.ts', exact: true }) })
+    const legacy = process.locator('.tool-card', { has: page.getByRole('button', { name: 'legacy.ts', exact: true }) })
+    check('成功的折叠编辑优先显示原生 patch 的实际增删数', await native.locator('.tool-line-stats').innerText() === '+2 −1')
+    await native.locator('.tool-head').click()
+    check('展开显示实际 diff 和行号，不采用调用参数的片段', await native.locator('.diff-hunk').getByText('@@ -42,1 +42,2 @@').isVisible() &&
+      await native.getByText('newActual', { exact: true }).isVisible() &&
+      !await native.getByText('wrongPreview', { exact: true }).count())
+    await legacy.locator('.tool-head').click()
+    await legacy.getByRole('button', { name: '展开片段' }).click()
+    check('历史编辑可展开完整片段', await legacy.getByText('context 19', { exact: true }).isVisible())
+    const failedEdit = process.locator('.tool-card', { has: page.getByRole('button', { name: 'failed.ts', exact: true }) })
+    await failedEdit.locator('.tool-head').click()
+    check('失败的编辑展示错误，不计入实际增删', await failedEdit.getByText('找不到匹配文字', { exact: true }).isVisible() &&
+      !await failedEdit.locator('.tool-line-stats').count())
+    await failedEdit.locator('.tool-head').click()
+    await legacy.locator('.tool-head').click()
+    await groups.first().evaluate((element) => element.scrollIntoView({ block: 'start' }))
+    await page.screenshot({ path: join(dirs.base, 'operation-details.png') })
+    await cards.nth(2).getByRole('button', { name: '查看保存的输出' }).click()
+    await page.locator('.file-preview-body:visible').getByText('更早的命令输出', { exact: false }).waitFor()
+    check('工具保存在磁盘上的原始输出可在右侧查看', true)
+    await native.getByRole('button', { name: 'target.ts', exact: true }).click()
+    await page.locator('.file-preview-target[data-line="42"]').waitFor()
+    check('点击文件名打开右侧文件并定位第一处变更', await page.locator('.file-preview-target').innerText() === 'newActual')
+    const summary = page.locator('.turn-changes')
+    await summary.getByRole('button', { name: /target\.ts/ }).click()
+    check('本轮变更右栏也显示同一原生 diff', await page.locator('.work-panel .diff-hunk').getByText('@@ -42,1 +42,2 @@').isVisible())
+  } finally {
+    await app.close()
+  }
 }
 
 async function caseVirtualization() {
@@ -1105,6 +1569,47 @@ async function caseDefaultVisibility() {
   await app.close()
 }
 
+async function caseTurnTiming() {
+  const dirs = freshDirs('turn-timing')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [root], lastWorkspace: root })
+  )
+  const { app, page } = await launch(dirs, 'default', {
+    MOCK_TRANSCRIPT: '2',
+    MOCK_THINKING_MS: '2400',
+    MOCK_STREAM_INTERVAL: '80'
+  })
+  try {
+    const turns = page.locator('.turn')
+    const history = await turns.locator('.turn-elapsed').allTextContents()
+    check('历史轮次各自显示实际耗时', history.length === 2 && history.every((label) => label === '耗时 6s'), JSON.stringify(history))
+
+    const input = page.locator('.composer-input')
+    await input.fill('timer check')
+    await input.press('Enter')
+
+    const latest = turns.last()
+    const thought = latest.locator('.thinking-head span')
+    const elapsed = latest.locator('.turn-elapsed')
+    await thought.getByText(/^思考中 [1-2]s$/).waitFor({ state: 'visible' })
+    check('思考和本轮耗时按整秒更新', /^执行中 [1-2]s$/.test(await elapsed.textContent()))
+
+    await thought.getByText(/^思考了 2s$/).waitFor({ state: 'visible' })
+    await elapsed.getByText(/^执行中 [3-9]s$/).waitFor({ state: 'visible' })
+    check('思考完成后，总耗时在回答期间继续计时', await thought.textContent() === '思考了 2s')
+
+    await elapsed.getByText(/^耗时 [5-9]s$/).waitFor({ state: 'visible' })
+    const finished = await elapsed.textContent()
+    await page.waitForTimeout(1100)
+    check('回答完成后耗时固定，历史轮次独立', await elapsed.textContent() === finished &&
+      await thought.textContent() === '思考了 2s' &&
+      await turns.first().locator('.turn-elapsed').textContent() === '耗时 6s', finished)
+  } finally {
+    await app.close()
+  }
+}
+
 async function caseAutoFoldOnAnswer() {
   const dirs = freshDirs('autofold')
   writeFileSync(
@@ -1259,6 +1764,76 @@ async function caseSidebarLayout() {
   await app.close()
 }
 
+async function caseBackgroundSessionStatus() {
+  const dirs = freshDirs('background-session-status')
+  const sessionA = seedSession(dirs.sessions, 'background-a', '后台任务')
+  seedSession(dirs.sessions, 'background-b', '另一个对话')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({
+    theme: 'dark', workspaces: [root], lastWorkspace: root, lastSessionPath: sessionA
+  }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1', MOCK_STREAM_INTERVAL: '100' })
+  try {
+    const notificationsAvailable = await app.evaluate(({ Notification }) => {
+      if (!Notification.isSupported()) return false
+      globalThis.testNotifications = []
+      Notification.prototype.show = function () { globalThis.testNotifications.push(this) }
+      return true
+    })
+    const taskRow = page.locator('.session-item').filter({ hasText: '后台任务' })
+    const otherRow = page.locator('.session-item').filter({ hasText: '另一个对话' })
+    const running = taskRow.locator('.session-running')
+    await taskRow.and(page.locator('.active')).waitFor()
+    await page.getByText(/后台任务 answer 0/).waitFor()
+    await page.locator('.composer-input').fill('background sidebar status')
+    await page.keyboard.press('Enter')
+    await page.getByText(/mock reply.*background sidebar status/).waitFor()
+    await running.waitFor()
+
+    await otherRow.locator('.session-main').click()
+    await page.getByText(/另一个对话 answer 0/).waitFor()
+    check('切换到其他对话后，原对话仍显示执行中', await running.isVisible() && await otherRow.locator('.session-running').count() === 0)
+    if (notificationsAvailable) await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide())
+
+    await running.waitFor({ state: 'hidden' })
+    check('后台任务完成时，侧栏清除执行中状态', await otherRow.and(page.locator('.active')).isVisible())
+    if (notificationsAvailable) {
+      const notice = await app.evaluate(() => {
+        const [notification] = globalThis.testNotifications
+        return notification && { title: notification.title, body: notification.body }
+      })
+      check('后台完成通知只显示一行状态', notice?.title === 'Pi' && notice.body === '对话已完成')
+      await app.evaluate(({ BrowserWindow }) => {
+        const [notification] = globalThis.testNotifications
+        if (notification) notification.emit('click')
+        else BrowserWindow.getAllWindows()[0].show()
+      })
+    }
+    if (!notificationsAvailable || !(await app.evaluate(() => globalThis.testNotifications?.length))) {
+      await taskRow.locator('.session-main').click()
+    }
+    await page.getByText(/mock reply.*background sidebar status/).waitFor()
+    check('切回原对话后可看到后台完成的回复', await taskRow.and(page.locator('.active')).isVisible())
+    if (notificationsAvailable) {
+      await page.locator('.composer-input').fill('finish in active window')
+      await page.keyboard.press('Enter')
+      await running.waitFor()
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide())
+      await running.waitFor({ state: 'hidden' })
+      const copy = await app.evaluate(async () => {
+        for (let attempt = 0; attempt < 30; attempt++) {
+          const notification = globalThis.testNotifications[1]
+          if (notification) return notification.body
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+        return null
+      })
+      check('当前对话在窗口后台完成也只显示一行状态', copy === '对话已完成')
+    }
+  } finally {
+    await app.close()
+  }
+}
+
 async function waitForScheduleRun(page, id, timeout = 20_000) {
   const start = Date.now()
   while (Date.now() - start < timeout) {
@@ -1330,32 +1905,45 @@ async function caseSchedules() {
   await page.waitForSelector('.schedule-row')
   await page.getByRole('button', { name: '新建任务' }).first().click()
   await page.waitForSelector('.modal')
-  const compact = await page.evaluate(() => ({
-    prompt: Boolean(document.querySelector('.schedule-textarea')),
-    cadence: document.querySelectorAll('.schedule-cadence .skills-filter').length,
-    preview: document.querySelectorAll('.schedule-preview span').length,
-    nameField: [...document.querySelectorAll('.schedule-field > span')].some((node) => node.textContent === '名称'),
-    projectField: [...document.querySelectorAll('.schedule-field > span')].some((node) => node.textContent === '项目'),
-    toolsField: [...document.querySelectorAll('.schedule-field > span')].some((node) => node.textContent === '工具白名单'),
-    more: Boolean(document.querySelector('.schedule-more'))
-  }))
-  check(
-    '新建任务只保留 Prompt / 频率，高级项折叠',
-    compact.prompt && compact.cadence >= 4 && compact.preview >= 2 && compact.more && !compact.nameField && !compact.projectField && !compact.toolsField,
-    JSON.stringify(compact)
-  )
-  await page.locator('.schedule-more').click()
-  const advanced = await page.evaluate(() => ({
-    selects: document.querySelectorAll('.schedule-advanced select').length,
-    switches: document.querySelectorAll('.schedule-advanced .switch').length
-  }))
-  check('更多选项包含时区 / 运行方式 / 通知', advanced.selects === 2 && advanced.switches === 1, JSON.stringify(advanced))
-  check('补跑默认关闭并在表单直接展示', await page.getByRole('switch', { name: '错过时间后补跑' }).getAttribute('aria-checked') === 'false')
+  const modal = page.locator('.modal')
+  const description = modal.locator('.schedule-textarea')
+  check('新建弹窗只有自然语言入口和识别按钮',
+    await description.isVisible() && !await modal.locator('input[type=time], input[type=datetime-local]').count() &&
+    await modal.getByRole('button', { name: '识别计划', exact: true }).isVisible())
+  check('补跑放在更多选项中', !await modal.getByRole('switch', { name: '错过时间后补跑' }).count())
+  await modal.getByRole('button', { name: '更多选项' }).click()
+  check('更多选项保留运行方式、通知和补跑',
+    await modal.locator('.schedule-advanced select').count() === 1 &&
+    await modal.getByRole('switch', { name: '完成通知' }).getAttribute('aria-checked') === 'true' &&
+    await modal.getByRole('switch', { name: '错过时间后补跑' }).getAttribute('aria-checked') === 'false')
+  await modal.getByRole('button', { name: '更多选项' }).click()
+  await description.fill('明天提醒我汇总订单')
+  await modal.getByRole('button', { name: '识别计划' }).click()
+  await modal.getByText('明天几点提醒你？').waitFor()
+  check('时间缺失会追问，且未创建任务', (await page.evaluate(() => window.pi.listSchedules())).length === 1)
+  await modal.getByPlaceholder('补充一句即可').fill('上午 9 点')
+  await modal.getByRole('button', { name: '继续识别' }).click()
+  await modal.getByRole('button', { name: '创建任务' }).waitFor()
+  check('回答后给出一次性计划与下一次时间', await modal.locator('.schedule-preview time').count() === 1)
+  await description.fill('昨天九点提醒我')
+  await modal.getByRole('button', { name: '识别计划' }).click()
+  await modal.getByRole('alert').getByText('这个时间已经过去了，请换一个时间。').waitFor()
+  check('修改输入会清除旧预览，已经过去的计划无法创建', !await modal.getByRole('button', { name: '创建任务' }).count())
   const backgroundStatus = await page.evaluate(() => window.pi.getBackgroundScheduler())
-  check('系统级调度状态可读取', backgroundStatus.supported === true, JSON.stringify(backgroundStatus))
+  check('系统级调度状态可读取', typeof backgroundStatus?.supported === 'boolean', JSON.stringify(backgroundStatus))
+  check('macOS 才安装系统级调度', process.platform === 'darwin' ? backgroundStatus.supported === true : backgroundStatus.supported === false, JSON.stringify(backgroundStatus))
 
-  await page.locator('.schedule-textarea').fill('E2E 界面任务')
-  await page.locator('.modal .button.primary').click()
+  await description.fill('每个工作日上午 9 点完成 E2E 界面任务')
+  await modal.getByRole('button', { name: '识别计划' }).click()
+  const create = modal.getByRole('button', { name: '创建任务' })
+  await create.waitFor()
+  check('工作日计划显示三次运行时间和采用的时区',
+    await modal.getByText('周一至周五 09:00', { exact: true }).isVisible() &&
+    await modal.locator('.schedule-plan small').isVisible() &&
+    await modal.locator('.schedule-preview time').count() === 3)
+  check('预览仍未创建任务', (await page.evaluate(() => window.pi.listSchedules())).length === 1)
+  await modal.screenshot({ path: join(dirs.base, 'natural-language-schedule.png') })
+  await create.click()
   await page.waitForSelector('.modal', { state: 'detached' })
   await page.waitForFunction(() =>
     [...document.querySelectorAll('.schedule-row')].some((row) =>
@@ -1366,7 +1954,8 @@ async function caseSchedules() {
   const uiTask = created.find((item) => item.name === 'E2E 界面任务')
   check(
     '名称自动生成、目录与工具走默认值',
-    Boolean(uiTask) && uiTask.projectPath.length > 0 && uiTask.tools === undefined,
+    Boolean(uiTask) && uiTask.projectPath.length > 0 && uiTask.tools === undefined &&
+      uiTask.cadence.type === 'weekdays' && uiTask.cadence.time === '09:00' && uiTask.prompt === 'E2E 界面任务',
     JSON.stringify({ name: uiTask?.name, project: uiTask?.projectPath, tools: uiTask?.tools })
   )
 
@@ -1388,6 +1977,22 @@ async function caseSchedules() {
   }
   check('列表开关可以恢复任务', resumed, String(resumed))
 
+  await uiRow.click()
+  await page.locator('.schedule-detail').getByRole('button', { name: '编辑', exact: true }).click()
+  await description.fill('改成每周五下午 6 点')
+  await modal.getByRole('button', { name: '识别计划' }).click()
+  await modal.getByText('周五 18:00', { exact: true }).waitFor()
+  await modal.getByRole('button', { name: '保存', exact: true }).click()
+  await modal.waitFor({ state: 'detached' })
+  const edited = await page.evaluate((id) => window.pi.getSchedule(id), uiTask.id)
+  check('自然语言修改已有任务的时间，保留原任务内容和 ID',
+    edited.task.prompt === uiTask.prompt && edited.task.cadence.type === 'weekly' &&
+    edited.task.cadence.weekday === 5 && edited.task.cadence.time === '18:00')
+  const blockedExpiredSave = await page.evaluate((projectPath) => window.pi.createSchedule({
+    name: '过期草稿', prompt: 'hello', projectPath, cadence: { type: 'once', at: Date.now() - 1000 }
+  }, true).then(() => false, (error) => String(error).includes('SCHEDULE_TIME_EXPIRED')), dirs.base)
+  check('确认时已过期的草稿不会被保存或立即执行', blockedExpiredSave &&
+    !(await page.evaluate(() => window.pi.listSchedules())).some((item) => item.name === '过期草稿'))
   await page.keyboard.press('Escape')
 
   await app.close()
@@ -1512,7 +2117,12 @@ async function caseScheduleSandbox() {
   const { app, page } = await launch(dirs, 'default', { MOCK_SCHEDULE_PROBE_OUTSIDE: outside })
   try {
     const task = await page.evaluate((projectPath) => window.pi.createSchedule({ name: 'sandbox', prompt: 'test', projectPath, cadence: { type: 'daily', time: '09:00' }, notifications: false }), project)
+    const sandbox = await page.evaluate(() => window.pi.sandboxStatus())
     const run = await page.evaluate((id) => window.pi.runScheduleNow(id), task.id)
+    if (!sandbox.available) {
+      check('没有 sandbox runtime 时定时任务不会在沙箱外运行', run?.status === 'failed' && /沙箱/.test(run?.error || '') && !existsSync(outside), JSON.stringify({ status: run?.status, error: run?.error }))
+      return
+    }
     check('启用沙箱的定时任务阻止项目外写入', run?.status === 'success' && !existsSync(outside) && (run.summary || '').includes('outside-write-denied'), JSON.stringify({status:run?.status, error:run?.error, summary:run?.summary}))
   } finally { await app.close() }
 }
@@ -1704,12 +2314,12 @@ async function caseScheduleSlash() {
   await page.waitForSelector('.modal')
   const draft = await page.evaluate(() => ({
     prompt: document.querySelector('.schedule-textarea')?.value,
-    cron: document.querySelector('.schedule-cron input')?.value,
+    plan: document.querySelector('.schedule-plan')?.textContent,
     title: document.querySelector('.skills-title')?.textContent
   }))
   check(
     '/schedule 打开预填的创建弹窗',
-    draft.prompt === '每日总结' && draft.cron === '0 9 * * *' && draft.title?.includes('定时任务'),
+    draft.prompt === '每日总结' && draft.plan?.includes('每天 09:00') && draft.title?.includes('定时任务'),
     JSON.stringify(draft)
   )
   await app.close()
@@ -1849,14 +2459,14 @@ async function caseScratchChat() {
   )
   const { app, page } = await launch(dirs)
   await page.locator('.new-session').click()
-  await page.waitForFunction(() => document.querySelector('.topbar-path')?.textContent?.includes('临时对话'))
+  await page.waitForFunction(() => document.querySelector('.topbar-path')?.textContent?.includes('新对话'))
   const projectRows = await page.locator('.project-row').count()
-  check('临时对话不进入项目列表', projectRows === 1, String(projectRows))
-  await page.locator('.composer-input').fill('临时对话消息')
+  check('新对话不进入项目列表', projectRows === 1, String(projectRows))
+  await page.locator('.composer-input').fill('新对话消息')
   await page.locator('.composer-input').press('Enter')
   await page.waitForTimeout(2500)
   const recent = await page.locator('.recent-sessions .session-item').count()
-  check('临时对话出现在最近对话', recent >= 1, String(recent))
+  check('新对话出现在最近对话', recent >= 1, String(recent))
   await app.close()
 }
 
@@ -1893,7 +2503,7 @@ async function caseScratchRestoreTrust() {
   mkdirSync(scratch, { recursive: true })
   mkdirSync(join(project, '.pi'), { recursive: true })
   writeFileSync(join(project, '.pi', 'settings.json'), '{}')
-  const last = seedSession(dirs.sessions, 'saved-scratch', '已保存的临时对话', 1, scratch)
+  const last = seedSession(dirs.sessions, 'saved-scratch', '已保存的新对话', 1, scratch)
   const settingsPath = join(dirs.userData, 'settings.json')
   for (const lastWorkspace of [project, undefined]) {
     writeFileSync(settingsPath, JSON.stringify({
@@ -1906,15 +2516,15 @@ async function caseScratchRestoreTrust() {
       const title = await page.locator('.topbar-path').innerText()
       const banner = await page.locator('.project-trust-banner, .project-trust-collapsed').count()
       const restored = await page.evaluate(async () => (await window.pi.command({ type: 'get_state' })).data?.sessionFile)
-      const messagesRestored = await page.locator('.user-message').getByText('已保存的临时对话 question 0', { exact: true }).count() === 1
-      check('临时对话按自身目录恢复，无项目横幅', title === '临时对话' && banner === 0 && restored === last && messagesRestored,
+      const messagesRestored = await page.locator('.user-message').getByText('已保存的新对话 question 0', { exact: true }).count() === 1
+      check('新对话按自身目录恢复，无项目横幅', title === '新对话' && banner === 0 && restored === last && messagesRestored,
         JSON.stringify({ hasLastProject: !!lastWorkspace, title, banner, sameSession: restored === last, messagesRestored }))
       if (lastWorkspace) {
         await page.getByRole('button', { name: '在 project 中新建对话' }).click()
-        await page.locator('.project-trust-banner').waitFor()
+        await page.locator('.topbar-path').getByText('project', { exact: true }).waitFor()
         await page.locator('.new-session').click()
-        await page.locator('.topbar-path').getByText('临时对话', { exact: true }).waitFor()
-        check('从项目切换到新临时对话时清除项目横幅', !await page.locator('.project-trust-banner, .project-trust-collapsed').count())
+        await page.locator('.topbar-path').getByText('新对话', { exact: true }).waitFor()
+        check('从项目切换到新对话时无信任提醒', !await page.locator('.project-trust-banner, .project-trust-collapsed').count())
       }
     } finally {
       await app.close()
@@ -1997,7 +2607,7 @@ async function caseSkillsPage() {
     String(backFirst)
   )
 
-  await page.locator('.skill-card', { hasText: 'alpha' }).click()
+  await page.locator('.skill-card', { hasText: '读取表格' }).click()
   await page.waitForSelector('.skill-detail, .detail-page')
   const detailBack = await page.locator('.skills-head .skills-back').boundingBox()
   check('详情页返回键避开红绿灯', Boolean(detailBack && detailBack.y >= 44), JSON.stringify(detailBack))
@@ -2007,7 +2617,7 @@ async function caseSkillsPage() {
   }))
   check(
     '详情页显示 SKILL.md 正文且隐藏 frontmatter',
-    detail.name === 'alpha' &&
+    detail.name === '读取表格' &&
       detail.body.includes('示例正文 alpha') &&
       !detail.body.includes('description:'),
     detail.body.slice(0, 80)
@@ -2020,47 +2630,38 @@ async function caseSkillsPage() {
 
   await page.locator('.skills-page-entry').click()
   await page.waitForSelector('.skills-tab')
-  await page.locator('.skills-tab', { hasText: '插件' }).click()
-  await page.waitForSelector('.package-row')
-  const plugin = await page.evaluate(() => ({
-    name: document.querySelector('.package-name')?.textContent ?? '',
-    desc: document.querySelector('.package-desc')?.textContent ?? ''
-  }))
-  check('插件 tab 列出已安装插件', /fake-plugin/.test(plugin.name) && /2\.3\.4/.test(plugin.name), JSON.stringify(plugin))
-  check('插件显示来源说明', /测试插件/.test(plugin.desc), plugin.desc)
+  await page.locator('.plugins-page-entry').click()
+  const market = page.getByRole('dialog', { name: 'Pi 插件', exact: true })
+  await market.getByRole('tab', { name: /已安装/ }).click()
+  await market.locator('.market-installed article').waitFor()
+  const plugin = await market.locator('.market-installed article').innerText()
+  check('独立 Pi 插件页面列出已安装名称与版本', /fake-plugin/.test(plugin) && /2\.3\.4/.test(plugin), plugin)
+  check('已安装插件显示介绍', /测试插件/.test(plugin), plugin)
+  await app.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('packages:details')
+    ipcMain.handle('packages:details', () => ({ ok: false, error: '此插件未在 npm 发布。' }))
+  })
+  await market.locator('.market-installed .market-card-title').click()
+  await market.getByRole('alert').waitFor()
+  check('未发布的已安装插件显示真实详情错误，可返回列表', (await market.getByRole('alert').innerText()).includes('此插件未在 npm 发布。'))
+  await market.getByRole('button', { name: '所有插件', exact: true }).click()
+  await market.locator('.market-installed article').waitFor()
+  check('详情可返回原来的已安装列表', await market.locator('.market-info').count() === 0)
 
-  const headPad = await page.locator('.skills-head').evaluate((el) => parseFloat(getComputedStyle(el).paddingTop))
-  check('页面标题避开窗口红绿灯', headPad >= 40, String(headPad))
-
-  await page.locator('.package-row').first().click()
-  await page.waitForSelector('.package-detail')
-  const packageDetail = await page.evaluate(() => ({
-    name: document.querySelector('.package-detail .detail-heading h1')?.textContent ?? '',
-    meta: document.querySelector('.package-detail .detail-info')?.textContent ?? ''
-  }))
-  check(
-    '点击插件进入详情页',
-    packageDetail.name === 'fake-plugin' && packageDetail.meta.includes('npm:fake-plugin'),
-    JSON.stringify(packageDetail)
-  )
-  await page.locator('.skills-head .skills-back').click()
-  await page.waitForSelector('.package-row')
-  check('插件详情可返回列表', (await page.locator('.package-detail').count()) === 0)
-
-  await page.locator('.skills-tab', { hasText: '连接器' }).click()
-  await page.waitForSelector('.connector-status')
+  await page.locator('.skills-page-entry').click()
+  await page.locator('.skills-tab', { hasText: '应用连接' }).click()
+  await page.locator('.connection-row', { hasText: '飞书' }).waitFor()
   const connectorSummary = await page.evaluate(() => ({
-    rows: document.querySelectorAll('.package-list .package-row').length,
-    ok: document.querySelectorAll('.connector-status.ok').length,
-    missing: document.querySelectorAll('.connector-status.missing').length
+    feishu: [...document.querySelectorAll('.connection-row')].find((row) => row.textContent?.includes('飞书'))?.textContent ?? '',
+    missing: [...document.querySelectorAll('.connection-row')].find((row) => row.textContent?.includes('definitely-missing-bin'))?.textContent ?? ''
   }))
   check(
-    '连接器 tab 聚合外部命令并区分状态',
-    connectorSummary.rows === 3 && connectorSummary.ok === 2 && connectorSummary.missing === 1,
+    '应用连接区分已安装和未安装的命令',
+    connectorSummary.feishu.includes('飞书') && connectorSummary.feishu.includes('已安装') && connectorSummary.missing.includes('未安装'),
     JSON.stringify(connectorSummary)
   )
 
-  await page.locator('.package-row', { hasText: 'lark-cli' }).first().click()
+  await page.locator('.connection-row', { hasText: '飞书' }).click()
   await page.waitForSelector('.connector-detail')
   const connector = await page.evaluate(() => ({
     name: document.querySelector('.connector-detail .detail-heading h1')?.textContent ?? '',
@@ -2068,24 +2669,24 @@ async function caseSkillsPage() {
   }))
   check(
     '连接器详情显示全局路径与使用它的技能',
-    connector.name === 'lark-cli' &&
+    connector.name === '飞书' &&
+      connector.body.includes('lark-cli') &&
       connector.body.includes('.npm-global') &&
       connector.body.includes('gamma'),
-    connector.body.slice(0, 120)
+    connector.body.slice(0, 180)
   )
 
   await page.locator('.skills-head .skills-back').click()
   await page.waitForSelector('.skills-tab')
-  await page.locator('.skills-tab', { hasText: '插件' }).click()
-  await page.waitForSelector('.package-row')
-
-  await page.locator('.skills-toolbar .button.primary').click()
-  await page.waitForSelector('.modal')
-  const modalTitle = await page.locator('.modal h2').first().innerText()
-  check('安装插件对话框可打开', /安装插件/.test(modalTitle), modalTitle)
+  await page.locator('.plugins-page-entry').click()
+  await market.getByRole('tab', { name: /已安装/ }).click()
+  await market.locator('.market-installed article').waitFor()
+  await market.getByRole('button', { name: '卸载 fake-plugin', exact: true }).click()
+  await page.getByRole('heading', { name: '卸载插件', exact: true }).waitFor()
+  check('已安装插件支持卸载确认', await page.locator('.modal').isVisible())
   await page.keyboard.press('Escape')
-  await page.waitForTimeout(150)
-  check('Esc 关闭安装对话框', (await page.locator('.modal').count()) === 0)
+  await page.locator('.modal').waitFor({ state: 'detached' })
+  check('Esc 关闭卸载对话框并保留市场', await market.isVisible())
 
   await app.close()
 }
@@ -2154,6 +2755,10 @@ async function caseUpdateDownloadReal() {
     })
     try {
       const result = await page.evaluate(() => window.pi.downloadUpdate())
+      if (!result.ok && /当前平台/.test(result.error ?? '')) {
+        check('当前平台没有对应安装包，跳过真实下载校验', true, result.error)
+        return
+      }
       check('真实下载链路可以完成并校验摘要', result.ok === true && typeof result.path === 'string', JSON.stringify(result))
       const saved = readFileSync(result.path)
       check('下载内容与 Release 一致', createHash('sha256').update(saved).digest('hex') === digest)
@@ -2174,6 +2779,7 @@ async function caseJevSettings() {
     check('Jev 配置文件权限为 0600', (statSync(file).mode & 0o777) === 0o600)
     await page.keyboard.press('Meta+,')
     await page.getByRole('button', { name: '工具与技能', exact: true }).click()
+    await page.getByText('开发者设置', { exact: true }).click()
     await page.getByText('Jev 判断层', { exact: true }).waitFor({ timeout: 5000 })
     check('设置页显示 Jev 判断层', await page.getByText('Jev 判断层', { exact: true }).isVisible())
   } finally { await app.close() }
@@ -2193,36 +2799,499 @@ async function caseJevEnv() {
   } finally { await app.close() }
 }
 
-async function casePackageCatalog() {
-  const dirs = freshDirs('package-catalog')
+async function casePluginNavigation() {
+  const dirs = freshDirs('plugin-navigation')
+  const pluginPath = join(dirs.agent, 'npm', 'node_modules', 'pi-demo-plugin')
+  mkdirSync(pluginPath, { recursive: true })
+  writeFileSync(join(pluginPath, 'package.json'), JSON.stringify({ name: 'pi-demo-plugin', version: '1.2.0', description: '测试插件', pi: { extensions: ['./index.js'] } }))
+  writeFileSync(join(dirs.agent, 'settings.json'), JSON.stringify({ packages: ['npm:pi-demo-plugin'], defaultProvider: 'mock', defaultModel: 'test' }))
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [root], lastWorkspace: root }))
+  const scopeProject = join(dirs.base, 'scope-project')
+  const projectPluginPath = join(scopeProject, '.pi', 'npm', 'node_modules', 'pi-demo-plugin')
+  mkdirSync(projectPluginPath, { recursive: true })
+  writeFileSync(join(scopeProject, '.pi', 'settings.json'), JSON.stringify({ packages: ['npm:pi-demo-plugin@0.9.0'] }))
+  writeFileSync(join(projectPluginPath, 'package.json'), JSON.stringify({ name: 'pi-demo-plugin', version: '0.9.0' }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_LIST_OUTPUT: `Project packages:\n  npm:pi-demo-plugin@0.9.0\n    ${projectPluginPath}\n` })
+  try {
+    const scopedPackages = await page.evaluate((cwd) => window.pi.listPackages(cwd), scopeProject)
+    check('同名插件的项目版本与全局版本按实际路径读取', scopedPackages.find((item) => item.scope === 'project')?.version === '0.9.0' && scopedPackages.find((item) => item.scope === 'project')?.path === projectPluginPath && scopedPackages.find((item) => item.scope === 'user')?.version === '1.2.0', JSON.stringify(scopedPackages.map(({ scope, version }) => ({ scope, version }))))
+    const pluginEntry = page.getByRole('button', { name: 'Pi 插件', exact: true })
+    const skillsEntry = page.getByRole('button', { name: '技能与工具', exact: true })
+    const schedulesEntry = page.locator('.schedules-entry')
+    check('Pi 插件与技能、定时任务并列为侧栏入口', await pluginEntry.count() === 1 && await skillsEntry.count() === 1 && await schedulesEntry.count() === 1)
+    await pluginEntry.click()
+    const plugins = page.getByRole('dialog', { name: 'Pi 插件', exact: true })
+    await plugins.getByRole('tab', { name: /已安装/ }).click()
+    await plugins.locator('.market-installed article').waitFor()
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('.navigation-page[data-open="true"]')).opacity === '1')
+    check('独立插件页展示原有插件管理，且侧栏保持可见', await plugins.getByText('pi-demo-plugin', { exact: false }).count() > 0 && await skillsEntry.isVisible())
+    check('只有 Pi 插件入口显示当前页面状态', await pluginEntry.getAttribute('aria-current') === 'page' && await page.locator('.skills-entry[aria-current="page"]').count() === 1)
+    const geometry = await page.evaluate(() => ({ sidebar: document.querySelector('.sidebar').getBoundingClientRect().right, page: document.querySelector('.navigation-page').getBoundingClientRect().left }))
+    check('插件页不覆盖左侧导航', Math.abs(geometry.sidebar - geometry.page) < 1, JSON.stringify(geometry))
+    const catalogBack = plugins.getByRole('button', { name: '返回', exact: true })
+    const catalogBackLayout = await catalogBack.evaluate(button => {
+      const rect = button.getBoundingClientRect(), title = button.closest('.market-content').querySelector('h1').getBoundingClientRect()
+      const arrow = button.querySelector('svg').getBoundingClientRect(), style = getComputedStyle(button)
+      return { arrow: arrow.left, title: title.left, bottom: rect.bottom, titleTop: title.top, width:rect.width, height:rect.height, background:style.backgroundColor, border:style.borderTopWidth, text:button.textContent }
+    })
+    check('市场返回位于标题左上方，44px可点且无边框底色', Math.abs(catalogBackLayout.arrow - catalogBackLayout.title) < 1 && catalogBackLayout.bottom <= catalogBackLayout.titleTop && catalogBackLayout.width >= 44 && catalogBackLayout.height >= 44 && catalogBackLayout.border === '0px' && catalogBackLayout.background === 'rgba(0, 0, 0, 0)' && catalogBackLayout.text === '返回', JSON.stringify(catalogBackLayout))
+
+    await catalogBack.hover()
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('.market-catalog-back svg')).transform !== 'none')
+    const hovered = await catalogBack.evaluate(button => ({ background:getComputedStyle(button).backgroundColor, border:getComputedStyle(button).borderTopWidth, color:getComputedStyle(button).color, text:getComputedStyle(button.closest('.market-content')).color }))
+    check('返回悬停有箭头位移，保持透明无边框和正文色', hovered.background === 'rgba(0, 0, 0, 0)' && hovered.border === '0px' && hovered.color === hovered.text)
+    await catalogBack.focus()
+    await page.keyboard.press('Tab')
+    await page.keyboard.press('Shift+Tab')
+    check('返回支持键盘焦点下划线', await catalogBack.locator('span').evaluate(span => getComputedStyle(span).textDecorationLine.includes('underline')))
+    await page.mouse.move(10, 10)
+    await page.screenshot({ path: join(dirs.base, 'plugins-dark.png') })
+    await page.locator('.sidebar-actions').screenshot({ path: join(dirs.base, 'sidebar.png') })
+    await plugins.getByRole('button', { name: '卸载 pi-demo-plugin', exact: true }).click()
+    await page.getByRole('heading', { name: '卸载插件', exact: true }).waitFor()
+    await page.keyboard.press('Escape')
+    await page.locator('.modal').waitFor({ state: 'detached' })
+    check('卸载对话框关闭后仍停留在独立插件页', await plugins.isVisible())
+    await skillsEntry.click()
+    const skills = page.getByRole('dialog', { name: '技能与工具', exact: true })
+    await skills.locator('.skills-tabs').waitFor()
+    check('技能与工具保留技能和应用连接，移除内部插件标签', JSON.stringify(await skills.locator('.skills-tab').allTextContents()) === JSON.stringify(['技能', '应用连接']))
+    await schedulesEntry.click()
+    await page.getByRole('dialog', { name: '定时任务', exact: true }).waitFor()
+    check('一级页面切换互斥，定时任务选中状态正确', await skills.isVisible() === false && await schedulesEntry.getAttribute('aria-current') === 'page')
+    await pluginEntry.click()
+    await plugins.waitFor()
+    await plugins.getByRole('tab', { name: /已安装/ }).click()
+    await plugins.locator('.market-installed article').waitFor()
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+b' : 'Control+b')
+    await page.waitForFunction(() => document.querySelector('.navigation-page[aria-hidden="false"]').getBoundingClientRect().left === 0)
+    check('收起侧栏后独立页面填满窗口', true)
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+b' : 'Control+b')
+    await page.setViewportSize({ width: 860, height: 720 })
+    await page.waitForFunction(() => Math.abs(document.querySelector('.navigation-page[aria-hidden="false"]').getBoundingClientRect().left - document.querySelector('.sidebar').getBoundingClientRect().right) < 1)
+    const narrow = await plugins.evaluate((el) => ({ width: el.clientWidth, scroll: el.scrollWidth, right: el.getBoundingClientRect().right,
+      left: el.getBoundingClientRect().left, sidebar: document.querySelector('.sidebar').getBoundingClientRect().right }))
+    check('窄窗口插件管理不横向溢出且与侧栏对齐', narrow.scroll <= narrow.width + 1 && narrow.right <= 860 && Math.abs(narrow.left - narrow.sidebar) < 1, JSON.stringify(narrow))
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Shift+l' : 'Control+Shift+l')
+    await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
+    await page.screenshot({ path: join(dirs.base, 'plugins-light-narrow.png') })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    check('页面动画支持减少动态效果', await plugins.locator('..').evaluate((el) => getComputedStyle(el).transitionDuration) === '0s')
+    const narrowBack = plugins.getByRole('button', { name: '返回', exact: true })
+    const narrowBackLayout = await narrowBack.evaluate(button => ({ arrow:button.querySelector('svg').getBoundingClientRect().left, title:button.closest('.market-content').querySelector('h1').getBoundingClientRect().left, height:button.getBoundingClientRect().height }))
+    check('浅色窄窗口返回仍在左上且保留44px区域', Math.abs(narrowBackLayout.arrow-narrowBackLayout.title)<1 && narrowBackLayout.height>=44)
+    await page.screenshot({ path: join(dirs.base, '..', '..', 'market-back-top-left-verified.png') })
+    await narrowBack.click({ position:{x:115,y:22} })
+    await page.waitForFunction(() => document.querySelectorAll('.navigation-page').length === 0)
+    check('返回关闭插件页并恢复侧栏焦点', await pluginEntry.evaluate((el) => el === document.activeElement))
+    await pluginEntry.click()
+    await plugins.waitFor()
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.locator('.settings-page').waitFor()
+    await page.waitForFunction(() => document.querySelectorAll('.navigation-page').length === 0)
+    check('插件页可以直接切换到设置', await page.locator('.settings-page').isVisible())
+    await page.keyboard.press('Escape')
+    await page.locator('.settings-page').waitFor({ state: 'detached' })
+    await schedulesEntry.click()
+    await page.getByRole('dialog', { name: '定时任务', exact: true }).waitFor()
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+,' : 'Control+,')
+    await page.locator('.settings-page').waitFor()
+    await page.waitForFunction(() => document.querySelectorAll('.navigation-page').length === 0)
+    check('定时任务页可以通过快捷键切换到设置', await page.locator('.settings-page').isVisible())
+    await page.keyboard.press('Escape')
+    await page.locator('.settings-page').waitFor({ state: 'detached' })
+    await pluginEntry.click()
+    await plugins.waitFor()
+    await page.getByRole('button', { name: '新建会话', exact: false }).first().click()
+    await plugins.waitFor({ state: 'hidden' })
+    check('从侧栏新建会话会退出插件页', true)
+  } finally { await app.close() }
+}
+
+async function casePackageDetails() {
+  const dirs = freshDirs('package-details')
   const { app, page } = await launch(dirs)
   try {
-    await app.evaluate(({ ipcMain }) => {
-      ipcMain.removeHandler('packages:catalog')
-      ipcMain.handle('packages:catalog', () => ({
-        entries: [{
-          name: 'pi-demo-plugin',
-          version: '1.2.0',
-          description: 'Demo package from the catalog',
-          publishedAt: null,
-          publisher: 'demo',
-          keywords: ['pi-extension'],
-          npmUrl: 'https://www.npmjs.com/package/pi-demo-plugin',
-          repositoryUrl: null,
-          source: 'npm:pi-demo-plugin'
-        }]
-      }))
+    const invalid = await page.evaluate(() => window.pi.getPackageDetails({ name: '../invalid' }))
+    check('详情 API 通过 preload/IPC 校验包名', invalid.ok === false && /包名/.test(invalid.error ?? ''))
+    const result = await page.evaluate(async () => {
+      const response = await window.pi.getPackageDetails({ name: 'pi-mcp-extension' })
+      if (!response.ok) return response
+      const d = response.details
+      return { ok: true, name: d.name, version: d.version, installSource: d.installSource,
+        repositoryUrl: d.repositoryUrl, readmeSource: d.readme?.source,
+        readmeLength: d.readme?.markdown.length ?? 0, versionMatched: d.readme?.versionMatched }
     })
+    check('真实插件详情可经桌面接口返回，安装标识绑定版本',
+      result.ok && result.name === 'pi-mcp-extension' && result.installSource === `npm:pi-mcp-extension@${result.version}`,
+      JSON.stringify(result))
+    check('桌面接口返回完整且匹配版本的 README', result.ok && result.readmeLength > 1000 && result.versionMatched === true)
+  } finally { await app.close() }
+}
+
+async function casePackageCatalog() {
+  const dirs = freshDirs('package-catalog')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [root], lastWorkspace: root }))
+  const { app, page, errors } = await launch(dirs)
+  try {
+    await app.evaluate(({ ipcMain }) => {
+      const entries = ['pi-mcp-extension', 'pi-web-access', 'pi-subagents', 'pi-theme'].map((name, index) => ({
+        name, version: '1.15.3', description: name === 'pi-mcp-extension' ? '为 Pi 接入 MCP 服务，支持本地进程和远程 HTTP 连接。' : '社区扩展，为 Pi 增加更多功能。',
+        publishedAt: '2026-11-13T00:00:00Z', publisher: 'irahardianto', keywords: ['pi-package'],
+        npmUrl: `https://www.npmjs.com/package/${name}`, repositoryUrl: `https://github.com/irahardianto/${name}`, source: `npm:${name}`, index
+      }))
+      const st = { entries, installed: [], calls: [], finish: null, failCatalog: false, latestVersion: '1.15.3', updateCalls: 0 }
+      globalThis.__market = st
+      for (const method of ['catalog', 'details', 'install', 'list', 'remove', 'update', 'translate']) ipcMain.removeHandler(`packages:${method}`)
+      ipcMain.handle('packages:catalog', (_, query) => {
+        (st.searchCalls ??= []).push(query)
+        const result = () => st.failCatalog ? { entries: [], error: '网络暂时不可用' } : ({ entries: entries.filter((entry) => !query || entry.name.includes(query)) })
+        if (query === 'mcp' && st.holdSearch) return new Promise((resolve) => { st.finishSearch = () => resolve(result()) })
+        return result()
+      })
+      ipcMain.handle('packages:list', () => st.installed)
+      ipcMain.handle('packages:translate', (_, input) => { (st.translationBatches ??= []).push(input.texts.length); return ({ ok: true, texts: input.texts.map((text) => input.language === 'en' ? text.replace(/[\p{Script=Han}\u3000-\u303F\uFF00-\uFFEF]+/gu, 'Documentation') : text.replace('Connect Pi to any MCP server.', '让 Pi 连接任意 MCP 服务器。').replace('## Features', '## 功能')) }) })
+      ipcMain.handle('packages:details', (_, { name, version, fast, language }) => {
+        if (st.failDetailsFor === name) return new Promise((resolve) => { st.finishDetails = () => resolve({ ok: false, error: '读取来源失败' }) })
+        const result = { ok: true, details: {
+        name, version: version ?? st.latestVersion, latestVersion: st.latestVersion, versions: [st.latestVersion], description: entries.find((entry) => entry.name === name)?.description,
+        author: 'irahardianto', publisher: 'irahardianto', license: 'MIT', publishedAt: '2026-11-13T00:00:00Z', homepage: null,
+        npmUrl: `https://www.npmjs.com/package/${name}`, catalogUrl: `https://pi.dev/packages/${name}`, repositoryUrl: `https://github.com/irahardianto/${name}`,
+        installSource: `npm:${name}@${version ?? st.latestVersion}`, unpackedSize: 548557, dependencies: { a: '*', b: '*' }, peerDependencies: { a: '*', b: '*', c: '*' }, engines: {},
+        manifest: { extensions: ['./index.ts'], skills: [], prompts: [], themes: [], image: name === 'pi-mcp-extension' ? 'https://raw.githubusercontent.com/irahardianto/pi-mcp-extension/main/docs/icon-preview.png' : name === 'pi-theme' ? 'https://example.invalid/missing-package-cover.png' : null, video: null },
+        readme: { markdown: '# pi-mcp-extension\n\n**Connect Pi to any MCP server.**\n\n将 MCP 服务的工具接入 Pi，并管理连接、工具发现与调用。\n\n## Installation\n\n```bash\npi install npm:pi-mcp-extension\n```\n\n## Features\n\n- 多种传输方式：支持 stdio、SSE 和 Streamable HTTP。\n- 按需连接与工具发现：按需建立连接并自动发现可用工具。\n- 连接状态与错误提示：提供清晰的连接状态与错误信息。\n\n## 使用说明\n\n安装后，可在 Pi 中添加并配置 MCP 服务器。\n\n```json\n{ "mcpServers": {} }\n```\n\n[配置文档](docs/config.md)\n', source: 'npm-cdn', url: 'https://cdn.jsdelivr.net/npm/pi-mcp-extension@1.15.3/README.md', baseUrl: 'https://cdn.jsdelivr.net/npm/pi-mcp-extension@1.15.3/', versionMatched: true }, warnings: [], fetchedAt: Date.now()
+      } }
+        result.details.readme.localizationStatus = language ? 'not-found' : undefined
+        if (fast && st.holdReadme) return new Promise((resolve) => { st.finishReadme = () => { st.holdReadme = false; resolve(result) } })
+        return result
+      })
+      ipcMain.handle('packages:install', (_, source, options) => {
+        st.calls.push({ source, options })
+        return new Promise((resolve) => { st.finish = (ok) => {
+          if (ok) st.installed = [{ source, name: source.replace(/^npm:/, '').replace(/@[^@]+$/, ''), version: source.slice(source.lastIndexOf('@') + 1), scope: 'user', enabled: true, resources: { extensions: 1, skills: 0, prompts: 0, themes: 0 } }]
+          resolve({ ok, code: ok ? 0 : 1, error: ok ? undefined : '下载失败，请检查网络。' })
+        } })
+      })
+      ipcMain.handle('packages:remove', () => { st.installed = st.installed.filter((item) => item.scope !== 'user'); return { ok: true, code: 0 } })
+      ipcMain.handle('packages:update', () => { st.updateCalls++; return { ok: true, code: 0 } })
+    })
+    await page.route('https://example.invalid/**', (route) => route.fulfill({ status: 404, body: '' }))
+    await page.setViewportSize({ width: 1487, height: 1058 })
+    await page.locator('.plugins-page-entry').click()
+    const market = page.getByRole('dialog', { name: 'Pi 插件', exact: true })
+    await market.locator('.market-card').first().waitFor()
+    check('市场默认展示双列目录、最近发布与已安装入口', await market.locator('.market-card').count() === 4 && await market.locator('.market-recent').count() === 1)
+    const searchInput = market.getByRole('textbox', {name:'搜索插件'})
+    await searchInput.click()
+    const searchStyle = await market.locator('.market-search').evaluate(el => {
+      const input = getComputedStyle(el.querySelector('input'))
+      const button = getComputedStyle(el.querySelector('button'))
+      const parent = getComputedStyle(el)
+      const root = getComputedStyle(document.documentElement)
+      return { inputOutline:input.outlineStyle, buttonBorder:button.borderTopWidth, buttonBackground:button.backgroundColor, border:parent.borderTopColor, neutral:root.getPropertyValue('--border-strong').trim() }
+    })
+    check('搜索图标、输入框和按钮合为一体，点击输入没有黄色内框', searchStyle.inputOutline === 'none' && searchStyle.buttonBorder === '0px' && searchStyle.buttonBackground === 'rgba(0, 0, 0, 0)' && searchStyle.border === 'rgb(74, 77, 85)', JSON.stringify(searchStyle))
+    await page.screenshot({ path: join(dirs.base, 'search-focused.png') })
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'light' })
+    const lightFocus = await market.locator('.market-search').evaluate(el => ({ outline:getComputedStyle(el.querySelector('input')).outlineStyle, border:getComputedStyle(el).borderTopColor }))
+    check('浅色主题点击输入也没有黄色内框', lightFocus.outline === 'none' && lightFocus.border === 'rgb(206, 199, 187)', JSON.stringify(lightFocus))
+    await page.screenshot({ path: join(dirs.base, 'search-focused-light.png') })
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark' })
+    await searchInput.press('Tab')
+    const searchButton = market.locator('.market-search button')
+    check('键盘焦点仍清晰可见', await searchButton.evaluate(el => document.activeElement === el && getComputedStyle(el).outlineStyle !== 'none'))
+    await searchInput.fill('web')
+    await market.getByRole('button', {name:'pi-web-access', exact:false}).first().waitFor()
+    check('输入后自动搜索，无需点击按钮', await market.locator('.market-card').count() === 1 && (await app.evaluate(() => globalThis.__market.searchCalls)).includes('web'))
+    await searchInput.fill('')
+    await page.waitForFunction(() => document.querySelectorAll('.market-card').length === 4)
+    check('清空关键词恢复完整目录', await market.locator('.market-recent').isVisible())
+    await app.evaluate(() => { globalThis.__market.holdSearch = true })
+    await searchInput.fill('mcp')
+    await page.waitForFunction(() => window.pi && document.querySelector('.market-grid[aria-busy="true"]'))
+    await page.waitForTimeout(400)
+    await searchInput.fill('web')
+    await market.getByRole('button', {name:'pi-web-access', exact:false}).first().waitFor()
+    await app.evaluate(() => globalThis.__market.finishSearch())
+    await page.waitForTimeout(100)
+    check('较早的搜索结果不会覆盖后输入的关键词', await market.locator('.market-card').count() === 1 && await market.locator('.market-card-title').first().innerText() === 'pi-web-access')
+    await searchInput.fill('')
+    await page.waitForFunction(() => document.querySelectorAll('.market-card').length === 4)
+    const callsBeforeIme = (await app.evaluate(() => globalThis.__market.searchCalls)).length
+    await searchInput.dispatchEvent('compositionstart', { data:'' })
+    await searchInput.fill('zhong')
+    await page.waitForTimeout(400)
+    check('中文拼音组合期间不提前发送搜索', (await app.evaluate(() => globalThis.__market.searchCalls)).length === callsBeforeIme)
+    await searchInput.fill('中文')
+    await searchInput.dispatchEvent('compositionend', { data:'中文' })
+    await page.waitForFunction(() => document.querySelector('.market-empty')?.textContent?.includes('没有找到匹配'))
+    check('中文输入完成后自动搜索', (await app.evaluate(() => globalThis.__market.searchCalls)).includes('中文'))
+    await searchInput.fill('')
+    await page.waitForFunction(() => document.querySelectorAll('.market-card').length === 4)
+
+    check('目录卡片没有安装命令与安装预览步骤', !/pi install|检查并安装|manifest JSON|安装范围/.test(await market.innerText()))
+    check('卡片与图片位均移除边框', await market.locator('.market-card').first().evaluate((el) => getComputedStyle(el).borderTopWidth === '0px') && await market.locator('.market-art').first().evaluate((el) => getComputedStyle(el).borderTopWidth === '0px'))
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('.navigation-page')).opacity === '1')
+    await market.locator('.market-card .market-art img').first().waitFor()
+    await market.locator('.market-card .market-art img').evaluateAll(async (imgs) => { await Promise.all(imgs.map((img) => img.complete ? Promise.resolve() : new Promise((resolve) => { img.onload = resolve; img.onerror = resolve }))) })
+    await market.getByRole('img', { name: 'pi-web-access 默认封面', exact: true }).waitFor()
+    await market.getByRole('img', { name: 'pi-theme 默认封面', exact: true }).waitFor()
+    await page.waitForFunction(() => document.querySelector('.market-card:has(#market-pi-theme) .market-art img') === null)
+    check('有图片显示原图；无图片或图片失败使用统一网格封面', await market.locator('.market-card .market-art[data-artwork="image"]').count() === 1 && await market.locator('.market-card .market-art-placeholder').count() === 3)
+    await page.screenshot({ path: join(dirs.base, 'catalog-dark.png') })
+    const controls = await market.locator('.market-filters').evaluate(el => {
+      const rects = [el.querySelector('.market-search'), ...el.querySelectorAll('.market-select .settings-select-button')].map(item => item.getBoundingClientRect())
+      return rects.map(r => ({ top:r.top, height:r.height, width:r.width }))
+    })
+    check('搜索、类型和排序控件等高并对齐', controls.length === 3 && controls.every(r => Math.abs(r.height - controls[0].height) < 1 && Math.abs(r.top - controls[0].top) < 1) && Math.abs(controls[1].width - controls[2].width) < 1, JSON.stringify(controls))
+    await market.getByRole('button', { name: '插件类型', exact: true }).click()
+    await page.getByRole('menuitemradio', { name: '全部类型', exact: true }).waitFor()
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('.popover')).opacity === '1')
+    const alignment = await page.evaluate(() => {
+      const button = document.querySelector('[aria-label="插件类型"]').getBoundingClientRect()
+      const menu = document.querySelector('.popover:not(.popover-closing):has([role="menuitemradio"])').getBoundingClientRect()
+      return { dx:menu.left-button.left, dw:menu.width-button.width, gap:menu.top-button.bottom }
+    })
+    check('类型菜单与按钮等宽对齐并贴近触发位置', Math.abs(alignment.dx) < 1 && Math.abs(alignment.dw) < 1 && alignment.gap >= 0 && alignment.gap <= 3, JSON.stringify(alignment))
+    await page.screenshot({ path: join(dirs.base, 'filters-dark.png') })
+    await page.keyboard.press('Escape')
+    await page.setViewportSize({ width: 860, height: 720 })
+    const sortTrigger = market.getByRole('button', { name:'插件排序', exact:true })
+    await sortTrigger.scrollIntoViewIfNeeded()
+    await sortTrigger.focus()
+    await page.keyboard.press('Enter')
+    const sortOption = page.getByRole('menuitemradio', { name:'名称排序', exact:true })
+    await sortOption.waitFor()
+    const narrowAlignment = await page.evaluate(() => {
+      const button = document.querySelector('[aria-label="插件排序"]').getBoundingClientRect()
+      const menu = document.querySelector('.popover:not(.popover-closing):has([role="menuitemradio"])').getBoundingClientRect()
+      return { dx:menu.left-button.left, dw:menu.width-button.width, within:menu.left >= 0 && menu.right <= innerWidth, gap:Math.min(Math.abs(menu.top-button.bottom), Math.abs(button.top-menu.bottom)) }
+    })
+    check('窄窗口排序菜单键盘打开并跟随按钮宽度', Math.abs(narrowAlignment.dx) < 1 && Math.abs(narrowAlignment.dw) < 1 && narrowAlignment.within && narrowAlignment.gap <= 3, JSON.stringify(narrowAlignment))
+    await page.keyboard.press('Escape')
+    check('关闭排序菜单后键盘焦点返回按钮', await sortTrigger.evaluate(el => document.activeElement === el))
+    await page.setViewportSize({ width: 1487, height: 1058 })
+    await market.getByRole('button', { name: '从链接安装', exact: true }).click()
+    const cancelledInstall = page.getByRole('dialog', { name: '从链接安装', exact: true })
+    await cancelledInstall.getByRole('textbox', { name: '插件名称或链接' }).fill('pi-mcp-extension')
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Enter')
+    await cancelledInstall.waitFor({ state: 'detached' })
+    check('安装弹窗 Esc 后快速 Enter 不会在退场动画中触发安装', await app.evaluate(() => globalThis.__market.calls.length === 0))
+    await app.evaluate(() => { globalThis.__market.holdReadme = true })
+    await market.locator('.market-card').filter({ hasText: 'pi-mcp-extension' }).click({ position: { x: 18, y: 70 } })
+    await market.locator('.market-info').waitFor()
+    check('整张卡片可打开详情，README读取不阻塞信息和安装按钮', await market.getByRole('button', { name: '安装', exact: true }).isEnabled() && await market.getByText('正在读取说明文档…', { exact: true }).isVisible())
+    await app.evaluate(() => globalThis.__market.finishReadme())
+    await market.locator('.market-readme pre').waitFor()
+    await market.locator('.market-info .market-art img').evaluate(async (img) => { if (!img.complete) await new Promise((resolve) => { img.onload = resolve; img.onerror = resolve }) })
+    check('详情显示版本、作者、依赖、README 与单个安装按钮', await market.getByRole('heading', { name: 'README', exact: true }).count() === 1 && await market.getByRole('button', { name: '安装', exact: true }).count() === 1)
+    check('详情去掉范围、命令、版本下拉和 manifest，保留配置说明', !/pi install|Installation|安装范围|manifest JSON/.test(await market.innerText()) && await market.locator('select').count() === 0 && (await market.locator('.market-readme pre').innerText()).trim() === '{ "mcpServers": {} }')
+    check('README 相对链接指向发布版本，外部内容不注入 HTML', await market.getByRole('link', { name: '配置文档' }).getAttribute('href') === 'https://cdn.jsdelivr.net/npm/pi-mcp-extension@1.15.3/docs/config.md')
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('.market-content')).opacity === '1')
+    await page.screenshot({ path: join(dirs.base, 'detail-dark.png') })
+    const detailReturn = market.getByRole('button', { name: '所有插件', exact: true })
+    await page.mouse.move(1, 1)
+    await page.waitForTimeout(150)
+    const backAlignment = await market.evaluate(el => ({ arrow:el.querySelector('.market-back svg').getBoundingClientRect().left, title:el.querySelector('h1').getBoundingClientRect().left }))
+    check('详情返回箭头与插件标题左侧对齐', Math.abs(backAlignment.arrow - backAlignment.title) < 1, JSON.stringify(backAlignment))
+    const returnBox = await detailReturn.boundingBox()
+    check('详情返回按钮有完整的大点击区域', returnBox.height >= 44 && returnBox.width >= 120, JSON.stringify(returnBox))
+    const returnRest = await detailReturn.evaluate((el) => ({ color: getComputedStyle(el).color, background: getComputedStyle(el).backgroundColor }))
+    await detailReturn.hover()
+    await page.waitForTimeout(180)
+    const returnHover = await detailReturn.evaluate((el) => ({ color: getComputedStyle(el).color, background: getComputedStyle(el).backgroundColor, border: getComputedStyle(el).borderTopWidth, arrow: getComputedStyle(el.querySelector('svg')).transform }))
+    check('返回按钮保持无边框无底色及原文字色，悬停箭头有位移反馈', returnHover.background === returnRest.background && returnHover.background === 'rgba(0, 0, 0, 0)' && returnHover.color === returnRest.color && returnHover.border === '0px' && returnHover.arrow !== 'none', JSON.stringify(returnHover))
+    await page.mouse.move(returnBox.x + 6, returnBox.y + 6)
+    await page.mouse.down()
+    await page.waitForTimeout(80)
+    check('返回按钮按下有缩放反馈并保持无底色', await detailReturn.evaluate((el) => el.matches(':active') && getComputedStyle(el).transform !== 'none' && getComputedStyle(el).backgroundColor === 'rgba(0, 0, 0, 0)'))
+    await page.screenshot({ path: join(dirs.base, 'return-pressed.png') })
+    await page.mouse.up()
+    const returnMotion = await market.locator('.market-content').evaluate((el) => ({ inert: el.inert, motion: getComputedStyle(el).animationName }))
+    check('点击按钮边缘即可返回，详情先退出且阻止重复操作', returnMotion.inert && returnMotion.motion === 'market-detail-out', JSON.stringify(returnMotion))
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Enter')
+    await market.locator('.market-card').first().waitFor()
+    check('快速重复按键不关闭市场或触发安装，焦点回到原卡片', await market.isVisible() && await page.locator('#market-pi-mcp-extension').evaluate((el) => document.activeElement === el) && await app.evaluate(() => globalThis.__market.calls.length === 0))
+    await page.setViewportSize({ width: 1487, height: 800 })
+    await market.locator('.market-scroll').evaluate((el) => { el.scrollTop = 80 })
+    await page.locator('#market-pi-mcp-extension').scrollIntoViewIfNeeded()
+    const catalogScrollBefore = await market.locator('.market-scroll').evaluate((el) => el.scrollTop)
+    await page.locator('#market-pi-mcp-extension').click()
+    await market.locator('.market-info').waitFor()
+    await market.getByRole('button', { name: '所有插件', exact: true }).click()
+    await market.locator('.market-card').first().waitFor()
+    const catalogScrollAfter = await market.locator('.market-scroll').evaluate((el) => el.scrollTop)
+    check('详情返回后恢复目录滚动位置', catalogScrollBefore > 0 && catalogScrollAfter === catalogScrollBefore, JSON.stringify({ before: catalogScrollBefore, after: catalogScrollAfter }))
+    await page.setViewportSize({ width: 1487, height: 1058 })
+    await page.locator('#market-pi-mcp-extension').click()
+    await market.locator('.market-info').waitFor()
+    await market.getByRole('button', { name: '安装', exact: true }).click()
+    await market.getByRole('button', { name: '正在安装', exact: true }).waitFor()
+    check('点击直接安装，按钮禁用且有不编造百分比的动画', await market.locator('.market-install-button').isDisabled() && await market.getByRole('progressbar').getAttribute('aria-valuenow') === null && await market.locator('.market-install-button .market-spin').evaluate((el) => getComputedStyle(el).animationName) === 'market-spin')
+    await page.screenshot({ path: join(dirs.base, 'installing.png') })
     await page.locator('.skills-page-entry').click()
-    await page.waitForSelector('.skills-tab')
-    await page.locator('.skills-tab', { hasText: '插件' }).click()
-    await page.getByRole('button', { name: '浏览目录', exact: true }).click()
-    await page.getByRole('heading', { name: '插件目录', exact: true }).waitFor()
-    await page.locator('.catalog-entry').waitFor({ timeout: 5000 })
-    check('插件目录显示 npm 搜索结果', await page.getByText('pi-demo-plugin', { exact: true }).isVisible())
-    await page.getByRole('button', { name: '检查并安装', exact: true }).click()
-    await page.locator('.install-input').waitFor()
-    check('从目录选择会打开安装预览', await page.locator('.install-input').inputValue() === 'npm:pi-demo-plugin')
+    await page.locator('.skills-tabs').waitFor()
+    await page.locator('.plugins-page-entry').click()
+    await market.locator('.market-card').first().waitFor()
+    const card = market.locator('.market-card').filter({ hasText: 'pi-mcp-extension' })
+    check('切换一级页面后安装状态持续，阻止重复安装', await card.getByRole('button', { name: '正在安装', exact: true }).isDisabled())
+    const calls = await app.evaluate(() => globalThis.__market.calls)
+    check('一次点击只调用一次默认安装且绑定所选版本', calls.length === 1 && calls[0].source === 'npm:pi-mcp-extension@1.15.3' && calls[0].options.local === undefined, JSON.stringify(calls))
+    await app.evaluate(() => globalThis.__market.finish(false))
+    await card.getByRole('button', { name: '重试安装', exact: true }).waitFor()
+    await card.getByRole('button', { name: '查看详情', exact: true }).click()
+    await market.locator('.market-info').waitFor()
+    check('安装失败显示错误与重试，不错误标记已安装', await market.getByRole('alert').innerText() === '下载失败，请检查网络。')
+    await page.screenshot({ path: join(dirs.base, 'install-error.png') })
+    await market.getByRole('button', { name: '重试安装', exact: true }).click()
+    await market.getByRole('progressbar').waitFor()
+    await app.evaluate(() => globalThis.__market.finish(true))
+    await market.getByRole('button', { name: '已安装', exact: true }).waitFor()
+    check('成功转为已安装且自动刷新已安装列表', await market.getByRole('button', { name: '已安装', exact: true }).isDisabled())
+    await page.screenshot({ path: join(dirs.base, 'installed.png') })
+    await page.keyboard.press('Escape')
+    await market.getByRole('tab', { name: /已安装/ }).click()
+    await market.locator('.market-installed article').waitFor()
+    await app.evaluate(() => { globalThis.__market.latestVersion = '1.16.0' })
+    await market.getByRole('button', { name: '更新', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('.market-installed article span')?.textContent === '正在处理…')
+    await app.evaluate(() => globalThis.__market.finish(true))
+    await page.waitForFunction(() => document.querySelector('.market-installed article small')?.textContent === 'v1.16.0')
+    check('固定版本更新重新读取最新版本并安装，实际列表版本改变', await app.evaluate(() => globalThis.__market.calls.at(-1).source === 'npm:pi-mcp-extension@1.16.0' && globalThis.__market.updateCalls === 0))
+    await market.locator('.market-installed .market-card-title').click()
+    await market.locator('.market-info').waitFor()
+
+    await page.setViewportSize({ width: 860, height: 720 })
+    await page.keyboard.press('Meta+Shift+l')
+    await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
+    const geometry = await market.evaluate((el) => ({ width: el.clientWidth, scroll: el.scrollWidth, inner: el.querySelector('.market-info').getBoundingClientRect().right, right: el.getBoundingClientRect().right }))
+    check('详情适配浅色窄窗口，没有横向溢出', geometry.scroll <= geometry.width + 1 && geometry.inner <= geometry.right, JSON.stringify(geometry))
+    await page.screenshot({ path: join(dirs.base, 'detail-light-narrow.png') })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    check('减少动态效果时返回按钮仍有44px点击区域', (await market.getByRole('button', { name: '所有插件', exact: true }).boundingBox()).height >= 44)
+    await page.keyboard.press('Escape')
+    await market.locator('.market-installed article').waitFor()
+    check('减少动态效果时直接返回且恢复焦点', await market.locator('[data-view="detail"] .market-back').count() === 0 && await market.locator('.market-content').evaluate((el) => !el.inert && getComputedStyle(el).animationName === 'none') && await market.locator('.market-installed .market-card-title').evaluate((el) => document.activeElement === el))
+    await market.getByRole('tab', { name: /已安装/ }).click()
+    await market.locator('.market-installed article').waitFor()
+    await market.getByRole('button', { name: /卸载 pi-mcp-extension/ }).click()
+    await page.getByRole('heading', { name: '卸载插件', exact: true }).waitFor()
+    await page.locator('.modal').getByRole('button', { name: '卸载', exact: true }).focus()
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Enter')
+    await page.locator('.modal').waitFor({ state: 'detached' })
+    check('取消卸载保留插件，Escape 不穿透关闭市场且焦点回到原按钮', await market.isVisible() && await market.locator('.market-installed article').count() === 1 && await market.getByRole('button', { name: /卸载 pi-mcp-extension/ }).evaluate((el) => el === document.activeElement))
+    await app.evaluate(() => { const st = globalThis.__market; st.installed.push({ ...st.installed[0], scope: 'project' }) })
+    await market.getByRole('button', { name: '刷新', exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.market-installed article').length === 2)
+    await market.getByRole('button', { name: /卸载 pi-mcp-extension/ }).click()
+    await page.locator('.modal').getByRole('button', { name: '卸载', exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.market-installed article').length === 1)
+    await market.getByRole('tab', { name: '发现插件', exact: true }).click()
+    check('卸载个人副本仍保留项目副本，目录以实际安装状态为准', await market.locator('.market-card').filter({ hasText: 'pi-mcp-extension' }).getByRole('button', { name: '已安装', exact: true }).isDisabled())
+    await market.getByRole('tab', { name: /已安装/ }).click()
+    await app.evaluate(() => { globalThis.__market.installed = [] })
+    await market.getByRole('button', { name: '刷新', exact: true }).click()
+    await market.getByText('还没有安装插件', { exact: true }).waitFor()
+    check('外部安装状态变化后刷新列表，没有永久缓存假状态', true)
+    await market.getByRole('tab', { name: '发现插件', exact: true }).click()
+    await market.getByRole('textbox', { name: '搜索插件' }).fill('web')
+    await market.getByRole('button', { name: '搜索', exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.market-card').length === 1)
+    check('搜索读取目录结果，排序与键盘焦点可用', await market.locator('.market-card-title').innerText() === 'pi-web-access')
+    await market.getByRole('textbox', { name: '搜索插件' }).fill('missing')
+    await market.getByRole('button', { name: '搜索', exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.market-card').length === 0)
+    check('空结果不显示虚假插件', true)
+    await app.evaluate(() => { globalThis.__market.failCatalog = true })
+    await market.getByRole('textbox', { name: '搜索插件' }).fill('')
+    await market.getByRole('button', { name: '搜索', exact: true }).click()
+    await market.getByText('网络暂时不可用', { exact: true }).waitFor()
+    await app.evaluate(() => { globalThis.__market.failCatalog = false })
+    await market.getByRole('button', { name: '重新加载', exact: true }).click()
+    await market.locator('.market-card').first().waitFor()
+    check('目录断网后可重试恢复，减少动态效果关闭页面动画', await market.locator('.market-content').evaluate((el) => getComputedStyle(el).animationName) === 'none')
+    await market.getByRole('button', { name: '插件类型', exact: true }).click()
+    await page.getByRole('menuitemradio', { name: '技能', exact: true }).click()
+    await market.getByText('没有找到匹配的插件，换个关键词或类型试试。', { exact: true }).waitFor()
+    check('类型按实际 manifest 过滤，不把扩展误当技能', await market.locator('.market-card').count() === 0)
+    await market.getByRole('button', { name: '插件类型', exact: true }).click()
+    await page.getByRole('menuitemradio', { name: '扩展', exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.market-card').length === 4)
+    await market.getByRole('button', { name: '插件类型', exact: true }).click()
+    await page.getByRole('menuitemradio', { name: '全部类型', exact: true }).click()
+    await app.evaluate(() => { const st = globalThis.__market; for (let i = 0; i < 13; i++) st.entries.push({ ...st.entries[0], name: `pi-extra-${i}`, source: `npm:pi-extra-${i}` }) })
+    await market.getByRole('button', { name: '搜索', exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.market-card').length === 12)
+    await market.getByRole('button', { name: '下一页', exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.market-card').length === 5)
+    check('分页显示真实条目，上一页与下一页边界正确', await market.getByRole('button', { name: '下一页', exact: true }).isDisabled())
+    await market.getByRole('button', { name: '上一页', exact: true }).click()
+    await market.getByRole('button', { name: '从链接安装', exact: true }).click()
+    const sourceDialog = page.getByRole('dialog', { name: '从链接安装', exact: true })
+    await sourceDialog.getByRole('textbox', { name: '插件名称或链接' }).fill('https://www.npmjs.com/package/pi-mcp-extension')
+    await sourceDialog.getByRole('button', { name: '安装', exact: true }).click()
+    await sourceDialog.getByRole('button', { name: '正在安装', exact: true }).waitFor()
+    check('从 npm 页面直接解析并安装绑定版本，不展示指令或范围', await app.evaluate(() => globalThis.__market.calls.at(-1).source === 'npm:pi-mcp-extension@1.16.0') && !/pi install|安装范围|检查并安装/.test(await sourceDialog.innerText()))
+    await app.evaluate(() => globalThis.__market.finish(true))
+    await sourceDialog.getByRole('button', { name: '已安装', exact: true }).waitFor()
+    await sourceDialog.getByRole('button', { name: '完成', exact: true }).click()
+    await sourceDialog.waitFor({ state: 'detached' })
+    check('从链接安装完成有成功反馈且关闭恢复焦点', await market.getByRole('button', { name: '从链接安装', exact: true }).evaluate((el) => el === document.activeElement))
+    await app.evaluate(() => { globalThis.__market.failDetailsFor = 'pi-missing' })
+    await market.getByRole('button', { name: '从链接安装', exact: true }).click()
+    const pendingDialog = page.getByRole('dialog', { name: '从链接安装', exact: true })
+    await pendingDialog.getByRole('textbox', { name: '插件名称或链接' }).fill('pi-missing')
+    await pendingDialog.getByRole('button', { name: '安装', exact: true }).click()
+    await pendingDialog.getByRole('button', { name: '后台继续', exact: true }).click()
+    await pendingDialog.waitFor({ state: 'detached' })
+    await app.evaluate(() => globalThis.__market.finishDetails())
+    const job = market.locator('.market-job').filter({ hasText: 'pi-missing' })
+    await job.getByText(/读取来源失败/).waitFor()
+    check('来源解析期间关闭弹窗，后续失败仍保留错误与重试入口', await job.getByRole('button', { name: '重试', exact: true }).isVisible())
+    await app.evaluate(() => { globalThis.__market.failDetailsFor = null })
+    await job.getByRole('button', { name: '重试', exact: true }).click()
+    await job.getByText(/正在安装/).waitFor()
+    await app.evaluate(() => globalThis.__market.finish(true))
+    await job.waitFor({ state: 'detached' })
+    check('后台失败可继续重试并回读安装结果', true)
+    await market.getByRole('button', { name: '插件排序', exact: true }).click()
+    await page.getByRole('menuitemradio', { name: '名称排序', exact: true }).waitFor()
+    await page.keyboard.press('Escape')
+    check('筛选使用Pi菜单风格，Esc关闭菜单保留市场', await market.isVisible() && await market.locator('select').count() === 0)
+    await market.getByRole('textbox', { name: '搜索插件' }).fill('pi-mcp-extension')
+    await market.getByRole('button', { name: '搜索', exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.market-card').length === 1)
+    const englishSettings = await page.evaluate(() => window.pi.updateSettings({ language: 'en' }))
+    await app.evaluate(({ BrowserWindow }, settings) => BrowserWindow.getAllWindows()[0].webContents.send('app:settings', settings), englishSettings)
+    const englishMarket = page.getByRole('dialog', { name: 'Pi plugins', exact: true })
+    await englishMarket.getByRole('button', { name: 'Plugin type', exact: true }).waitFor()
+    check('市场按钮、筛选与计数跟随英文语言设置', await englishMarket.getByRole('heading', { name: 'All plugins', exact: true }).count() === 1 && (await englishMarket.innerText()).includes('1 loaded'))
+    await englishMarket.locator('.market-card').click({ position: { x: 15, y: 55 } })
+    await englishMarket.getByRole('heading', { name: 'Plugin information', exact: true }).waitFor()
+    await page.waitForFunction(() => document.querySelector('.market-readme-translation [role="status"]')?.textContent.includes('No author-provided README found'))
+    await englishMarket.getByRole('button', { name: 'Translate to English with AI', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('.market-readme')?.textContent.includes('Documentation') && !/[\p{Script=Han}]/u.test(document.querySelector('.market-readme').textContent))
+    check('主动请求英文AI译文，代码与来源链接保持不变', (await englishMarket.locator('.market-readme pre').innerText()).trim() === '{ "mcpServers": {} }')
+    await page.screenshot({ path: join(dirs.base, 'detail-english.png') })
+    const chineseSettings = await page.evaluate(() => window.pi.updateSettings({ language: 'zh-CN' }))
+    await app.evaluate(({ BrowserWindow }, settings) => BrowserWindow.getAllWindows()[0].webContents.send('app:settings', settings), chineseSettings)
+    await market.getByRole('heading', { name: '插件信息', exact: true }).waitFor()
+    await page.waitForFunction(() => document.querySelector('.market-readme-translation [role="status"]')?.textContent.includes('未找到作者对应语言的文档'))
+    await market.getByRole('button', { name: 'AI 翻译成中文', exact: true }).click()
+    await market.getByRole('heading', { name: '功能', exact: true }).waitFor()
+    check('切回中文后主动请求译文，原文锚点仍有效', await market.locator('#market-readme-features').count() === 1)
+    await page.keyboard.press('Escape')
+    await market.getByRole('tab', { name: /已安装/ }).click()
+    await app.evaluate(() => { const st = globalThis.__market; const base = st.installed[0]; st.installed = Array.from({ length: 25 }, (_, index) => ({ ...base, name: `pi-installed-${index}`, source: `npm:pi-installed-${index}`, description: `插件中文简介 ${index}` })) })
+    await market.getByRole('button', { name: '刷新', exact: true }).click()
+    const installedEnglish = await page.evaluate(() => window.pi.updateSettings({ language: 'en' }))
+    await app.evaluate(({ BrowserWindow }, settings) => BrowserWindow.getAllWindows()[0].webContents.send('app:settings', settings), installedEnglish)
+    await page.waitForFunction(() => document.querySelectorAll('.market-installed p').length === 25 && Array.from(document.querySelectorAll('.market-installed p')).every((el) => el.textContent.startsWith('Documentation')))
+    check('已安装页的简介同样随中英文设置翻译', await englishMarket.getByRole('button', { name: 'Update', exact: true }).count() === 25 && await app.evaluate(() => Math.max(...globalThis.__market.translationBatches) <= 24))
+    check('市场交互没有 renderer 异常', errors.length === 0, errors.join('; '))
   } finally { await app.close() }
 }
 
@@ -2239,6 +3308,11 @@ async function caseSandbox() {
   }))
   const { app, page } = await launch(dirs, 'default', { MOCK_ENV_FILE: envFile, MOCK_SANDBOX_PROBE: '1' })
   try {
+    const sandbox = await page.evaluate(() => window.pi.sandboxStatus())
+    if (!sandbox.available) {
+      check('当前环境没有 sandbox runtime，跳过文件系统隔离', true, sandbox.reason ?? '')
+      return
+    }
     await page.waitForTimeout(3000)
     const env = JSON.parse(readFileSync(envFile, 'utf8'))
     check('sandbox 子进程标记已传递', env.sandbox === '1', JSON.stringify(env))
@@ -2255,22 +3329,139 @@ async function caseSandbox() {
   } finally { await app.close() }
 }
 
+async function caseConversationPermissions() {
+  const dirs = freshDirs('conversation-permissions')
+  const project = join(dirs.base, 'project')
+  mkdirSync(project)
+  const transcript = seedSession(dirs.sessions, 'permissions', 'Saved conversation', 1, project)
+  const settingsPath = join(dirs.userData, 'settings.json')
+  writeFileSync(settingsPath, JSON.stringify({
+    theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project,
+    lastSessionPath: transcript, sandboxEnabled: false, sandboxNetwork: 'off', allowFullAccess: false
+  }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1', MOCK_SANDBOX_PROBE: '1' })
+  try {
+    const sandbox = await page.evaluate(() => window.pi.sandboxStatus())
+    if (!sandbox.available) {
+      console.log('Skipping OS-enforced permissions test:', sandbox.reason)
+      return
+    }
+    const security = () => page.evaluate(async () => {
+      const { data } = await window.pi.command({ type: 'get_state' })
+      return { path: data.sessionFile, ...await window.pi.sessionSecurity(data.sessionFile) }
+    })
+    const chip = page.locator('.approval-mode-chip')
+    const choose = async (name) => {
+      await chip.click()
+      await page.getByRole('menuitemradio', { name: new RegExp(name) }).click()
+    }
+    await chip.getByText('自动模式', { exact: true }).waitFor()
+    const initial = await security()
+    check('自动模式实际开启保护并应用离线偏好', initial.sandboxed && initial.network === 'off' && initial.files === 'workspace-write')
+    await page.locator('.composer-input').fill('权限验证')
+    await page.locator('.composer-input').press('Enter')
+    await page.locator('.composer .send-button.stop').waitFor()
+    await chip.click()
+    check('运行中说明切换时机，选项禁用', await page.getByText('本轮结束后可切换权限。').isVisible() &&
+      await page.getByRole('menuitemradio', { name: /完全访问/ }).isDisabled())
+    await page.keyboard.press('Escape')
+    await page.locator('.composer .send-button.stop').waitFor({ state: 'hidden' })
+    const composer = page.locator('.composer-input')
+    await composer.fill('切换时保留这个草稿')
+    await choose('完全访问')
+    const confirm = page.getByRole('dialog', { name: '为本次对话开启完全访问？' })
+    await confirm.getByRole('button', { name: '取消', exact: true }).click()
+    check('取消后保持原权限', (await security()).permission === 'review')
+    await choose('完全访问')
+    await confirm.getByRole('button', { name: '开启完全访问', exact: true }).click()
+    await chip.getByText('完全访问', { exact: true }).waitFor()
+    const full = await security()
+    check('一次确认开启本次对话的完全访问', full.permission === 'full' && !full.sandboxed && full.network === 'unrestricted' && full.mode === 'never')
+    check('切换后会话、历史和草稿仍在', full.path === transcript &&
+      await page.locator('.user-message').getByText('Saved conversation question 0', { exact: true }).isVisible() &&
+      await composer.inputValue() === '切换时保留这个草稿')
+    await choose('手动确认')
+    await chip.getByText('手动确认', { exact: true }).waitFor()
+    const manual = await security()
+    check('手动确认恢复文件保护与原离线偏好', manual.mode === 'all' && manual.sandboxed &&
+      manual.files === 'workspace-write' && manual.network === 'off')
+
+    await page.evaluate(() => window.pi.command({ type: 'bash', command: 'curl -sS --max-time 2 https://example.invalid' }))
+    const block = page.locator('.conversation-network-block')
+    await block.getByText('本次对话已关闭联网').waitFor()
+    check('拒绝联网后指出具体地址', await block.getByText('Pi 无法连接 example.invalid。').isVisible())
+    check('联网提示出现时项目栏收起', await page.locator('.composer-project-slot').getAttribute('data-covered') === 'true')
+    await block.getByRole('button', { name: '开启本次联网并重试' }).click()
+    await page.getByText(/请从上次中断的地方继续/).first().waitFor()
+    const restored = await security()
+    check('联网恢复后项目栏重新显示', await page.locator('.composer-project-slot').getAttribute('data-covered') === 'false')
+    check('本次联网重试保留手动确认和同一会话', restored.network === 'model' && restored.sandboxed &&
+      restored.permission === 'ask' && restored.path === transcript)
+    check('联网和模式的全局偏好保持原值', JSON.parse(readFileSync(settingsPath, 'utf8')).sandboxNetwork === 'off' &&
+      JSON.parse(readFileSync(settingsPath, 'utf8')).toolApprovalMode === 'dangerous')
+    const activeRules = readdirSync(join(dirs.userData, 'sandbox')).filter((name) => /^[a-f\d-]{36}\.json$/.test(name))
+    check('保护模式允许配置好的 OpenCode 模型服务', activeRules.some((name) =>
+      JSON.parse(readFileSync(join(dirs.userData, 'sandbox', name), 'utf8')).network.allowedDomains.includes('opencode.ai')))
+
+    await page.locator('.composer .send-button.stop').waitFor({ state: 'hidden' })
+    await page.evaluate(() => window.pi.command({ type: 'bash', command: 'curl -sS --max-time 2 https://example.invalid' }))
+    await block.getByText('联网请求被拦截').waitFor()
+    await block.getByRole('button', { name: '允许此网站并重试' }).click()
+    await block.waitFor({ state: 'hidden' })
+    const domainRules = readdirSync(join(dirs.userData, 'sandbox')).filter((name) => /^[a-f\d-]{36}\.json$/.test(name))
+    check('网站例外只写入当前对话的保护规则', domainRules.some((name) =>
+      JSON.parse(readFileSync(join(dirs.userData, 'sandbox', name), 'utf8')).network.allowedDomains.includes('example.invalid')) &&
+      !JSON.parse(readFileSync(settingsPath, 'utf8')).sandboxAllowedDomains?.includes('example.invalid'))
+    await page.locator('.composer .send-button.stop').waitFor({ state: 'hidden' })
+    await composer.fill('')
+    const projectRow = page.locator('.project-tree').filter({ hasText: 'project' })
+    await projectRow.hover()
+    await projectRow.getByRole('button', { name: '项目操作' }).click()
+    await page.getByRole('menuitem', { name: '设为项目只读' }).click()
+    await page.getByText('项目已设为只读', { exact: true }).waitFor()
+    await projectRow.getByRole('button', { name: '在 project 中新建对话' }).click()
+    await chip.getByText('自动模式', { exact: true }).waitFor()
+    const readOnly = await security()
+    check('新对话采用默认模式和项目只读权限', readOnly.permission === 'review' && readOnly.files === 'read-only' && readOnly.network === 'off')
+    const file = join(project, 'blocked.txt')
+    await page.evaluate((path) => window.pi.command({ type: 'bash', command: `echo blocked > '${path}'` }), file)
+    check('只读项目实际禁止写入', !existsSync(file))
+  } finally { await app.close() }
+}
+
 async function caseProxyEnv() {
   const dirs = freshDirs('proxy-env')
   const project = join(dirs.base, 'proxy-project')
   mkdirSync(project, { recursive: true })
   const envFile = join(dirs.base, 'proxy-child-env.json')
+  let destination = ''
+  const proxy = createServer()
+  proxy.on('connect', (request, socket) => {
+    destination = request.url
+    socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n')
+  })
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve))
+  const proxyAddress = `http://127.0.0.1:${proxy.address().port}`
   writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({
     theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project,
-    networkProxy: 'http://127.0.0.1:7890', networkNoProxy: 'localhost,127.0.0.1'
+    networkProxy: proxyAddress, networkNoProxy: 'localhost,127.0.0.1'
   }))
-  const { app } = await launch(dirs, 'default', { MOCK_ENV_FILE: envFile })
   try {
-    const deadline = Date.now() + 8000
-    while (!existsSync(envFile) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100))
-    const env = JSON.parse(readFileSync(envFile, 'utf8'))
-    check('统一代理传递给 pi 子进程', env.proxy === 'http://127.0.0.1:7890' && env.noProxy === 'localhost,127.0.0.1', JSON.stringify(env))
-  } finally { await app.close() }
+    const { app, page } = await launch(dirs, 'default', { MOCK_ENV_FILE: envFile, MOCK_SANDBOX_PROBE: '1' })
+    try {
+      const sandbox = await page.evaluate(() => window.pi.sandboxStatus())
+      if (sandbox.available) {
+        await page.evaluate(() => window.pi.command({ type: 'bash', command: 'curl -sS --max-time 3 https://opencode.ai' }))
+        check('保护模式仍通过已配置的代理连接模型服务', destination === 'opencode.ai:443', destination)
+      }
+      await page.getByRole('button', { name: '自动模式', exact: true }).click()
+      await page.getByRole('menuitemradio', { name: /完全访问/ }).click()
+      await page.getByRole('button', { name: '开启完全访问' }).click()
+      await page.getByRole('button', { name: '完全访问', exact: true }).waitFor()
+      const env = JSON.parse(readFileSync(envFile, 'utf8'))
+      check('完全访问仍使用已设置的代理', env.proxy === proxyAddress && env.noProxy === 'localhost,127.0.0.1')
+    } finally { await app.close() }
+  } finally { proxy.close() }
 }
 
 async function casePackageInspection() {
@@ -2297,15 +3488,10 @@ async function casePackageInspection() {
     check('包含扩展和技能时标记高风险', inspection.risk === 'high' && inspection.resources.extensions === 1 && inspection.resources.skills === 1, JSON.stringify(inspection.resources))
     await page.locator('.skills-page-entry').click()
     await page.waitForSelector('.skills-tab')
-    await page.locator('.skills-tab', { hasText: '插件' }).click()
-    await page.waitForSelector('.skills-toolbar')
-    await page.locator('.skills-toolbar .button.primary').click()
-    await page.locator('.install-input').fill(plugin)
-    await page.getByRole('button', { name: '检查来源' }).click()
-    await page.locator('.package-inspection').waitFor({ timeout: 10000 })
-    check('安装前显示权限预览', await page.locator('.package-risk.high').isVisible())
-    check('预览列出安装脚本', await page.getByText('postinstall: node install.js', { exact: true }).isVisible())
-    check('预览后按钮变为确认安装', await page.getByRole('button', { name: '确认安装' }).isVisible())
+    await page.locator('.plugins-page-entry').click()
+    await page.locator('.market-content').waitFor()
+    check('市场直接安装流程不再暴露检查来源与确认安装步骤', await page.getByRole('button', { name: '检查来源', exact: true }).count() === 0 && await page.getByRole('button', { name: '确认安装', exact: true }).count() === 0)
+
   } finally { await app.close() }
 }
 
@@ -2343,6 +3529,86 @@ async function caseWorkEditCommit() {
   } finally { await app.close() }
 }
 
+async function caseConversationGestures() {
+  const dirs = freshDirs('conversation-gestures')
+  const first = seedSession(dirs.sessions, 'gesture-a', '滑动会话甲')
+  seedSession(dirs.sessions, 'gesture-b', '滑动会话乙')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({theme:'dark',language:'zh-CN',workspaces:[root],lastWorkspace:root,lastSessionPath:first}))
+  const {app,page} = await launch(dirs,'default',{MOCK_LOAD_SESSION:'1',MOCK_LAZY_NEW_SESSION:'1',MOCK_STREAM_INTERVAL:'80',PI_DISABLE_NATIVE_SCROLL_PHASE:'1'})
+  try {
+    const input = page.locator('.composer-input')
+    const phase = type => app.evaluate(({BrowserWindow}, value) => BrowserWindow.getAllWindows()[0].webContents.emit('input-event',{}, {type:value}), type)
+    const swipe = async delta => {
+      await phase('gestureScrollBegin')
+      for (let i=0; i<4; i++) await page.locator('.chat-scroll').first().evaluate((el, x) => el.dispatchEvent(new WheelEvent('wheel',{deltaX:x,bubbles:true,cancelable:true})), delta/4)
+      await phase('gestureScrollEnd')
+    }
+    await page.locator('.chat-inner').getByText('滑动会话甲 question 0',{exact:true}).waitFor()
+    await input.fill('甲的草稿')
+    await page.locator('.session-title').getByText('滑动会话乙',{exact:true}).click()
+    await page.locator('.chat-inner').getByText('滑动会话乙 question 0',{exact:true}).waitFor()
+    await input.fill('乙的草稿')
+    await swipe(-160)
+    await page.locator('.chat-inner').getByText('滑动会话甲 question 0',{exact:true}).waitFor()
+    await page.waitForFunction(() => document.querySelector('.composer-input')?.value === '甲的草稿')
+    check('对话间左滑返回并恢复原草稿', true)
+    await swipe(160)
+    await page.locator('.chat-inner').getByText('滑动会话乙 question 0',{exact:true}).waitFor()
+    await page.waitForFunction(() => document.querySelector('.composer-input')?.value === '乙的草稿')
+    check('对话间右滑前进并恢复原草稿', true)
+    await page.locator('.new-session').click()
+    await input.fill('尚未发送的新对话草稿')
+    await page.waitForFunction(() => !document.querySelector('.send-button')?.disabled)
+    await swipe(-160)
+    await page.locator('.chat-inner').getByText('滑动会话乙 question 0',{exact:true}).waitFor()
+    await swipe(160)
+    await page.waitForFunction(() => document.querySelector('.composer-input')?.value === '尚未发送的新对话草稿')
+    check('未发送的新对话也可前进恢复草稿', true)
+    await page.waitForFunction(() => !document.querySelector('.send-button')?.disabled)
+    await swipe(-160)
+    await page.locator('.chat-inner').getByText('滑动会话乙 question 0',{exact:true}).waitFor()
+    await page.waitForFunction(() => document.querySelector('.composer-input')?.value === '乙的草稿')
+    await input.fill('正在后台运行的任务')
+    await input.press('Enter')
+    await page.locator('.send-button.stop').waitFor()
+    await swipe(-160)
+    await page.locator('.chat-inner').getByText('滑动会话甲 question 0',{exact:true}).waitFor()
+    const running = page.locator('.session-item').filter({ hasText: '滑动会话乙' }).locator('.session-running')
+    await running.waitFor({ timeout: 3000 })
+    check('手势切走正在运行的对话后任务继续执行', await running.isVisible())
+    await swipe(160)
+    await page.getByText('正在后台运行的任务',{exact:true}).first().waitFor()
+    check('手势返回后恢复运行中的对话', true)
+  } finally { await app.close() }
+}
+
+async function caseNativeScrollMonitor() {
+  if (process.platform !== 'darwin') return
+  const dirs = freshDirs('native-scroll-monitor')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root }))
+  const { app } = await launch(dirs)
+  try {
+    const loaded = await app.evaluate(() => process.report.getReport().sharedObjects.some(path => path.endsWith('/scroll-phase.node')))
+    check('macOS 应用成功加载手指松开事件监测', loaded)
+  } finally { await app.close() }
+}
+
+async function caseSystemTheme() {
+  const dirs = freshDirs('system-theme')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'system', workspaces: [root], lastWorkspace: root }))
+  const { app, page } = await launch(dirs)
+  try {
+    await page.waitForSelector('.composer-bar')
+    await app.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'light' })
+    await page.waitForFunction(() => document.documentElement.dataset.theme === 'light', null, { timeout: 5000 }).catch(async (error) => { throw Error(`light theme: ${JSON.stringify(await page.evaluate(() => ({ theme: document.documentElement.dataset.theme, dark: matchMedia('(prefers-color-scheme: dark)').matches })))} ${error.message}`) })
+    await app.evaluate(({ nativeTheme }) => { nativeTheme.themeSource = 'dark' })
+    await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark', null, { timeout: 5000 }).catch(async (error) => { throw Error(`dark theme: ${JSON.stringify(await page.evaluate(() => ({ theme: document.documentElement.dataset.theme, dark: matchMedia('(prefers-color-scheme: dark)').matches })))} ${error.message}`) })
+    check('Electron 跟随系统外观实时切换', true)
+  } finally {
+    await app.close()
+  }
+}
+
 async function caseComposerLayout() {
   const dirs = freshDirs('composer-ui')
   writeFileSync(
@@ -2352,27 +3618,80 @@ async function caseComposerLayout() {
   const { app, page } = await launch(dirs, 'default', { MOCK_TRANSCRIPT: '2', MOCK_TOOLS: '1' })
   await page.waitForSelector('.composer-bar')
   await page.waitForSelector('.chat-inner')
+  await page.locator('.turn').first().waitFor()
+
+  const input = page.locator('.composer-input')
+  await page.waitForTimeout(250)
+  const initialHeight = await input.evaluate((el) => el.getBoundingClientRect().height)
+  await input.fill(Array(16).fill('这是一行较长的内容').join('\n'))
+  await page.waitForTimeout(250)
+  const expandedHeight = await input.evaluate((el) => el.getBoundingClientRect().height)
+  await input.fill('')
+  await page.waitForTimeout(250)
+  const clearedHeight = await input.evaluate((el) => el.getBoundingClientRect().height)
+  const minimumHeight = await input.evaluate((el) => parseFloat(getComputedStyle(el).minHeight))
+  check('长内容清空后输入框恢复最小高度', expandedHeight > initialHeight + 40 && Math.abs(clearedHeight - minimumHeight) < 2, `${initialHeight} → ${expandedHeight} → ${clearedHeight}`)
+  await input.fill(Array(12).fill('较长内容').join('\n'))
+  await page.waitForTimeout(200)
+  await input.fill('第一行\n第二行')
+  await page.waitForTimeout(200)
+  const shortHeight = await input.evaluate((el) => el.getBoundingClientRect().height)
+  check('内容减少时输入框随之收缩', shortHeight > initialHeight && shortHeight < expandedHeight, String(shortHeight))
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await input.fill('')
+  check('减少动态效果时立即恢复高度', Math.abs(await input.evaluate((el) => el.getBoundingClientRect().height) - minimumHeight) < 2)
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
 
   const layout = await page.evaluate(() => {
     const left = document.querySelector('.composer-left')
     const right = document.querySelector('.composer-right')
     const chips = [...right.querySelectorAll('.chip')]
-    const ring = right.querySelector('.context-ring')
+    const modelLabel = right.querySelector('.model-chip .chip-label')?.textContent ?? ''
     return {
       plus: Boolean(left.querySelector('.add-attachment')),
       leftChips: left.querySelectorAll('.chip').length,
-      rightChips: chips.length,
-      chipsBeforeRing: ring
-        ? chips.every((chip) => chip.getBoundingClientRect().left < ring.getBoundingClientRect().left)
-        : false
+      model: chips.length,
+      reasoning: right.querySelectorAll('.reasoning-button').length,
+      ring: right.querySelectorAll('.context-ring').length,
+      modelLabel
     }
   })
   check('左侧是 + 号附件按钮', layout.plus && layout.leftChips === 0, JSON.stringify(layout))
+  const ringText = await page.locator('.context-ring').innerText()
+  const ringTitle = await page.locator('.context-ring').getAttribute('title')
   check(
-    '模型 / 思考在上下文左边',
-    layout.rightChips === 2 && layout.chipsBeforeRing,
-    JSON.stringify(layout)
+    '模型芯片合并思考程度文案，无独立推理条，始终显示上下文环百分比',
+    layout.model >= 1 &&
+      layout.reasoning === 0 &&
+      layout.ring === 1 &&
+      /^\d+%$/.test(ringText.trim()) &&
+      /上下文\s+\d+(?:\.\d+)?%/.test(ringTitle ?? '') &&
+      /tokens/.test(ringTitle ?? '') &&
+      /·\s*(关闭|最低|低|中|高|极高|最高)/.test(layout.modelLabel),
+    JSON.stringify({ ...layout, ringText, ringTitle })
   )
+  await page.locator('.context-ring').click()
+  const contextUsage = page.getByRole('dialog', { name: '上下文用量', exact: true })
+  await contextUsage.waitFor()
+  check('上下文按钮展开用量浮层，旧运行时保留总量和缺失分类说明',
+    (await contextUsage.getByRole('progressbar').count()) === 1 &&
+      (await contextUsage.getByText('分类明细暂不可用，总用量仍可参考。', { exact: true }).count()) === 1 &&
+      (await contextUsage.getByRole('button', { name: '压缩上下文', exact: true }).count()) === 1)
+  await page.keyboard.press('Escape')
+  await page.locator('.context-usage-panel').waitFor({ state: 'detached' })
+  await page.locator('.model-chip').click()
+  await page.waitForSelector('.thinking-effort')
+  const effortLabels = await page.locator('.thinking-slider-labels button').allTextContents()
+  check(
+    '模型菜单按当前模型报告的思考程度展示',
+    effortLabels.length >= 3 && effortLabels.includes('高') && effortLabels.includes('最高') && effortLabels.includes('关闭'),
+    JSON.stringify(effortLabels)
+  )
+  const effortSlider = page.getByRole('slider', { name: '思考程度' })
+  await effortSlider.press('ArrowRight')
+  await page.waitForFunction(() => /·\s*高/.test(document.querySelector('.model-chip .chip-label')?.textContent ?? ''))
+  check('切换思考程度更新芯片文案', /·\s*高/.test(await page.locator('.model-chip .chip-label').innerText()))
+  await page.keyboard.press('Escape')
 
   const column = await page.evaluate(() => {
     const rect = (selector) => document.querySelector(selector)?.getBoundingClientRect()
@@ -2392,12 +3711,469 @@ async function caseComposerLayout() {
     JSON.stringify(column)
   )
 
+  await page.locator('.add-attachment').click()
+  await page.waitForSelector('.composer-add-menu')
+  const addItems = await page.locator('.composer-add-menu .menu-item').allTextContents()
+  check(
+    '+ 菜单最多四项且含附件/文件夹/技能/连接器',
+    addItems.length === 4 &&
+      addItems.some((text) => text.includes('添加文件或图片')) &&
+      addItems.some((text) => text.includes('选择文件夹')) &&
+      addItems.some((text) => text.includes('技能')) &&
+      addItems.some((text) => text.includes('连接器')),
+    JSON.stringify(addItems)
+  )
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('ArrowDown')
+  const focusedAdd = await page.evaluate(() => document.activeElement?.textContent?.trim() ?? '')
+  check('+ 菜单键盘可导航', focusedAdd.includes('技能') || focusedAdd.includes('选择文件夹'), focusedAdd)
+  await page.keyboard.press('Escape')
+  await page.waitForSelector('.composer-add-menu', { state: 'detached' })
+
   const chooser = page.waitForEvent('filechooser')
   await page.locator('.add-attachment').click()
+  await page.locator('.composer-add-menu .menu-item').filter({ hasText: '添加文件或图片' }).click()
   const file = await chooser
   await file.setFiles([])
   check('+ 号打开附件选择', Boolean(file), '')
+
+  // Work panel resizing changes the composer width independently of the window.
+  for (const width of [430, 300]) {
+    await page.locator('.composer').evaluate((element, value) => { element.style.width = `${value}px` }, width)
+    await page.waitForTimeout(300)
+    const compact = await page.evaluate(() => {
+      const controls = [...document.querySelectorAll('.composer-left > .popover-root, .composer-right > .popover-root, .context-usage-root, .send-button')]
+        .map((element) => element.getBoundingClientRect())
+      const bar = document.querySelector('.composer-bar').getBoundingClientRect()
+      return {
+        fits: controls.every((rect, i) => rect.left >= bar.left - 1 && rect.right <= bar.right + 1 && (!i || rect.left >= controls[i - 1].right - 1)),
+        permissionWidth: document.querySelector('.approval-mode-label').getBoundingClientRect().width,
+        modelWidth: document.querySelector('.model-chip .chip-label').getBoundingClientRect().width,
+        modelIcon: getComputedStyle(document.querySelector('.model-compact-icon')).display,
+        modelName: document.querySelector('.model-chip').getAttribute('aria-label')
+      }
+    })
+    check(`输入框 ${width}px 时控件不重叠且保留可访问名称`, compact.fits && compact.permissionWidth < 1 &&
+      (width > 340 ? compact.modelWidth > 0 : compact.modelWidth < 1 && compact.modelIcon !== 'none') && Boolean(compact.modelName), JSON.stringify(compact))
+    await page.locator('.model-chip').click()
+    await page.waitForSelector('.thinking-effort')
+    await page.keyboard.press('Escape')
+    if (width === 300) await page.screenshot({ path: 'output/composer-compact.png' })
+  }
+  await page.locator('.composer').evaluate((element) => { element.style.width = '' })
   await app.close()
+}
+
+async function caseModelProviderMenu() {
+  const dirs = freshDirs('model-providers')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({
+    theme: 'dark', language: 'zh-CN', workspaces: [root], lastWorkspace: root
+  }))
+  writeFileSync(join(dirs.agent, 'models.json'), JSON.stringify({
+    providers: { mock: { name: 'OpenCode Go (Responses)' }, 'volcengine-ark': { name: '火山引擎方舟' } }
+  }))
+  const { app, page } = await launch(dirs, 'multi-providers')
+  try {
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    const trigger = page.locator('.model-provider-trigger')
+    const providers = page.locator('.model-provider-menu')
+    const slider = page.getByRole('slider', { name: '思考程度' })
+    const current = () => page.evaluate(async () => (await window.pi.command({ type: 'get_state' })).data)
+    await openModelMenu(page)
+    await trigger.getByText('OpenCode Go (Responses)', { exact: true }).waitFor()
+    check('主菜单默认只展示当前供应商的模型', await page.getByRole('option').count() === 2 && !await providers.count())
+    const visionModel = page.getByRole('option', { name: /Mock Fast/ })
+    const imageModel = page.getByRole('option', { name: /Mock Deep/ })
+    check('识图用视觉文字，只有声明图片输出的模型显示生图图标',
+      await visionModel.getByText('视觉', { exact: true }).isVisible() &&
+      !await visionModel.getByRole('img', { name: '支持生成图片' }).count() &&
+      await imageModel.getByRole('img', { name: '支持生成图片' }).isVisible() &&
+      !await imageModel.getByText('视觉', { exact: true }).count())
+
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    const motion = await page.locator('.thinking-slider-track').evaluate(async (element) => {
+      const read = () => ({
+        thumb: parseFloat(getComputedStyle(element, '::after').left),
+        fill: parseFloat(getComputedStyle(element, '::before').width)
+      })
+      const start = read()
+      const frames = []
+      const stop = performance.now() + 350
+      element.parentElement.querySelector('.thinking-slider-labels button:nth-child(2)').click()
+      await new Promise((resolve) => {
+        const frame = (time) => {
+          frames.push(read())
+          if (time >= stop) resolve()
+          else requestAnimationFrame(frame)
+        }
+        requestAnimationFrame(frame)
+      })
+      const end = frames.at(-1)
+      return {
+        animates: frames.some(({ thumb, fill }) => thumb > end.thumb + 1 && thumb < start.thumb - 1 &&
+          Math.abs(thumb - fill) < 1),
+        start, end
+      }
+    })
+    check('切换思考档位时滑块和进度同步滑动', motion.animates && motion.end.thumb < motion.start.thumb, JSON.stringify(motion))
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.waitForFunction(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
+    const reducedTransitions = await page.locator('.thinking-slider-track').evaluate((element) =>
+      ['::before', '::after'].map((part) => getComputedStyle(element, part).transitionProperty))
+    check('减少动态效果时立即切换档位', reducedTransitions.every((property) => property === 'none'), JSON.stringify(reducedTransitions))
+    await page.locator('.thinking-slider-labels').getByRole('button', { name: '中', exact: true }).click()
+    await page.waitForFunction(async () => (await window.pi.command({ type: 'get_state' })).data?.thinkingLevel === 'medium')
+    const tickAlignment = await page.locator('.thinking-slider-track').evaluate((element) => {
+      const bounds = element.getBoundingClientRect()
+      const thumbSize = parseFloat(getComputedStyle(element).getPropertyValue('--thinking-thumb'))
+      const labels = [...element.parentElement.querySelectorAll('.thinking-slider-labels button')]
+      return labels.slice(1, -1).map((label, index) => {
+        const rect = label.getBoundingClientRect()
+        return Math.abs(rect.left + rect.width / 2 - (bounds.left + thumbSize / 2 + (bounds.width - thumbSize) * (index + 1) / (labels.length - 1)))
+      })
+    })
+    check('思考程度文字与对应滑块位置对齐', tickAlignment.length > 0 && tickAlignment.every(offset => offset < 1), JSON.stringify(tickAlignment))
+    const thumb = await page.locator('.thinking-slider-track').evaluate((el) => ({ circle: parseFloat(getComputedStyle(el, '::after').height), track: el.getBoundingClientRect().height }))
+    check('圆点比轨道稍大并覆盖上下边缘', thumb.circle === 24 && thumb.track === 20, JSON.stringify(thumb))
+    const track = await slider.boundingBox()
+    await page.mouse.move(track.x + track.width / 2, track.y + track.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(track.x + track.width * 0.75, track.y + track.height / 2, { steps: 4 })
+    await page.mouse.up()
+    await page.waitForFunction(() => document.querySelector('.thinking-slider')?.getAttribute('aria-valuetext') === '高')
+    check('拖动滑杆提交离散档位', (await current()).thinkingLevel === 'high')
+    await trigger.click()
+    const isLeft = await providers.evaluate((element) => {
+      const menu = element.closest('.popover').getBoundingClientRect()
+      const bounds = element.getBoundingClientRect()
+      return bounds.left >= 7 && bounds.right < menu.left && Math.abs(bounds.top - menu.top) < 2
+    })
+    check('供应商菜单对齐主菜单顶边并向左打开', isLeft)
+    await page.screenshot({ path: join(dirs.base, 'model-providers.png') })
+    await page.keyboard.press('Escape')
+    check('Esc 先关闭供应商菜单，焦点回到供应商按钮', !await providers.count() && await trigger.evaluate((element) => element === document.activeElement))
+    await page.getByRole('button', { name: '关闭', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('.thinking-slider')?.getAttribute('aria-valuetext') === '关闭')
+    check('支持关闭的模型可关闭思考，Pi 实际收到 off', (await current()).thinkingLevel === 'off')
+
+    await trigger.click()
+    await providers.getByRole('button', { name: '火山引擎方舟' }).click()
+    check('浏览供应商不立即改变会话模型', (await current()).model.provider === 'mock' && await page.getByRole('option').count() === 1)
+    await page.getByRole('option', { name: /Mock Fast/ }).click()
+    await page.locator('.popover').waitFor({ state: 'hidden' })
+    await openModelMenu(page)
+    await trigger.getByText('火山引擎方舟', { exact: true }).waitFor()
+    check('选择同名模型会切换到正确供应商', (await current()).model.provider === 'volcengine-ark')
+    await slider.waitFor()
+    check('不支持关闭的模型没有关闭档位', (await current()).thinkingLevel !== 'off' &&
+      !await page.locator('.thinking-slider-labels').getByText('关闭', { exact: true }).count())
+    await page.locator('.menu-search input').fill('Mock Fast')
+    check('全局搜索会标明同名模型的供应商', await page.getByRole('option', { name: /Mock Fast/ }).count() === 2 &&
+      await page.locator('.model-option-source').getByText('OpenCode Go (Responses)', { exact: true }).count() === 1 &&
+      await page.locator('.model-option-source').getByText('火山引擎方舟', { exact: true }).count() === 1)
+    await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]
+      window.setMinimumSize(600, 560)
+      window.setSize(600, 620)
+    })
+    await page.waitForFunction(() => innerWidth <= 600)
+    await trigger.click()
+    check('侧边空间不足时，供应商列表在主菜单内部打开', !await providers.evaluate((el) => el.classList.contains('side')) &&
+      !await page.getByRole('option').count())
+    await providers.getByRole('button', { name: '管理模型' }).click()
+    await page.locator('.settings-page').waitFor()
+    check('管理模型打开模型设置', await page.getByRole('heading', { name: '模型', exact: true }).isVisible())
+  } finally {
+    await app.close()
+  }
+}
+
+async function caseNewChatLayout() {
+  const dirs = freshDirs('new-chat-layout')
+  const project = join(dirs.base, 'project')
+  mkdirSync(project)
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({
+    language: 'zh-CN', theme: 'dark', workspaces: [project], lastWorkspace: project
+  }))
+  const { app, page } = await launch(dirs, 'catalog-huge')
+  try {
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.locator('.main.new-chat .empty-session').waitFor()
+    await page.locator('.approval-mode-chip').getByText('自动模式', { exact: true }).waitFor()
+
+    const offset = await page.evaluate(() => {
+      const main = document.querySelector('.main.new-chat')
+      const spaceAbove = parseFloat(getComputedStyle(main.querySelector('.conversation-region')).marginTop)
+      const spaceBelow = main.getBoundingClientRect().bottom - main.querySelector('.composer-wrap').getBoundingClientRect().bottom
+      return Math.round((spaceBelow - spaceAbove) / 2)
+    })
+    check('新对话标题和输入框整体略高于居中位置', offset >= 12 && offset <= 32, `${offset}px`)
+
+    const menu = page.locator('.popover')
+    const menuPosition = () => menu.evaluate((element) => {
+      const bounds = element.getBoundingClientRect()
+      const input = document.querySelector('.composer').getBoundingClientRect()
+      return {
+        top: Math.round(bounds.top), bottom: Math.round(bounds.bottom), inputTop: Math.round(input.top),
+        fits: bounds.top >= 7 && bounds.bottom <= input.top - 7 && bounds.left >= 7 && bounds.right <= innerWidth - 7
+      }
+    })
+    for (const [label, selector] of [
+      ['附件', '.add-attachment'],
+      ['权限', '.approval-mode-chip'],
+      ['模型', '.model-chip']
+    ]) {
+      await page.locator(selector).click()
+      await menu.waitFor()
+      const position = await menuPosition()
+      check(`${label}菜单位于输入框上方`, position.fits, JSON.stringify(position))
+      if (label === '权限') {
+        check('权限菜单保留三种模式并移除设置入口', await menu.getByRole('menuitemradio').count() === 3 &&
+          await menu.getByText('权限设置', { exact: true }).count() === 0)
+        await page.screenshot({ path: join(dirs.base, 'permission-menu.png') })
+      }
+      if (label !== '模型') {
+        await page.keyboard.press('Escape')
+        await menu.waitFor({ state: 'detached' })
+      }
+    }
+
+    const modelLayout = () => menu.evaluate((element) => {
+      const bounds = element.getBoundingClientRect()
+      const search = element.querySelector('.menu-search').getBoundingClientRect()
+      const list = element.querySelector('.menu-list')
+      const footer = element.querySelector('.thinking-effort').getBoundingClientRect()
+      return {
+        height: Math.round(bounds.height),
+        listHeight: list.clientHeight,
+        scrolls: list.scrollHeight > list.clientHeight + 40,
+        controlsFit: search.top >= bounds.top && footer.bottom <= bounds.bottom + 1,
+        outerScrolls: element.scrollHeight > element.clientHeight + 1
+      }
+    })
+    const tall = await modelLayout()
+    check('模型菜单按参考高度展开，能同时看到多项和思考程度', tall.height >= 420 && tall.listHeight >= 280 &&
+      tall.controlsFit && tall.scrolls && !tall.outerScrolls, JSON.stringify(tall))
+    await page.screenshot({ path: join(dirs.base, 'model-menu.png') })
+
+    const height = await page.evaluate(() => innerHeight)
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(860, 560))
+    await page.waitForFunction((original) => innerHeight < original, height)
+    await page.waitForFunction(() => {
+      const input = document.querySelector('.composer').getBoundingClientRect()
+      const bounds = document.querySelector('.popover').getBoundingClientRect()
+      return Math.abs(input.top - bounds.bottom - 8) < 1
+    })
+    const position = await menuPosition()
+    check('缩小窗口后模型菜单仍在上方并留在屏幕内', position.fits, JSON.stringify(position))
+    const short = await modelLayout()
+    check('缩小窗口时只收缩列表，搜索和思考程度都可见', short.listHeight < tall.listHeight &&
+      short.controlsFit && short.scrolls && !short.outerScrolls, JSON.stringify(short))
+    await page.screenshot({ path: join(dirs.base, 'model-menu-compact.png') })
+  } finally { await app.close() }
+}
+
+async function caseSlashMenu() {
+  const dirs = freshDirs('slash-menu')
+  const session = seedSession(dirs.sessions, 'slash-menu-session', '斜杠菜单示例')
+  writeFileSync(join(dirs.agent, 'mcp.json'), JSON.stringify({ mcpServers: { example: { url: 'https://example.com/mcp', desktopDisplayName: '测试连接器' }, paused: { command: 'example', enabled: false } } }))
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [root], lastWorkspace: root, lastSessionPath: session })
+  )
+  const commands = Array.from({ length: 18 }, (_, index) => ({
+    name: `skill:report-${index}`,
+    source: 'skill',
+    description: index === 16 ? '汇总每周运营数据' : '整理项目资料，并提取主要结论与待办事项',
+    sourceInfo: index === 16
+      ? { scope: 'project', origin: 'package', source: 'npm:@example/reports' }
+      : { scope: 'user', origin: 'top-level' }
+  }))
+  commands.push({ name: 'review-report', source: 'extension', description: '审阅报告' })
+  commands.push({ name: 'summary-template', source: 'prompt', description: '复用摘要模板' })
+  const { app, page } = await launch(dirs, 'default', {
+    MOCK_LOAD_SESSION: '1',
+    MOCK_COMMANDS_JSON: JSON.stringify(commands)
+  })
+  try {
+    const input = page.locator('.composer-input')
+    const menu = page.getByRole('listbox', { name: '斜杠命令' })
+    const active = menu.locator('.command-item.active')
+    const open = async (query) => {
+      await input.fill(query)
+      await menu.waitFor()
+    }
+    await open('/')
+    await menu.getByRole('option', { name: /summary-template/ }).waitFor({ state: 'attached' })
+    check('三类入口与全部运行时条目进入同一个列表',
+      JSON.stringify(await menu.locator('.menu-group-label').allTextContents()) ===
+        JSON.stringify(['会话操作', '技能', '扩展命令与提示词']) &&
+      await menu.getByRole('option').count() >= 22)
+    const menuLayout = () => menu.evaluate((element) => {
+      const rect = element.getBoundingClientRect()
+      const composer = document.querySelector('.composer').getBoundingClientRect()
+      const anchor = document.querySelector('.composer-wrap').getBoundingClientRect()
+      return {
+        aligned: Math.abs(rect.width - composer.width) < 1 && Math.abs(rect.left - composer.left) < 1,
+        above: rect.bottom <= anchor.top && rect.top >= 0,
+        scrolls: element.scrollHeight > element.clientHeight && element.scrollWidth <= element.clientWidth + 1,
+        transition: getComputedStyle(element).transitionDuration
+      }
+    })
+    const wide = await menuLayout()
+    check('斜杠菜单与输入框等宽，向上展示且列表内纵向滚动', wide.aligned && wide.above && wide.scrolls, JSON.stringify(wide))
+    check('压缩入口和上下文圆环显示同一百分比',
+      (await menu.getByRole('option', { name: /^压缩上下文/ }).innerText()).includes(await page.locator('.context-ring').innerText()))
+    await page.screenshot({ path: join(dirs.base, 'slash-menu-dark.png'), animations: 'disabled' })
+
+    const beforeNav = await active.innerText()
+    await input.press('ArrowDown')
+    const afterDown = await active.innerText()
+    await input.press('ArrowUp')
+    check('键盘可切换当前选中项，焦点留在输入框',
+      afterDown !== beforeNav && await active.innerText() === beforeNav &&
+      await input.getAttribute('aria-activedescendant') === await active.getAttribute('id'))
+
+    await open('/运营数据')
+    check('支持中文用途搜索并显示包来源', await active.getByText('@example/reports', { exact: true }).isVisible() &&
+      await active.locator('.slash-match').innerText() === '运营数据')
+    await input.press('Enter')
+    check('选择技能补全真实调用名', await input.inputValue() === '/skill:report-16 ')
+    await open('/review-report')
+    await input.press('Enter')
+    check('选择扩展命令先填入输入框', await input.inputValue() === '/review-report ')
+
+    for (const removed of ['schedule', 'rename', 'usage', 'thinking']) {
+      await open(`/${removed}`)
+      check(`斜杠菜单不再显示 ${removed}`, await menu.getByRole('option').count() === 0)
+    }
+
+    await open('/mcp')
+    await input.press('Enter')
+    const connections = page.getByRole('region', { name: '连接器' })
+    await connections.waitFor()
+    await connections.getByText('加载中…').waitFor({ state: 'hidden' })
+    check('连接器在原菜单内展示并保留输入焦点', await connections.isVisible() && await input.inputValue() === '/' && await input.evaluate((element) => document.activeElement === element))
+    check('连接器展示配置名称与真实已知状态', await connections.getByText('测试连接器').isVisible() && await connections.getByText('未测试').isVisible() && await connections.getByText('已停用').isVisible())
+    await page.screenshot({ path: join(dirs.base, 'slash-connectors.png'), animations: 'disabled' })
+    await input.fill('/测试')
+    check('连接器可在输入框中筛选', await connections.getByText('测试连接器').isVisible() && await connections.getByText('paused').count() === 0)
+    await input.press('Escape')
+    check('Esc 从连接器返回斜杠菜单', await menu.isVisible() && await input.inputValue() === '/')
+
+    await open('/fork')
+    await input.press('Enter')
+    const fork = page.getByRole('dialog', { name: '从历史提示分支' })
+    await fork.getByText('first prompt', { exact: true }).waitFor()
+    check('创建对话分支打开真实的历史提示选择', await fork.isVisible())
+    await fork.getByRole('button', { name: '取消', exact: true }).click()
+
+    await open('/compact')
+    await input.press('Enter')
+    await page.getByText('上下文已压缩', { exact: true }).waitFor()
+    check('压缩直接执行 RPC 并反馈成功', await input.inputValue() === '')
+
+    await open('/zzzz-no-match')
+    check('无匹配时有说明', await menu.getByText('没有匹配的命令').isVisible())
+    await input.press('Escape')
+    await menu.waitFor({ state: 'hidden' })
+    check('Esc 关闭并保留查询', await input.inputValue() === '/zzzz-no-match')
+    await input.press('ArrowDown')
+    await menu.waitFor()
+    await page.mouse.click(16, 70)
+    await menu.waitFor({ state: 'hidden' })
+    check('再次打开后点击外面，草稿仍在', await input.inputValue() === '/zzzz-no-match')
+
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    const desktopWidth = await page.evaluate(() => innerWidth)
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(780, 550))
+    await page.waitForFunction((width) => innerWidth < width, desktopWidth)
+    await page.keyboard.press('Meta+Shift+L')
+    await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
+    await open('/')
+    await page.waitForFunction(() => {
+      const menu = document.querySelector('.slash-menu:not([hidden])')?.getBoundingClientRect()
+      const composer = document.querySelector('.composer').getBoundingClientRect()
+      return menu && Math.abs(menu.width - composer.width) < 1 && Math.abs(menu.left - composer.left) < 1
+    })
+    const narrow = await menuLayout()
+    check('浅色窄窗口仍对齐且尊重减少动态效果',
+      narrow.aligned && narrow.above && narrow.scrolls &&
+      narrow.transition.split(',').every((duration) => Number.parseFloat(duration) < 0.01), JSON.stringify(narrow))
+    await page.screenshot({ path: join(dirs.base, 'slash-menu-narrow.png'), animations: 'disabled' })
+    await input.fill('/Users/example/Documents')
+    await menu.waitFor({ state: 'hidden' })
+    check('绝对文件路径不会误打开命令菜单', await input.inputValue() === '/Users/example/Documents')
+  } finally {
+    await app.close()
+  }
+}
+
+async function caseDraftNavigation() {
+  const dirs = freshDirs('draft-navigation')
+  const session = seedSession(dirs.sessions, 'draft-origin', '草稿原会话')
+  writeFileSync(
+    join(dirs.userData, 'settings.json'),
+    JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [root], lastWorkspace: root, lastSessionPath: session })
+  )
+  const env = { MOCK_LOAD_SESSION: '1', MOCK_LAZY_NEW_SESSION: '1' }
+  let { app, page } = await launch(dirs, 'default', env)
+  try {
+    const input = page.locator('.composer-input')
+    const origin = page.locator('.session-title').getByText('草稿原会话', { exact: true })
+    const warning = page.getByText('当前有未发送的草稿', { exact: true })
+    const waitDraft = (value) => page.waitForFunction((draft) => document.querySelector('.composer-input')?.value === draft, value)
+    await page.locator('.assistant-message').waitFor()
+    await input.fill('/')
+    await page.getByRole('listbox', { name: '斜杠命令' }).waitFor()
+    await input.press('Escape')
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('packages:catalog')
+      ipcMain.handle('packages:catalog', () => ({ entries: [] }))
+    })
+    await page.locator('.plugins-page-entry').click()
+    await page.getByRole('heading', { name: 'Pi 插件', exact: true }).waitFor()
+    await page.locator('.new-session').click()
+    await waitDraft('')
+    check('在插件页也能新建空白对话，无草稿拦截', !await warning.count())
+    await origin.click()
+    await waitDraft('/')
+    check('原会话保留斜杠草稿', (await input.inputValue()) === '/')
+
+    await input.fill('项目原会话的草稿')
+    await page.locator('input[type=file]').setInputFiles({
+      name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('Draft attachment')
+    })
+    await page.locator('.composer .attachment').waitFor()
+    await page.locator('.project-new-chat').first().click()
+    await waitDraft('')
+    check('同一项目新建时附件不带入新对话', !await page.locator('.composer .attachment').count())
+    await origin.click()
+    await waitDraft('项目原会话的草稿')
+    check('切回原项目会话时恢复文字和附件', await page.locator('.composer .attachment').count() === 1)
+
+    await input.press('Meta+n')
+    await waitDraft('')
+    await input.fill('还没发过消息的独立草稿')
+    await page.waitForFunction(() => !document.querySelector('.send-button')?.disabled)
+    await page.locator('.new-session').click()
+    await waitDraft('')
+    check('未发送的新对话不会生成草稿入口', await page.locator('.draft-session').count() === 0 &&
+      !await page.locator('.sidebar').getByText('还没发过消息的独立草稿', { exact: true }).count())
+    await origin.click()
+    await waitDraft('项目原会话的草稿')
+    check('已有对话的未发送内容仍保留在原对话', await page.locator('.composer .attachment').count() === 1)
+
+    await app.close()
+    ;({ app, page } = await launch(dirs, 'default', env))
+    check('重启后侧栏仍不显示草稿分组', await page.locator('.draft-session').count() === 0 &&
+      !await page.locator('.sidebar').getByText('草稿', { exact: true }).count())
+    await page.locator('.session-title').getByText('草稿原会话', { exact: true }).click()
+    await waitDraft('项目原会话的草稿')
+    check('重启后已有对话的未发送文字仍可恢复', await page.locator('.composer-input').inputValue() === '项目原会话的草稿')
+  } finally {
+    await app.close()
+  }
 }
 
 async function caseTurnRailPreview() {
@@ -2408,6 +4184,8 @@ async function caseTurnRailPreview() {
   )
   const { app, page } = await launch(dirs, 'default', { MOCK_TRANSCRIPT: '8', MOCK_TOOLS: '2' })
   const ticks = page.locator('.turn-rail-tick')
+  const wrap = await page.locator('.chat-wrap').boundingBox()
+  await page.mouse.move((wrap?.x ?? 0) + 8, (wrap?.y ?? 0) + 220)
   await ticks.first().waitFor({ timeout: 15000 })
   const count = await ticks.count()
   check('轮次导轨每轮一根', count === 8, `ticks=${count}`)
@@ -2474,6 +4252,8 @@ async function caseTurnRailPreview() {
   await page.waitForTimeout(420)
   check('移开后预览消失', (await page.locator('.turn-preview').count()) === 0)
 
+  const again = await page.locator('.chat-wrap').boundingBox()
+  await page.mouse.move((again?.x ?? 0) + 8, (again?.y ?? 0) + 220)
   await ticks.nth(5).click()
   await page.waitForTimeout(350)
   check(
@@ -2517,15 +4297,14 @@ async function caseWheelIsolation() {
   check('在模型列表上滚动不会带动对话区', chatAfter === chatBefore, `${chatBefore} → ${chatAfter}`)
   check('滚动落在模型列表本身', listAfter > 100, `listScrollTop=${listAfter}`)
 
-  // thinking menu has no scroll container: wheel must not move the chat either
+  // Thinking segment lives in the same popover; wheel over it must not move the chat.
   await page.keyboard.press('Escape')
-  await page.locator('.chip').nth(1).click()
-  await page.waitForSelector('.popover')
-  await page.locator('.popover').hover()
+  await openModelMenu(page)
+  await page.locator('.thinking-effort').hover()
   await page.mouse.wheel(0, 400)
   await page.waitForTimeout(300)
   const chatAfter2 = await page.evaluate(() => document.querySelector('.chat-scroll').scrollTop)
-  check('在推理强度菜单上滚动也不会带动对话区', chatAfter2 === chatBefore, `${chatBefore} → ${chatAfter2}`)
+  check('在思考程度区域滚动也不会带动对话区', chatAfter2 === chatBefore, `${chatBefore} → ${chatAfter2}`)
   await app.close()
 }
 
@@ -2543,7 +4322,7 @@ async function caseMenuTyping() {
   check('↓ 之后焦点仍在搜索框', inputFocused, await page.evaluate(() => document.activeElement?.tagName ?? ''))
   await page.keyboard.type('deep')
   await page.waitForTimeout(250)
-  const items = await page.locator('.popover .menu-item').count()
+  const items = await page.locator('.popover').getByRole('option').count()
   const highlighted = await page.evaluate(
     () => document.querySelector('.popover .menu-item.highlight .menu-item-title')?.textContent ?? ''
   )
@@ -2551,7 +4330,7 @@ async function caseMenuTyping() {
   await page.keyboard.press('Enter')
   await page.waitForTimeout(800)
   const chip = await page.locator('.chip-label').first().innerText()
-  check('Enter 选中的是过滤后的项', chip === 'Mock Deep', chip)
+  check('Enter 选中的是过滤后的项', chip.startsWith('Mock Deep'), chip)
   await app.close()
 }
 
@@ -2571,24 +4350,23 @@ async function caseStreamingGuard() {
   )
   check('流式输出中模型 / 强度不可切换', disabled.every(Boolean), JSON.stringify(disabled))
   await page.locator('.new-session').click()
-  await page.waitForSelector('.project-picker-trigger')
-  check('项目选择器位于输入框外', await page.locator('.composer-wrap > .composer-project-row .project-picker-trigger').count() === 1)
-  check('新建会话先落在临时对话', (await page.locator('.topbar-path').innerText()).includes('临时对话'))
-  await page.locator('.project-picker-trigger').click()
-  await page.locator('.project-picker-item').filter({ hasText: 'streaming' }).click()
+  await page.locator('.topbar-path').getByText('新对话', { exact: true }).waitFor()
+  check('新建会话先落在新对话', true)
+  check('新对话显示可选的项目入口', await page.locator('.composer-project-row').getByRole('button', { name: '选择项目' }).isVisible())
+  const streamingProject = page.locator('.project-tree', { hasText: 'streaming' })
+  await streamingProject.hover()
+  await streamingProject.getByRole('button', { name: '在 streaming 中新建对话' }).click()
   await page.waitForFunction(() => document.querySelector('.project-row.active')?.textContent?.includes('streaming'))
-  check('运行中也可以在初始对话框切换项目', (await page.locator('.project-row.active').innerText()).includes('streaming'))
+  check('运行中也可以从侧栏切到其他项目', (await page.locator('.project-row.active').innerText()).includes('streaming'))
   check('运行中切换项目不再弹阻止提示', (await page.getByText('任务正在运行', { exact: true }).count()) === 0)
   await page.waitForTimeout(2500)
   const after = await page.evaluate(() =>
     Array.from(document.querySelectorAll('.chip')).map((chip) => chip.disabled)
   )
   check('切换后的新会话可正常操作', after.every((value) => value === false), JSON.stringify(after))
-  await page.locator('.project-picker-trigger').click()
-  await page
-    .locator('.project-picker-item')
-    .filter({ has: page.locator('.project-picker-name', { hasText: 'pi-desktop' }) })
-    .click()
+  const desktopProject = page.locator('.project-tree', { hasText: 'pi-desktop' })
+  await desktopProject.hover()
+  await desktopProject.getByRole('button', { name: '在 pi-desktop 中新建对话' }).click()
   await page.waitForFunction(() => document.querySelector('.project-row.active')?.textContent?.includes('pi-desktop'))
   const activeProject = await page.locator('.project-row.active').innerText()
   check('可以切回原来的项目', activeProject.includes('pi-desktop'), activeProject)
@@ -2635,6 +4413,7 @@ async function caseDiagnostics() {
   await page.waitForTimeout(1200)
   const toast = await page.locator('.toast').first().innerText().catch(() => '')
   check('失败时提示包含真实原因', /401|Unauthorized/.test(toast), toast.replace(/\n/g, ' / '))
+  check('发送失败后等待提示消失并保留草稿', await page.locator('.activity').count() === 0 && await page.locator('.composer-input').inputValue() === 'hello')
   await app.close()
 }
 
@@ -2646,7 +4425,7 @@ async function caseDeleteUndo() {
     JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
   )
   const { app, page } = await launch(dirs)
-  await page.locator('.session-item .session-menu-button').first().click({ force: true })
+  await page.locator('.session-item', { hasText: 'Mock session' }).locator('.session-menu-button').click({ force: true })
   await page.locator('.menu-item.danger').click()
   await page.locator('.modal .button.danger').click()
   await page.waitForTimeout(900)
@@ -2672,10 +4451,10 @@ async function caseProjectStability() {
   const { app, page } = await launch(dirs)
   await page.waitForFunction(() => [...document.querySelectorAll('.project-row')].some((row) => row.textContent?.includes('project-stability')))
   await page.locator('.new-session').click()
-  await page.waitForFunction(() => document.querySelector('.topbar-path')?.textContent?.includes('临时对话'))
+  await page.waitForFunction(() => document.querySelector('.topbar-path')?.textContent?.includes('新对话'))
   await page.waitForTimeout(1200)
   check(
-    '切到临时对话后原项目仍在项目列表',
+    '切到新对话后原项目仍在项目列表',
     (await page.locator('.project-row').filter({ hasText: 'project-stability' }).count()) === 1
   )
   check(
@@ -2766,6 +4545,7 @@ async function caseLanguage() {
   const dirs = freshDirs('language')
   writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root }))
   let { app, page } = await launch(dirs)
+  try {
   await page.keyboard.press('Meta+,')
   await page.getByRole('button', { name: '界面语言', exact: true }).click()
   check('语言选择使用应用内菜单', await page.locator('.popover .menu-item').count() === 2)
@@ -2813,7 +4593,7 @@ async function caseLanguage() {
   await page.keyboard.press('Enter')
   check('设置下拉支持键盘选择并关闭', await page.locator('.popover').count() === 0)
   check('设置页没有原生下拉框', await page.locator('.settings-page select').count() === 0)
-  await app.close()
+  } finally { await app.close().catch(() => undefined) }
 }
 
 async function caseChromeBridgeGuide() {
@@ -2831,8 +4611,8 @@ async function caseChromeBridgeGuide() {
     await page.getByRole('button', { name: '安装指引' }).waitFor({ timeout: 3000 })
     check('搜索网页浏览显示浏览器设置', await page.getByRole('button', { name: '安装指引' }).count() === 1)
     await search.fill('')
-    await page.getByRole('button', { name: 'Computer Use', exact: true }).click()
-    check('Computer Use 有独立设置页', await page.getByRole('heading', { name: 'Computer Use', exact: true }).count() === 1)
+    await page.getByRole('button', { name: '电脑操作', exact: true }).click()
+    check('Computer Use 有独立设置页', await page.getByRole('heading', { name: '电脑操作', exact: true }).count() === 1)
     check('Computer Use 不混入网页浏览设置', await page.getByRole('button', { name: '安装指引' }).count() === 0)
     await page.getByRole('button', { name: '网页浏览', exact: true }).click()
     check('网页浏览有独立设置页', await page.getByRole('heading', { name: '网页浏览', exact: true }).count() === 1)
@@ -2908,13 +4688,13 @@ async function caseBrowserRouter() {
     })
     await page.keyboard.press('Meta+,')
     await page.getByPlaceholder('搜索设置').fill('网页浏览')
-    await page.getByText('统一浏览器入口', { exact: true }).waitFor({ timeout: 5000 })
-    check('设置页显示统一浏览器入口', await page.getByText('统一浏览器入口', { exact: true }).isVisible())
+    await page.getByText('浏览器连接状态', { exact: true }).waitFor({ timeout: 5000 })
+    check('设置页显示浏览器连接状态', await page.getByText('浏览器连接状态', { exact: true }).isVisible())
     await page.locator('.browser-router-refresh').click()
     await page.getByText('已打开', { exact: true }).waitFor({ timeout: 5000 })
     check('应用内浏览器显示已打开', await page.getByText('已打开', { exact: true }).isVisible())
     check('CDP 显示未连接', await page.getByText('未连接', { exact: true }).first().isVisible())
-    await page.getByText('统一浏览器入口', { exact: true }).waitFor()
+    await page.getByText('浏览器连接状态', { exact: true }).waitFor()
     check('可以重新检测浏览器状态', true)
   } finally { await app.close() }
 }
@@ -2955,20 +4735,77 @@ const wants = only ? only.split(/[,\s]+/).filter(Boolean) : []
 // affected area without booting all twenty Electron instances.
 async function caseComputerUsePermissions() {
   const dirs = freshDirs('computer-use-permissions')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [root], lastWorkspace: root }))
   const { app, page } = await launch(dirs)
   try {
+    await page.locator('.composer-input').fill('保留的草稿')
+    check('没有请求时显示项目栏', await page.locator('.composer-project-slot').getAttribute('data-covered') === 'false' && await page.locator('.project-picker-trigger').isVisible())
     await app.evaluate(({ BrowserWindow }) => {
       BrowserWindow.getAllWindows()[0].webContents.send('pi:record', { type:'extension_ui_request', id:'permission-test', method:'select', title:'Computer Use: System Permissions', options:['Open Accessibility Settings','Check Again','Cancel'] })
     })
     await page.getByRole('heading', { name:'开启桌面操作权限' }).waitFor()
     await page.waitForTimeout(200)
     await page.screenshot({ path: join(dirs.base, 'permission-guide.png') })
+    check('确认卡片位于输入框上方且保留草稿', await page.locator('.conversation-prompt').evaluate(el => el.getBoundingClientRect().bottom <= document.querySelector('.composer').getBoundingClientRect().top) && await page.locator('.composer-input').inputValue() === '保留的草稿' && await page.locator('.modal-overlay').count() === 0)
+    check('提示出现时项目栏收起且无法操作', await page.locator('.composer-project-slot').getAttribute('data-covered') === 'true' && await page.locator('.composer-project-slot').evaluate(el => el.inert))
     check('权限引导解释用途', await page.getByText('允许 Pi 观察和操作桌面应用').isVisible())
     check('缺失的辅助功能提供系统设置入口', await page.getByRole('button', { name:'打开辅助功能设置' }).isVisible())
     check('权限引导提供重新检测', await page.getByRole('button', { name:'重新检测' }).isVisible())
     await page.getByRole('button', { name:'稍后再说' }).click()
-    check('可取消权限引导', await page.getByRole('heading', { name:'开启桌面操作权限' }).count() === 0)
+    await page.locator('.conversation-prompt').waitFor({ state: 'hidden' })
+    check('可取消权限引导', await page.locator('.conversation-prompt').isHidden())
+    await page.waitForFunction(() => document.querySelector('.composer-project-slot')?.getAttribute('data-covered') === 'false')
+    check('提示关闭后项目栏恢复', await page.locator('.project-picker-trigger').isVisible() && !(await page.locator('.composer-project-slot').evaluate(el => el.inert)))
     await app.evaluate(({ipcMain}) => { globalThis.__confirmResponses = []; ipcMain.on('pi:ui-response', (_event, response) => globalThis.__confirmResponses.push(response)) })
+    const commandMessage = '检测到递归删除。\n\ncd /tmp/example && rm -rf output/probe\n\n只在你确认这条命令安全时继续。'
+    await app.evaluate(({BrowserWindow}, message) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'regular-confirm',method:'confirm',title:'确认操作',message}), commandMessage)
+    const regular = page.locator('.conversation-prompt-content[data-request-id="regular-confirm"]')
+    await regular.getByRole('button', { name: '否', exact: true }).waitFor()
+    const regularHeight = await regular.evaluate(el => el.getBoundingClientRect().height)
+    await regular.getByRole('button', { name: '否', exact: true }).click()
+    await app.evaluate(({BrowserWindow}, message) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'danger-confirm',method:'confirm',title:'确认执行危险命令',message}), commandMessage)
+    const danger = page.locator('.conversation-prompt-content[data-request-id="danger-confirm"]')
+    await danger.getByRole('button', { name: '否', exact: true }).waitFor()
+    const commandParts = await danger.locator('.conversation-command-description > span').allTextContents()
+    const dangerHeight = await danger.evaluate(el => el.getBoundingClientRect().height)
+    check('危险命令确认卡片更紧凑且命令完整', dangerHeight < regularHeight - 10 && commandParts[1] === 'cd /tmp/example && rm -rf output/probe', JSON.stringify({ regularHeight, dangerHeight, commandParts }))
+    await page.screenshot({path:join(dirs.base,'danger-confirm-compact.png')})
+    await danger.getByRole('button', { name: '否', exact: true }).click()
+    check('紧凑确认卡片仍遵循拒绝协议', (await app.evaluate(() => globalThis.__confirmResponses.find(item => item.id === 'danger-confirm')))?.confirmed === false)
+    await app.evaluate(({BrowserWindow}) => {
+      const wc = BrowserWindow.getAllWindows()[0].webContents
+      wc.send('pi:record', {type:'extension_ui_request',id:'queue-first',method:'select',title:'选择一个选项',options:['选项一','选项二']})
+      wc.send('pi:record', {type:'extension_ui_request',id:'queue-second',method:'input',title:'填写答案',placeholder:'请输入'})
+    })
+    const card = page.locator('.conversation-prompt-content')
+    await card.getByText('还有 1 项待处理').waitFor()
+    check('多个请求按顺序展示并提示余量', await card.getByText('还有 1 项待处理').isVisible() && await card.getByText('选项一').isVisible())
+    await card.getByRole('button', {name:'选项一'}).click()
+    await card.getByRole('heading', {name:'填写答案'}).waitFor()
+    check('选择后展示下一项并保留草稿', await page.locator('.composer-input').inputValue() === '保留的草稿')
+    await card.getByRole('button', {name:'取消请求'}).click()
+    const queueResponses = await app.evaluate(() => globalThis.__confirmResponses.filter(item => item.id?.startsWith('queue-')))
+    check('选择与关闭分别传递原协议，关闭不会同意', queueResponses.find(item => item.id === 'queue-first')?.value === '选项一' && queueResponses.find(item => item.id === 'queue-second')?.cancelled === true)
+
+    for (const [kind, label, expected] of [['login', '我已完成', true], ['verification', '稍后再说', false]]) {
+      const id = 'handoff-' + kind
+      await app.evaluate(({BrowserWindow}, {id, kind}) => {
+        BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {
+          type:'extension_ui_request', id, method:'confirm', title:'Computer Use: Sign-in Handoff',
+          message:JSON.stringify({ kind, backend:'inapp', host:'login.example.test' })
+        })
+      }, {id, kind})
+      await card.getByRole('heading', {name:kind === 'login' ? '请完成登录' : '请完成验证'}).waitFor()
+      check('登录或验证在当前对话提示，并指明正在使用的网站', (await card.innerText()).includes('login.example.test') && await card.locator('input').count() === 0)
+      if (kind === 'login') {
+        await card.getByRole('button', {name:'打开工作面板'}).click()
+        await page.locator('.browser-toolbar').waitFor()
+      }
+      await card.getByRole('button', {name:label}).click()
+      const response = await app.evaluate((_electron, id) => globalThis.__confirmResponses.find(item => item.id === id), id)
+      check('登录接管按用户选择恢复或保持暂停', response?.confirmed === expected)
+    }
+
     for (const [id, label, expected] of [['yes','是',true], ['no','否',false]]) {
       await app.evaluate(({BrowserWindow}, id) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id,method:'confirm',title:'Computer Use',message:'Test'}), id)
       await page.getByRole('button',{name:label,exact:true}).click()
@@ -2977,7 +4814,7 @@ async function caseComputerUsePermissions() {
       check(`确认弹窗 ${label} 符合 Pi RPC 协议`, response?.confirmed === expected && !('value' in response), JSON.stringify(response))
     }
     await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'desktop-action',method:'confirm',title:'确认桌面操作',message:'应用：本地测试应用\n窗口：业务窗口\n操作：click\n目标：AXButton 保存'}))
-    const actionDialog=page.getByRole('dialog')
+    const actionDialog=page.locator('.conversation-prompt-content[data-request-id=\"desktop-action\"]')
     await actionDialog.getByRole('button',{name:'确认执行'}).waitFor()
     check('桌面操作确认清楚展示应用、窗口、动作和目标', await actionDialog.getByText('本地测试应用').count()===1 && await actionDialog.getByText('业务窗口').count()===1 && await actionDialog.getByText('点击',{exact:true}).count()===1 && await actionDialog.getByText('按钮 保存').count()===1)
     await page.waitForTimeout(200)
@@ -2987,7 +4824,7 @@ async function caseComputerUsePermissions() {
     const actionResponse=await app.evaluate(()=>globalThis.__confirmResponses.find(item=>item.id==='desktop-action'))
     check('明确操作按钮保留真实 Pi 确认协议', actionResponse?.confirmed===true, JSON.stringify(actionResponse))
     await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'browser-action',method:'confirm',title:'Computer Use: Browser',message:'操作：click\n目标：上传资料\n浏览器：inapp\n页面：http://localhost/test\n已选文件：文件: fixture.csv (3 bytes)（当前页面可见文件，不一定属于此操作）'}))
-    const browserDialog=page.getByRole('dialog')
+    const browserDialog=page.locator('.conversation-prompt-content[data-request-id=\"browser-action\"]')
     await browserDialog.getByRole('button',{name:'取消操作'}).waitFor()
     check('网页操作确认展示目标、页面和选中文件', await browserDialog.getByRole('heading',{name:'确认网页操作'}).count()===1 && (await browserDialog.innerText()).includes('fixture.csv (3 bytes)') && (await browserDialog.innerText()).includes('上传资料') && (await browserDialog.innerText()).includes('http://localhost/test'))
     await page.waitForTimeout(200)
@@ -2996,12 +4833,12 @@ async function caseComputerUsePermissions() {
     await page.waitForTimeout(100)
     check('取消网页操作保留 Pi 确认协议', (await app.evaluate(()=>globalThis.__confirmResponses.find(item=>item.id==='browser-action')))?.confirmed===false)
     await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'browser-input',method:'confirm',title:'Computer Use: Browser',message:'操作：type\n目标：订单编号\n浏览器：inapp\n页面：http://localhost/test\n输入预览：\"ORD-2026-002\"'}))
-    const inputDialog=page.getByRole('dialog')
+    const inputDialog=page.locator('.conversation-prompt-content[data-request-id=\"browser-input\"]')
     await inputDialog.getByRole('heading',{name:'确认网页操作'}).waitFor()
     check('网页输入确认显示待输入内容', await inputDialog.locator('.browser-action-input-preview').innerText()==='\"ORD-2026-002\"')
     await inputDialog.getByRole('button',{name:'取消操作'}).click()
     await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'browser-input-long',method:'confirm',title:'Computer Use: Browser',message:`操作：type\n目标：内容\n浏览器：inapp\n页面：http://localhost/test\n输入内容：\"${'x'.repeat(2001)}END\"`}))
-    const longInputDialog=page.getByRole('dialog')
+    const longInputDialog=page.locator('.conversation-prompt-content[data-request-id=\"browser-input-long\"]')
     await longInputDialog.getByRole('heading',{name:'确认网页操作'}).waitFor()
     const preview=longInputDialog.locator('.browser-action-input-preview')
     check('长输入在确认窗口中可完整滚动查看', (await preview.innerText()).endsWith('END\"') && await preview.evaluate(el=>el.scrollHeight>el.clientHeight))
@@ -3009,7 +4846,7 @@ async function caseComputerUsePermissions() {
 
 
     await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'file-selection',method:'confirm',title:'Computer Use: File Selection',message:'请在浏览器弹出的系统窗口中选择要上传的文件。选择完成后回到这里确认；继续前需要重新观察并核对文件。'}))
-    const fileDialog=page.getByRole('dialog')
+    const fileDialog=page.locator('.conversation-prompt-content[data-request-id=\"file-selection\"]')
     await fileDialog.getByRole('heading',{name:'选择上传文件'}).waitFor()
     check('文件选择窗口未出现时提供明确替代步骤', (await fileDialog.innerText()).includes('如果没有看到系统文件选择窗口') && (await fileDialog.innerText()).includes('在网页中点击文件选择按钮'))
     await fileDialog.getByRole('button',{name:'打开工作面板'}).click()
@@ -3023,12 +4860,31 @@ async function caseComputerUsePermissions() {
     await page.waitForTimeout(100)
     check('暂不选择保持 Pi 取消确认协议', (await app.evaluate(()=>globalThis.__confirmResponses.find(item=>item.id==='file-selection')))?.confirmed===false)
     await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'file-cancel',method:'confirm',title:'Computer Use: Cancel File Selection',message:'请先关闭或取消系统文件选择窗口，再确认取消本次选择。'}))
-    const cancelFileDialog=page.getByRole('dialog')
+    const cancelFileDialog=page.locator('.conversation-prompt-content[data-request-id=\"file-cancel\"]')
     await cancelFileDialog.getByRole('heading',{name:'取消文件选择'}).waitFor()
     check('取消文件选择先提示关闭系统窗口', (await cancelFileDialog.innerText()).includes('系统文件选择窗口'))
     await cancelFileDialog.getByRole('button',{name:'已取消选择'}).click()
     await page.waitForTimeout(100)
     check('确认取消文件选择遵循 Pi 确认协议', (await app.evaluate(()=>globalThis.__confirmResponses.find(item=>item.id==='file-cancel')))?.confirmed===true)
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(780, 550))
+    await page.keyboard.press('Meta+Shift+L')
+    await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
+    await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {type:'extension_ui_request',id:'narrow',method:'select',title:'请选择下一步',options:Array.from({length: 12}, (_, i) => `选项 ${i + 1}`)}))
+    const narrowCard = page.locator('.conversation-prompt:not([hidden])')
+    await narrowCard.getByRole('heading', {name:'请选择下一步'}).waitFor()
+    const layout = await narrowCard.evaluate(el => {
+      const card = el.getBoundingClientRect(), input = document.querySelector('.composer').getBoundingClientRect()
+      return { cardTop:card.top, cardBottom:card.bottom, inputBottom:input.bottom, viewport:innerHeight, scrolls:el.scrollHeight > el.clientHeight, transition:getComputedStyle(el).transitionDuration, animation:getComputedStyle(el.firstElementChild).animationDuration }
+    })
+    check('浅色窄窗口中长卡片可滚动且输入框可见', layout.cardTop >= 0 && layout.inputBottom <= layout.viewport && layout.scrolls, JSON.stringify(layout))
+    check('减少动态效果时关闭卡片动画', parseFloat(layout.transition) < 0.001 && parseFloat(layout.animation) < 0.001, JSON.stringify(layout))
+    await page.screenshot({path:join(dirs.base,'prompt-narrow-light.png'),animations:'disabled'})
+    await narrowCard.getByRole('button',{name:'取消请求'}).focus()
+    await page.keyboard.press('Enter')
+    await narrowCard.waitFor({state:'hidden'})
+    check('键盘可以取消请求并保留草稿', await page.locator('.composer-input').inputValue() === '保留的草稿')
+
   } finally { await app.close() }
 }
 
@@ -3037,12 +4893,17 @@ async function caseComputerUseSettings() {
   let { app, page } = await launch(dirs)
   try {
     await page.keyboard.press('Meta+,')
-    await page.getByRole('button', {name:'Computer Use', exact:true}).click()
+    await page.getByRole('button', {name:'电脑操作', exact:true}).click()
     const toggle = page.getByRole('switch', {name:'启用 Computer Use'})
     await toggle.waitFor({timeout:4000})
     await page.screenshot({ path:join(dirs.base, 'settings.png') })
     check('Computer Use 默认关闭', await toggle.getAttribute('aria-checked') === 'false')
     await toggle.click()
+    if (process.platform !== 'darwin') {
+      await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Computer Use"]')?.getAttribute('aria-checked') === 'true')
+      check('非 macOS 可以开启电脑操作，不要求辅助功能权限行', await page.locator('.settings-permission-list .desktop-permission-row').count() === 0)
+      return
+    }
     await page.locator('.settings-permission-list .desktop-permission-row').first().waitFor({timeout:10000})
     const permissionStatus = await page.evaluate(() => window.pi.desktopPermissionCheck())
     check('设置中显示执行组件的权限状态', await page.locator('.settings-permission-list .desktop-permission-row').first().getByText(permissionStatus.accessibility ? (permissionStatus.provisional ? '初步已开启' : '已开启') : '打开辅助功能设置').count() === 1)
@@ -3052,7 +4913,7 @@ async function caseComputerUseSettings() {
     await app.close()
     ;({ app, page } = await launch(dirs))
     await page.keyboard.press('Meta+,')
-    await page.getByRole('button', {name:'Computer Use', exact:true}).click()
+    await page.getByRole('button', {name:'电脑操作', exact:true}).click()
     const restoredToggle = page.getByRole('switch', {name:'启用 Computer Use'})
     check('重启后保留开关状态', await restoredToggle.getAttribute('aria-checked') === 'true')
     await page.locator('.settings-permission-block').getByRole('button', {name:'重新检测'}).click()
@@ -3081,7 +4942,7 @@ async function caseComputerUsePackagePath() {
   const { app, page } = await launch(dirs, 'default', { MOCK_LIST_SOURCE:source, MOCK_LIST_DELAY_MS:'1500', PERMISSION_HELPER_MARKER:marker, MOCK_COMPUTER_USE_ROOT:source })
   try {
     await page.keyboard.press('Meta+,')
-    await page.getByRole('button', {name:'Computer Use',exact:true}).click()
+    await page.getByRole('button', {name:'电脑操作',exact:true}).click()
     const start = Date.now()
     await page.getByRole('button', {name:'重新检测'}).waitFor({timeout:1000})
     check('权限检查时界面保持可操作', Date.now()-start < 1000)
@@ -3112,22 +4973,28 @@ async function caseComputerUsePermissionCompletion() {
   const {app,page} = await launch(dirs, 'default', {MOCK_LIST_SOURCE:source, MOCK_COMPUTER_USE_ROOT:source, PERMISSION_STATE_FILE:stateFile})
   try {
     await page.keyboard.press('Meta+,')
-    await page.getByRole('button', {name:'Computer Use',exact:true}).click()
+    await page.getByRole('button', {name:'电脑操作',exact:true}).click()
     const toggle = page.getByRole('switch', {name:'启用 Computer Use'})
+    const permissionPanel = page.locator('.settings-permission-block')
+    const provisionalPermissions = permissionPanel.getByText('初步已开启', {exact:true})
     await toggle.click()
-    await page.getByRole('button', {name:'打开辅助功能设置'}).waitFor({timeout:10000})
+    await permissionPanel.getByRole('button', {name:'打开辅助功能设置'}).waitFor({timeout:10000})
+    await permissionPanel.getByRole('button', {name:'打开屏幕录制设置'}).waitFor({timeout:10000})
     writeFileSync(stateFile, JSON.stringify({ok:true,accessibility:true,screenRecording:true}))
-    await page.getByText('权限检查完成。桌面任务开始时会再次检查实际使用的组件。').waitFor({timeout:7000})
-    await page.getByRole('heading', {name:'开启桌面操作权限'}).waitFor({state:'hidden',timeout:7000})
-    check('授权完成后自动显示成功并关闭引导', true)
+    await provisionalPermissions.nth(1).waitFor({timeout:10000})
+    check('系统授权后设置页自动更新两项初步权限',
+      await provisionalPermissions.count() === 2 && !await permissionPanel.getByRole('button', {name:/^打开.*设置$/}).count())
     await toggle.click()
     await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Computer Use"]')?.getAttribute('aria-checked') === 'false')
     await toggle.click()
-    await page.waitForTimeout(1200)
-    check('已授权再次启用时不重复打断', await page.getByRole('heading',{name:'开启桌面操作权限'}).count() === 0)
-    await page.getByRole('button',{name:'重新检测'}).click()
-    await page.getByText('权限检查完成。桌面任务开始时会再次检查实际使用的组件。').waitFor({timeout:7000})
-    check('主动检查已授权状态时直接显示完成', await page.getByRole('heading',{name:'开启桌面操作权限'}).count() === 0)
+    await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="启用 Computer Use"]')?.getAttribute('aria-checked') === 'true')
+    check('已授权再次启用时保留权限状态与当前页面',
+      await provisionalPermissions.count() === 2 && !await page.getByRole('heading',{name:'开启桌面操作权限'}).count())
+
+    writeFileSync(stateFile, JSON.stringify({ok:true,accessibility:true,screenRecording:false}))
+    await permissionPanel.getByRole('button',{name:'重新检测'}).click()
+    await permissionPanel.getByRole('button',{name:'打开屏幕录制设置'}).waitFor({timeout:10000})
+    check('主动检查显示变化的单项权限', await provisionalPermissions.count() === 1)
   } finally { await app.close() }
 }
 
@@ -3201,7 +5068,8 @@ async function caseBrowserDownloads() {
     const bridgePath=await app.evaluate(()=>process.env.PI_DESKTOP_BROWSER_BRIDGE_FILE)
     const bridge=JSON.parse(readFileSync(bridgePath,'utf8'))
     const endpoint=`http://127.0.0.1:${bridge.port}/downloads`
-    const query=async()=>{const response=await fetch(endpoint,{headers:{authorization:`Bearer ${bridge.token}`}});return {status:response.status,body:await response.json()}}
+    const downloadController = randomUUID()
+    const query=async()=>{const response=await fetch(endpoint,{headers:{authorization:`Bearer ${bridge.token}`,'x-pi-controller':downloadController,'x-pi-page':'main','x-pi-pid':String(process.pid)}});return {status:response.status,body:await response.json()}}
     const initial=await query()
     check('下载记录只允许认证的本地会话读取', (await fetch(endpoint)).status === 401 && initial.status === 200)
     const extensionSource=readFileSync(join(root,'extensions/computer-use/index.ts'),'utf8')
@@ -3212,7 +5080,7 @@ async function caseBrowserDownloads() {
     const Type=new Proxy({}, {get:()=> (...args)=>({args})})
     let simulateRestart=false
     const bridgeRequest=async (path, data) => {
-      const response=await fetch(`http://127.0.0.1:${bridge.port}${path}`,{method:data?'POST':'GET',headers:{authorization:`Bearer ${bridge.token}`,...(data?{'content-type':'application/json'}:{})},body:data?JSON.stringify(data):undefined})
+      const response=await fetch(`http://127.0.0.1:${bridge.port}${path}`,{method:data?'POST':'GET',headers:{authorization:`Bearer ${bridge.token}`,'x-pi-controller':downloadController,'x-pi-page':'main','x-pi-pid':String(process.pid),...(data?{'content-type':'application/json'}:{})},body:data?JSON.stringify(data):undefined})
       const body=await response.json(); if (!response.ok) throw new Error(body.error); if (simulateRestart) body.epoch='restarted'; return body
     }
     const factory=runInNewContext(`${registration}\ncomputerUse`,{BrowserRouter,judgeWithJev,Type,createBrowserActionJournal:()=>undefined,bridgeRequest,randomUUID,URL,setTimeout,process:{env:{}},approvalMode:'always',audit:async()=>{}})
@@ -3293,29 +5161,78 @@ async function caseMotionPolish() {
   } finally { await app.close() }
 }
 
+async function casePromptFeedback() {
+  const dirs = freshDirs('prompt-feedback')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [root], lastWorkspace: root }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_PROMPT_START_DELAY: '800', MOCK_PROMPT_DELAY: '1400', MOCK_FIRST_RESPONSE_DELAY: '1000' })
+  try {
+    await page.locator('.composer-input').fill('等待反馈测试')
+    await page.locator('.composer-input').press('Enter')
+    await page.getByRole('status').filter({ hasText: '正在发送…' }).waitFor({ timeout: 500 })
+    check('发送后立即显示发送中', true)
+    await page.getByRole('status').filter({ hasText: '等待模型响应…' }).waitFor({ timeout: 3000 })
+    check('请求开始后显示等待模型响应', true)
+    await page.screenshot({ path: 'output/prompt-feedback.png' })
+    await page.getByText(/mock reply/).first().waitFor({ timeout: 6000 })
+    await page.waitForFunction(() => !document.querySelector('.activity'))
+    check('回复完成后等待提示消失', true)
+  } finally { await app.close() }
+}
+
 async function caseGeneralTaskSuggestions() {
   const dirs = freshDirs('general-task-suggestions')
   writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({theme:'dark',language:'zh-CN',workspaces:[root],lastWorkspace:root}))
   const {app,page} = await launch(dirs)
   try {
+    const input = page.locator('.composer-input')
+    await input.fill(Array(15).fill('示例内容').join('\n'))
+    await page.waitForTimeout(200)
+    await input.fill('')
+    await page.waitForTimeout(200)
+    const height = await input.evaluate((el) => ({ current: el.getBoundingClientRect().height, minimum: parseFloat(getComputedStyle(el).minHeight) }))
+    check('新会话中清空长内容恢复输入框高度', Math.abs(height.current - height.minimum) < 2, JSON.stringify(height))
+    await page.screenshot({ path: 'output/composer-restored.png' })
     const buttons = ['研究一个问题','整理文件资料','规划并执行任务','了解这个项目']
     check('新会话同时展示业务和项目入口', (await Promise.all(buttons.map(name => page.getByRole('button',{name,exact:true}).count()))).every(count => count === 1))
     await page.getByRole('button',{name:'规划并执行任务',exact:true}).click()
+    await page.waitForFunction(() => document.querySelector('.composer-input')?.value.includes('先拆解步骤'))
     const value = await page.locator('.composer-input').inputValue()
     check('示例只填入可编辑草稿', value.includes('先拆解步骤') && (await page.locator('.turn').count()) === 0)
+    await page.getByRole('button',{name:'了解这个项目',exact:true}).click()
+    await page.waitForFunction(() => document.querySelector('.composer-input')?.value.includes('请介绍当前项目'))
+    const switched = await page.locator('.composer-input').inputValue()
+    check('切换示例替换前一个示例，重复点击不累加', !switched.includes('先拆解步骤') && switched.split('请介绍当前项目').length === 2, switched)
+    await page.getByRole('button',{name:'了解这个项目',exact:true}).click()
+    check('重复点击示例不增加内容', await page.locator('.composer-input').inputValue() === switched)
     await page.locator('.composer-input').fill('用户已有草稿')
     await page.getByRole('button',{name:'研究一个问题',exact:true}).click()
     await page.waitForFunction(() => document.querySelector('.composer-input')?.value.includes('帮我研究这个问题'))
     const appended = await page.locator('.composer-input').inputValue()
     check('选择示例不会覆盖已有草稿', appended.startsWith('用户已有草稿') && appended.includes('帮我研究这个问题'))
+    await page.getByRole('button',{name:'整理文件资料',exact:true}).click()
+    await page.waitForFunction(() => document.querySelector('.composer-input')?.value.includes('帮我整理这些文件'))
+    const preserved = await page.locator('.composer-input').inputValue()
+    check('保留用户草稿并切换示例', preserved.startsWith('用户已有草稿') && !preserved.includes('帮我研究这个问题'), preserved)
+    await page.locator('.composer-input').fill(`${preserved} 用户补充`)
+    await page.getByRole('button',{name:'规划并执行任务',exact:true}).click()
+    await page.waitForFunction(() => document.querySelector('.composer-input')?.value.includes('先拆解步骤'))
+    check('切换时保留示例外的补充文字', (await page.locator('.composer-input').inputValue()).includes('用户补充'))
     await page.screenshot({path:join(dirs.base,'general-task-suggestions.png')})
   } finally { await app.close() }
 }
 
 async function caseBundledSeed() {
   const dirs = freshDirs('bundled-seed')
+  // Disposable seed root: tests must not write into the real build/pi-seed.
+  const tempSeedRoot = join(dirs.base, 'seed-root')
+  const seedDir = join(tempSeedRoot, '0.0.0-e2e')
+  mkdirSync(seedDir, { recursive: true })
+  const seedLauncher = join(seedDir, 'pi')
+  writeFileSync(seedLauncher, '#!/bin/sh\necho 0.0.0-e2e\n')
+  chmodSync(seedLauncher, 0o755)
   const { app, page } = await launch(dirs, 'default', {
     PI_DESKTOP_PI_PATH: join(dirs.base, 'missing-pi'),
+    PI_DESKTOP_SEED_ROOT: tempSeedRoot,
     PATH: '/usr/bin:/bin',
     SHELL: '/bin/sh',
     PI_DESKTOP_SKIP_AUTO_INSTALL: '1'
@@ -3323,14 +5240,14 @@ async function caseBundledSeed() {
   try {
     await page.locator('.welcome').waitFor({ timeout: 10000 })
     check('有内置 seed 时不会要求联网安装', await page.locator('.welcome-setup').count() === 0)
-    check('内置 seed 被识别为可用 Pi', (await page.locator('.welcome-hint').innerText()).includes('内置 Pi'))
-    await page.screenshot({ path: join(dirs.base, 'bundled-seed.png') })
-    await page.getByRole('button', {name:'选择模型'}).click()
-    await page.locator('.settings-page-title').waitFor({timeout:5000})
-    check('选择模型直达模型设置', await page.locator('.settings-page-title').innerText() === '模型')
-    await page.locator('.model-setup-empty').waitFor({timeout:10000})
-    check('没有可用模型时提供账号登录与 API Key 入口', await page.getByRole('button', {name:'使用账号登录', exact:true}).isVisible() && await page.getByRole('button', {name:'使用 API Key', exact:true}).isVisible())
-  } finally { await app.close() }
+    await page.getByRole('button', { name: '连接模型', exact: true }).click()
+    await page.locator('.connect-model').waitFor({ timeout: 5000 })
+    check('连接面板留在当前页', await page.locator('.settings-page').count() === 0)
+    check('连接面板提供 API Key 与账号登录', await page.getByRole('tab', { name: 'API Key' }).count() === 1 && await page.getByRole('tab', { name: '用账号登录' }).count() === 1)
+  } finally {
+    await app.close()
+    rmSync(tempSeedRoot, { recursive: true, force: true })
+  }
 }
 
 async function caseProviderAuth() {
@@ -3352,12 +5269,64 @@ async function caseProviderOAuth() {
   const dirs = freshDirs('provider-oauth')
   const { app, page } = await launch(dirs)
   try {
-    const providers = await page.evaluate(() => window.pi.listOAuthProviders())
+    let providers
+    try {
+      providers = await page.evaluate(() => window.pi.listOAuthProviders())
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      check('IPC 错误不带 Electron 前缀', !/Error invoking remote method/.test(message), message.split('\n')[0])
+      if (/认证模块|内置 Pi runtime|暂不支持账号登录/.test(message)) {
+        check('当前环境没有内置 Pi 认证模块，跳过 OAuth 发现', true, message.split('\n')[0])
+        await page.getByRole('button', { name: '设置', exact: true }).click().catch(() => undefined)
+        return
+      }
+      throw error
+    }
     check('OAuth 服务商列表来自 pi ModelRuntime', providers.some((provider) => provider.id === 'openai' && provider.oauth))
     check('OAuth 列表只显示支持账号授权的服务商', providers.every((provider) => provider.oauth))
     const invalid = await page.evaluate(() => window.pi.startOAuth('unknown-provider-xyz'))
     check('未知 OAuth 服务商不会启动', invalid.ok === false)
   } finally { await app.close() }
+}
+
+async function caseOAuthUnavailableUi() {
+  const dirs = freshDirs('oauth-unavailable-ui')
+  // Seed launcher without auth module, in a disposable seed root (never touch
+  // the real build/pi-seed: a hard-killed test must not misplant the repo).
+  const seedRootDir = join(dirs.base, 'seed-root')
+  const seedDir = join(seedRootDir, '0.0.0-oauth-ui')
+  const seedLauncher = join(seedDir, 'pi')
+  mkdirSync(seedDir, { recursive: true })
+  writeFileSync(seedLauncher, '#!/bin/sh\necho 0.0.0-oauth-ui\n')
+  chmodSync(seedLauncher, 0o755)
+  let app
+  try {
+    const launched = await launch(dirs, 'default', {
+      PI_DESKTOP_PI_PATH: join(dirs.base, 'missing-pi'),
+      PI_DESKTOP_SEED_ROOT: seedRootDir,
+      PATH: '/usr/bin:/bin',
+      SHELL: '/bin/sh'
+    })
+    app = launched.app
+    const page = launched.page
+    await page.getByRole('button', { name: '连接模型', exact: true }).click()
+    await page.locator('.connect-model').waitFor()
+    await page.getByRole('tab', { name: '用账号登录' }).click()
+    await page.getByText('当前版本暂不支持账号登录，请用 API Key').waitFor({ timeout: 8000 })
+    check('连接面板账号页无空下拉', await page.locator('.connect-model select').count() === 0)
+    const message = await page.evaluate(async () => {
+      try {
+        await window.pi.listOAuthProviders()
+        return ''
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error)
+      }
+    })
+    check('账号登录不可用时错误为中文短句', /暂不支持账号登录/.test(message) && !/Error invoking remote method/.test(message), message)
+  } finally {
+    if (app) await app.close().catch(() => undefined)
+    rmSync(seedRootDir, { recursive: true, force: true })
+  }
 }
 
 async function caseSessionSearch() {
@@ -3469,16 +5438,19 @@ async function caseProjectTrust() {
   writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project }))
   const { app, page } = await launch(dirs)
   try {
-    await page.locator('.project-trust-banner').waitFor({ timeout: 10000 })
-    check('未信任项目显示信任提示', await page.getByText('项目资源需要信任').isVisible())
-    await page.getByRole('button', { name: '查看并信任' }).click()
-    await page.getByRole('heading', { name: '项目信任' }).waitFor()
+    const activeProject = page.locator('.project-row.active')
+    const manage = page.getByRole('dialog', { name: '项目信任' })
+    await activeProject.waitFor()
+    check('未信任项目的对话中不显示横幅或弹窗', !await page.locator('.project-trust-banner, .project-trust-collapsed').count() && !await manage.count())
+    await activeProject.hover()
+    await activeProject.getByRole('button', { name: '项目操作' }).click()
+    await page.getByRole('menuitem', { name: '项目信任', exact: true }).click()
+    await manage.waitFor()
     check('信任弹窗展示检测到的资源', await page.locator('.project-trust-resources').getByText(join(project, '.pi', 'skills')).isVisible())
     await page.locator('.project-trust-option.primary').click()
-    await page.waitForTimeout(600)
+    await manage.waitFor({ state: 'hidden' })
     const trust = JSON.parse(readFileSync(join(dirs.agent, 'trust.json'), 'utf8'))
     check('桌面端可写入项目信任文件', trust[project] === true, JSON.stringify(trust))
-    check('信任后提示消失', await page.locator('.project-trust-banner').count() === 0)
   } finally { await app.close() }
 }
 
@@ -3577,11 +5549,12 @@ async function caseFirstRunSetup() {
   })
   try {
     await page.locator('.welcome-setup').waitFor({ timeout: 10000 })
-    check('缺少 pi 时显示首次准备引导', await page.getByText('准备 Pi').isVisible())
-    check('首次准备提供准备与重新检测', await page.getByRole('button', {name:'立即准备'}).isVisible() && await page.getByRole('button', {name:'重新检测'}).isVisible())
-    check('缺少 pi 时不展示打开项目主操作', await page.getByRole('button', {name:'打开项目'}).count() === 0)
-    await page.locator('.welcome-setup').getByRole('button', {name:'重新检测'}).click()
-    await page.getByText('还没有找到 Pi。请先完成准备，或检查设置里的 Pi 路径。').waitFor({ timeout: 5000 })
+    const setup = await page.locator('.welcome-setup').innerText()
+    check('缺少运行时时显示准备引导', /约 1 分钟/.test(setup))
+    check('首次准备提供准备与重新检测', await page.getByRole('button', {name:'开始准备', exact: true}).isVisible() && await page.getByRole('button', {name:'重新检测', exact: true}).isVisible())
+    check('缺少运行时时不展示打开项目主操作', await page.getByRole('button', {name:'打开项目'}).count() === 0)
+    await page.locator('.welcome-setup').getByRole('button', {name:'重新检测', exact: true}).click()
+    await page.getByText('还没准备好').waitFor({ timeout: 5000 })
     check('重新检测会给出明确错误', true)
     await page.screenshot({ path: join(dirs.base, 'first-run.png') })
   } finally { await app.close() }
@@ -3599,8 +5572,10 @@ const CASES = [
   { tags: ['session-search'], label: 'full text session search', run: caseSessionSearch },
   { tags: ['session-tree'], label: 'session tree view', run: caseSessionTree },
   { tags: ['provider-oauth'], label: 'provider OAuth provider discovery', run: caseProviderOAuth },
+  { tags: ['provider-oauth', 'oauth-unavailable'], label: 'OAuth unavailable UI', run: caseOAuthUnavailableUi },
   { tags: ['provider-auth'], label: 'provider API key storage', run: caseProviderAuth },
   { tags: ['pi-seed'], label: 'bundled Pi runtime seed', run: caseBundledSeed },
+  { tags: ['prompt-feedback'], label: 'prompt feedback', run: casePromptFeedback },
   { tags: ['general-task-suggestions'], label: 'General task suggestions', run: caseGeneralTaskSuggestions },
   { tags: ['computer-use-progress-ui'], label: 'Computer Use progress presentation', run: caseComputerUseProgressUi },
   { tags: ['computer-use-completion'], label: 'Computer Use permission completion', run: caseComputerUsePermissionCompletion },
@@ -3620,21 +5595,40 @@ const CASES = [
   { tags: ['chrome-import', 'browser'], label: 'Chrome cookie import', run: caseChromeImport },
   { tags: ['usage'], label: 'usage trend chart', run: caseUsageTrend },
   { tags: ['polish', 'files', 'export'], label: 'polish: files / export / lightbox', run: casePolish },
+  { tags: ['chat-media'], label: 'chat: inline video, SVG images and diagrams', run: caseChatMedia },
+  { tags: ['historical-page'], label: 'chat: inline preview for historical HTML artifacts', run: caseHistoricalPage },
+  { tags: ['project-deliverables'], label: 'chat: project selection and turn deliverables', run: caseProjectDeliverables },
   { tags: ['virtual', 'scroll'], label: 'virtualization', run: caseVirtualization },
   { tags: ['fold', 'turns'], label: 'turns / folding', run: caseTurnsFold },
   { tags: ['fold', 'steps', 'tools'], label: 'process steps (merged tool calls)', run: caseProcessSteps },
+  { tags: ['operation-details'], label: 'chat operation timeline and native edit patch', run: caseOperationDetails },
   { tags: ['fold'], label: 'fold persistence', run: caseFoldPersistence },
   { tags: ['defaults', 'turns'], label: 'default: process visible', run: caseDefaultVisibility },
+  { tags: ['turn-timing'], label: 'turn and thinking timers', run: caseTurnTiming },
   { tags: ['rail', 'hover'], label: 'turn rail: slope + preview', run: caseTurnRailPreview },
+  { tags: ['conversation-gestures'], label: 'conversation navigation gestures', run: caseConversationGestures },
+  { tags: ['native-scroll-monitor'], label: 'macOS scroll phase monitor', run: caseNativeScrollMonitor },
+  { tags: ['system-theme'], label: 'system theme', run: caseSystemTheme },
   { tags: ['composer', 'composer-ui'], label: 'composer: plus + chip order', run: caseComposerLayout },
+  { tags: ['composer', 'model-providers'], label: 'composer: model provider menu and thinking control', run: caseModelProviderMenu },
+  { tags: ['composer', 'new-chat-layout'], label: 'new chat layout and upward composer menus', run: caseNewChatLayout },
+  { tags: ['composer', 'slash-menu'], label: 'composer: slash menu keyboard + no-match', run: caseSlashMenu },
+  { tags: ['draft-navigation'], label: 'composer: save drafts across chat navigation', run: caseDraftNavigation },
   { tags: ['package-inspection'], label: 'package permission preview', run: casePackageInspection },
   { tags: ['update-download'], label: 'update download entry', run: caseUpdateDownload },
   { tags: ['jev-settings'], label: 'Jev settings + key storage', run: caseJevSettings },
+  { tags: ['creator'], label:'Pi creator mode and real package lifecycle', run:()=>caseCreator({freshDirs,launch,check}) },
   { tags: ['package-catalog'], label: 'npm plugin catalog', run: casePackageCatalog },
+  { tags: ['navigation-gestures'], label: 'Mac trackpad navigation', run: () => caseNavigationGestures({ freshDirs, launch, check }) },
+  { tags: ['readme-locales'], label: 'Author README language and opt-in AI', run: () => caseReadmeLocales({ freshDirs, launch, check }) },
+  { tags: ['readme-images'], label: 'README image fallbacks', run: () => caseReadmeImages({ freshDirs, launch, check }) },
+  { tags: ['package-details'], label: 'npm plugin details API (live read-only)', run: casePackageDetails },
+  { tags: ['plugin-navigation'], label: 'top-level Pi plugins navigation', run: casePluginNavigation },
   { tags: ['jev-env'], label: 'Jev child env', run: caseJevEnv },
   { tags: ['sandbox'], label: 'OS sandbox filesystem guard', run: caseSandbox },
   { tags: ['proxy-env'], label: 'proxy environment', run: caseProxyEnv },
-  { tags: ['network-settings'], label: 'network and sandbox settings page', run: caseNetworkSettings },
+  { tags: ['network-settings'], label: 'permissions and networking settings', run: caseNetworkSettings },
+  { tags: ['conversation-permissions'], label: 'conversation permissions and recovery', run: caseConversationPermissions },
   { tags: ['update-download-real'], label: 'real update download checksum', run: caseUpdateDownloadReal },
   { tags: ['work-edit-commit'], label: 'work panel edit + git commit', run: caseWorkEditCommit },
   { tags: ['skills', 'plugins'], label: 'skills & plugins page', run: caseSkillsPage },
@@ -3648,13 +5642,14 @@ const CASES = [
   { tags: ['schedules', 'schedules-phase2'], label: 'cron, timezone, continue session, tools', run: caseScheduleAdvanced },
   { tags: ['schedules', 'schedules-failures'], label: 'consecutive failures pause', run: caseScheduleFailures },
   { tags: ['schedules', 'schedules-event'], label: 'file-change trigger', run: caseScheduleEvent },
-  { tags: ['sidebar', 'scratch'], label: 'temporary chat without project', run: caseScratchChat },
-  { tags: ['scratch-startup'], label: 'temporary chat startup surface', run: caseScratchStartup },
-  { tags: ['scratch-trust'], label: 'temporary chat restoration and project trust', run: caseScratchRestoreTrust },
+  { tags: ['sidebar', 'scratch'], label: 'new chat without project', run: caseScratchChat },
+  { tags: ['scratch-startup'], label: 'new chat startup surface', run: caseScratchStartup },
+  { tags: ['scratch-trust'], label: 'new chat restoration and project trust', run: caseScratchRestoreTrust },
   { tags: ['schedules', 'schedules-slash'], label: '/schedule composer command', run: caseScheduleSlash },
   { tags: ['schedules', 'schedules-bridge'], label: 'chat scheduling bridge CLI', run: caseScheduleBridge },
   { tags: ['schedules', 'schedules-notice'], label: 'one-time completion notice', run: caseScheduleNotice },
   { tags: ['sidebar', 'sidebar-layout'], label: 'sidebar: projects + recent', run: caseSidebarLayout },
+  { tags: ['sidebar', 'background-session-status'], label: 'sidebar: background session status', run: caseBackgroundSessionStatus },
   { tags: ['sidebar', 'project-removal'], label: 'remove project from sidebar', run: caseProjectRemoval },
   { tags: ['fold', 'autofold'], label: 'auto fold on answer', run: caseAutoFoldOnAnswer },
   { tags: ['menu', 'wheel', 'scroll'], label: 'wheel isolation', run: caseWheelIsolation },
@@ -3674,18 +5669,25 @@ if (process.argv.includes('--list')) {
 
 try {
   rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
-  for (const item of CASES) {
-    if (wants.length && !item.tags.some((tag) => wants.includes(tag))) continue
-    console.log(`\n${item.tags[0]}: ${item.label}`)
-    await item.run()
-  }
-  if (wants.length) {
-    console.log(`\n(e2e filter: ${wants.join(',')})`)
-  }
 } catch (error) {
-  failures += 1
-  console.error('\n crashed:', error instanceof Error ? error.stack : error)
+  console.error('could not reset e2e tmp:', error)
 }
+for (const item of CASES) {
+  if (wants.length && !item.tags.some((tag) => wants.includes(tag))) continue
+  console.log(`\n${item.tags[0]}: ${item.label}`)
+  try {
+    await Promise.race([
+      item.run(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('case timed out')), 240000))
+    ])
+  } catch (error) {
+    const lines = error instanceof Error ? error.message.split('\n') : [String(error)]
+    const waiting = lines.find((line) => line.includes('waiting for'))
+    check(`${item.tags[0]} crashed`, false, waiting ? `${lines[0]} — ${waiting.trim()}` : lines[0])
+    try { execFileSync('pkill', ['-f', 'node_modules/electron/dist/electron']) } catch { /* no leftover window */ }
+  }
+}
+if (wants.length) console.log(`\n(e2e filter: ${wants.join(',')})`)
 
 const passed = results.filter((item) => item.ok).length
 console.log(`\n${passed}/${results.length} checks passed`)

@@ -17,9 +17,9 @@ function packageHash(root: string): string {
   return hash.digest('hex')
 }
 
-export function prepareComputerUseRuntime(source: string, userData: string): string {
+export function prepareComputerUseRuntime(source: string, userData: string, namespace: 'computer-use' | 'creator' = 'computer-use'): string {
   const hash = packageHash(source)
-  const root = join(userData, 'computer-use-runtimes')
+  const root = join(userData, `${namespace}-runtimes`)
   const destination = join(root, hash)
   mkdirSync(root, { recursive: true })
   if (existsSync(destination)) {

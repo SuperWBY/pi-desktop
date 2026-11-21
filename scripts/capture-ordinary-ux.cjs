@@ -180,8 +180,8 @@ async function main() {
     const welcome = await open('welcome')
     await welcome.getByText('第一次使用，先完成准备工作').waitFor()
     const welcomeSubtitle = (await welcome.locator('.topbar-path').innerText()).trim()
-    if (welcomeSubtitle !== '不关联文件夹' || welcomeSubtitle.includes('项目')) {
-      throw new Error(`首次打开的标题仍带项目说法: ${welcomeSubtitle}`)
+    if (welcomeSubtitle !== '新对话' || welcomeSubtitle.includes('项目') || welcomeSubtitle.includes('临时')) {
+      throw new Error(`首次打开的标题仍带项目/临时说法: ${welcomeSubtitle}`)
     }
     await shot(welcome, '01-welcome-setup')
     await welcome.close()
@@ -195,7 +195,7 @@ async function main() {
     await model.close()
 
     const chat = await open('chat')
-    await chat.getByText('临时对话', { exact: true }).waitFor()
+    await chat.getByText('新对话', { exact: true }).waitFor()
     await chat.getByText('想让 Pi 帮你做什么？').waitFor()
     const body = await chat.locator('body').innerText()
     if (body.includes('/private/var/folders') || body.includes('/var/folders')) throw new Error('临时路径仍显示在界面上')
@@ -301,7 +301,7 @@ async function main() {
     const schedule = await open('chat')
     await schedule.getByRole('button', { name: '定时任务' }).click()
     await schedule.getByRole('button', { name: '新建任务' }).first().click()
-    await schedule.getByText('要做的事情', { exact: true }).first().waitFor()
+    await schedule.getByText('什么时候做什么？', { exact: true }).first().waitFor()
     await schedule.getByText('更多选项').click()
     await schedule.getByText('使用 cron 表达式').waitFor()
     await shot(schedule, '10-schedule')

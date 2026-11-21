@@ -107,7 +107,7 @@ function timestampOf(value: unknown): number {
 
 function projectFor(cwd: string): { path: string; name: string } {
   const scratch = join(app.getPath('userData'), 'scratch')
-  if (cwd === scratch) return { path: scratch, name: '临时对话' }
+  if (cwd === scratch) return { path: scratch, name: '新对话' }
   return { path: cwd, name: basename(cwd) || cwd }
 }
 

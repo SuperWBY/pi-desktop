@@ -1,212 +1,157 @@
-# Pi Desktop
+<p align="center">
+  <img src="build/icon.png" width="88" alt="Pi Desktop 图标" />
+</p>
 
-一个把 [pi](https://pi.dev) 包装成桌面客户端的应用。参考 Codex Desktop / Claude Cowork 的形态：左边是项目与会话，中间是对话与工具执行，底部是模型、推理强度和上下文占用。
+<h1 align="center">Pi Desktop</h1>
 
-主进程用 `pi --mode rpc` 启动 pi 子进程，通过官方 JSONL 协议通信；渲染层不直接接触 Node，只消费结构化事件。
+<p align="center"><strong>在对话里完成工作，也为你的 AI 创造新能力。</strong></p>
 
-## 安装
+<p align="center">
+  <a href="https://github.com/SuperWBY/pi-desktop/releases">下载安装</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#你可以用它做什么">功能介绍</a> ·
+  <a href="#把想法变成插件">创意模式</a> ·
+  <a href="docs/development.md">开发指南</a>
+</p>
 
-首次启动时，Pi Desktop 会检测 [pi](https://pi.dev) 运行时；如果不存在，会在应用内自动下载并安装官方版本，不需要打开终端。也可以提前手动安装（`curl -fsSL https://pi.dev/install.sh | sh` 或 `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`）。应用只负责界面，模型与凭证都由 pi 管。
+Pi Desktop 是基于 [Pi](https://pi.dev) 的桌面 Agent 工作台。连接你使用的模型，用自然语言处理项目、文件和网页，在同一个窗口里查看执行过程、检查改动、预览结果。
 
-发布构建还会内置一份离线 Pi 运行时（macOS）。首次启动优先使用用户已安装的 Pi；没有时才使用内置 seed，绝不会覆盖用户已经更新的版本。构建时可用 `npm run prepare:pi-seed` 生成 seed；`npm run pack` 会自动把它放进 `Contents/Resources/pi-seed`。
+你还可以安装社区插件，或者直接告诉 Pi 想增加什么功能，让它为自己创建插件。常用的能力可以留下来，继续修改、安装和复用。
 
-### 从 GitHub Release 安装（推荐）
+![Pi Desktop 对话、网页交付与文件改动](docs/screenshots/overview.png)
 
-1. 打开本仓库的 **Releases**，下载最新的 `Pi-Desktop-<版本>-arm64.dmg`（Apple Silicon）。
-2. 双击挂载，把 **Pi Desktop** 拖到 **Applications**。
-3. 首次打开如果提示“已损坏”或“无法验证开发者”，执行一次：
+<sub>界面截图使用隔离的示例数据，展示当前开发版。</sub>
 
-   ```bash
-   xattr -dr com.apple.quarantine "/Applications/Pi Desktop.app"
-   ```
+## 你可以用它做什么
 
-   然后再打开即可。（当前构建是 ad-hoc 签名，没有 Developer ID 与公证，所以系统会拦一次。）
+### 把任务交给 AI，在原处检查结果
 
-### 自己构建
+让 Pi 阅读项目、修改代码、整理资料或生成网页。执行过程会显示读取、编辑和运行了什么；文件改动可以查看差异，图片、网页等结果可以直接预览。
 
-```bash
-npm install
-npm run dmg          # 产物：release/Pi-Desktop-0.1.0-arm64.dmg
-CSC_NAME='Developer ID Application: …' APPLE_ID=… APPLE_TEAM_ID=… APPLE_APP_SPECIFIC_PASSWORD=… npm run release:mac  # 签名 + 公证
-```
+项目、对话、文件和工作面板放在一起。你可以继续追问、调整要求，也可以切换到另一段对话，回来查看后台任务的状态。
 
-想升级版本号：改 `package.json` 的 `version`，打 tag `v0.1.0` 推到 GitHub，`.github/workflows/release.yml` 会自动构建 DMG 并挂到 Release 上。
+### 用你自己的模型和工作方式
 
-> 分发说明：`.github/workflows/release.yml` 用 `macos-14` runner 构建。要发给别人用且不弹 Gatekeeper 警告，需要 Apple Developer ID 证书 + 公证。设置 `CSC_NAME`、`APPLE_ID`、`APPLE_TEAM_ID`、`APPLE_APP_SPECIFIC_PASSWORD` 后运行 `npm run release:mac`；脚本会签名 App、提交 notarytool、staple、再签名并公证 DMG。
+复用已有的 Pi 模型配置，或在设置中连接模型服务。切换模型、推理强度和会话权限，在输入区就能完成。
 
-![Chat](docs/screenshots/chat.png)
+支持图片与文件附件、`@` 引用项目文件、`/` 调用技能和命令，以及执行中的补充指令。点击上下文圆环，可以查看用量、分类明细和压缩状态。
 
-## 功能
+### 让 AI 使用网页和桌面工具
 
-- **项目 / 会话管理**：侧栏分成「项目」与「最近对话」；点击项目行展开/收起会话（无箭头图标），行尾 `+` 直接在该项目里新建对话。点「新建会话」先进入一个**临时对话**，在初始输入框上方的项目选择器里可以选已有项目、新建项目，或继续「不在项目中工作」——临时对话使用应用数据目录下的 `scratch` 工作区，会话文件仍由 pi 管理，但只出现在「最近对话」。正在运行的对话可以在后台继续，切换到其他会话或项目不会中断它；不属于任何项目的会话才进「最近对话」。会话行单行显示、悬停出操作菜单；支持搜索、重命名、在 Finder 中显示、删除；`⌘N` 新建临时对话。
-- **流式对话**：文本、思考块、工具调用实时渲染；思考块在流式结束后自动折叠。
-- **工具可视化**
-  - 每一行读作一个动作：`已运行 npm run build`、`读取了 3 个文件`、`思考了 6.7s`，右侧对齐耗时；运行中显示 `正在运行 … 4s` 的实时计时。
-  - `bash`：命令、输出与复制；`read` / `write`：带行号的文件内容；`edit`：红绿 diff（只显示变更附近的上下文）；其他工具：参数与结果 JSON。
-  - 折叠态是安静的单行，悬停才浮出展开箭头；展开后才变成带边框的卡片。
-- **模型控制**：模型选择（按 provider 分组、可搜索）、推理强度（off → max）、上下文环形指示、手动 compact。
-- **沙箱与网络**（设置 → 工具与技能）：可选的 macOS/Linux 进程沙箱，基于 Anthropic `sandbox-runtime` 的 Seatbelt + 本地代理。开启后限制 pi 工具树只能写项目、pi 数据、会话和临时目录，网络默认只放行模型域名；设置中提供独立的“网络与沙箱”页：项目只读、完全断网、额外域名白名单、统一 HTTP/HTTPS 网关、域名拒绝审批和本地沙箱审计日志。默认关闭，修改后新会话生效。Windows 暂不支持。
-- **输入体验**：图片粘贴 / 拖拽 / 选择上传；普通文件作为附件卡片发送（文本文件内联到提示，二进制文件带绝对路径）；输入 `@` 引用项目文件；`/` 唤起命令与 Skill；流式中可 Steer 或 Follow-up 排队；`Esc` 停止并把排队消息退回输入框。
-- **更新**：设置 → 关于可以检查 GitHub Releases；发现新版本后显示安装包下载入口，下载完成会校验 Release digest 并打开 DMG，不会静默安装。发布构建启动 4 秒后静默检查一次（可在设置关闭），只提示版本，不会自动下载。
-- **原生集成**：macOS 隐藏式标题栏、应用菜单、快捷键、外链用默认浏览器打开。
-- **两种主题**：暖色深色主题 + 米白浅色主题，设置页内带预览。
-- **设置页**：整页双栏布局，左侧分组导航 + 搜索，右侧卡片式设置项。
-  - **常规**：pi 路径、版本、重启会话、steering / follow-up 投递方式、自动压缩、自动重试
-  - **模型**：新会话默认模型与默认推理强度、当前模型信息；`pi --list-models` 的可用模型列表（含上下文 / 思考 / 图片标记）；直接添加自定义服务商与模型（写 `~/.pi/agent/models.json`，支持 OpenAI 兼容、Anthropic、Google 协议以及 Ollama / LM Studio / vLLM / OpenRouter 预设），保存后自动重启会话让 pi 重新加载
-  - **工具与技能**：按工具开关内置工具集、工具卡默认展开、流式自动跟随
-  - **外观 / 会话 / 快捷键 / 关于**：主题、存储目录、工作区、快捷键表与版本信息
-  - 运行时项（模式、压缩、重试）走 RPC 立即生效；默认值写入 pi 的 `settings.json`，对新会话生效
-  - 设置页顶部保留 42px 可拖拽区，关闭按钮固定右上角，`Esc` 也可退出。
-- **技能与插件**：侧栏「新建会话」下方进入整页管理。技能以两列卡片浏览（图标、名称、作用域、描述、版本与依赖），搜索 + 全部/用户/项目/插件筛选；点卡片进入独立详情页，可直接「在对话中使用」、在 Finder 中显示或复制路径，并阅读 `SKILL.md`。插件 tab 列出 `settings.packages` 中的包（版本、来源、作用域），支持更新、移除，以及从 GitHub / npm / 本地目录安装；「浏览目录」会从 npm 搜索 `pi-extension` / `pi-plugin` / `pi-package` 相关包，选中后仍然先进入权限预览（可只装到当前项目，带实时日志）；安装前会先读取来源的 `package.json`，显示安装脚本、扩展 / 技能数量、文件大小与风险等级，确认后才执行；**连接器 tab** 聚合技能依赖的外部 CLI（`lark-cli`、`git`、`gh` 等），显示全局路径、连接状态与被哪些技能使用，可重新检测；变更后提示重启会话生效。
-- **定时任务**：侧栏「定时任务」进入任务管理。支持一次性、每小时、每天、工作日、每周、**自定义 cron**、**文件变化触发**；按任务级 IANA 时区计算，夏令时自动跳过不存在的时间。任务在后台以 `pi -p` 独立会话执行，可指定项目目录、新会话/继续同一会话、工具白名单、错过补跑、完成通知；列表显示下次运行与上次状态，详情页展示 Prompt 与运行历史（可打开生成的会话或日志）。一次性任务成功执行后会自动从列表移除，并在创建它的原对话中留下完成消息；周期任务保留。任务和运行记录存在 `userData/schedules`，重启后恢复；运行中被退出会标记中断并补跑一次。打开「登录时启动」后随系统登录在后台启动；打开「关闭后继续运行」会注册 macOS LaunchAgent / Windows Task Scheduler，应用完全关闭也会每分钟检查到期任务。对话输入框直接输入 `/schedule [cron] 任务内容` 可打开预填的创建弹窗。**每个 pi 会话都会收到定时任务使用说明；在对话里说「5 分钟后…」「每天…」时，pi 应调用内置的 `pi-desktop-schedule` CLI 创建真正的定时任务，而不是 `nohup` / `sleep`。** 创建、开始、完成都会推送应用内提示，侧栏显示运行中/未读状态，提示和系统通知点击可直接跳到对应任务。
-- **对话折叠（Turn）**：每一轮（提问 + 其后所有执行过程）是一条折叠单元，过程默认直接可见；打开「结论出现后收起过程」后会保留最终回复和过程摘要。`⌘.` 全收 / `⇧⌘.` 全展 / `⌘↑↓` 跳轮，折叠状态按会话持久化。
-- **完整记录**：`⌘⇧O` 打开不折叠的全量 transcript，`⌘F` 搜索（命中计数 + 上下跳），Esc 关闭。
-- **轮次导航**：窗口左缘的刻度线，鼠标滑过时以指针为中心向两侧渐次变长（坡度跟随指针）；悬停浮出该轮提问、回答摘要与图片，点击跳到该轮，`Esc` 关闭预览。
-- **工具输出压缩**：连续同类调用自动合组（`读取了 5 个文件`），单卡输出默认只显示 20 行 + 「还有 N 行 · 显示全部」，bash 优先显示尾部；复制仍是全文。
-- **右侧工作面板**（`⌘⇧E`）：通过「+」按需打开**变更、文件、终端、产物、浏览器**。文件预览支持直接编辑并保存（200 KB 以内，`⌘S` 保存、Esc 取消）；变更 tab 的工作区模式可以勾选文件、填写提交说明并直接 `git commit`。切换或暂时关闭面板会保留已打开的预览。面板可拖拽调宽，也可以放大查看。
-- **Jev 判断层（可选）**：设置 → 工具与技能。可配置 TypeSafe 或 OpenCode Console、模型和 API Key；Key 存在 `~/.pi/agent/jev.json`（0600），只由主进程传给 pi 子进程，不返回渲染进程。Jev 只提供动作风险分和目标建议，不能执行工具或绕过审批；目标建议默认关闭，开启后只发送任务描述和非敏感候选标签。
-- **浏览器统一入口**（设置 → 网页浏览）：三个后端（应用内浏览器 / 独立 Chrome CDP / Chrome 扩展桥）共用 `BrowserRouter` 的观察、读取、操作和结果校验协议；设置页实时显示连接状态，可重新检测、打开应用内面板或启动专用 Chrome。
-- **应用内浏览器**（`⌘⇧B` 或点击聊天里的链接）：在右侧打开网页，支持地址栏、前进/后退、刷新、下载和「用系统浏览器打开」。浏览器使用独立 session，默认拒绝摄像头、麦克风、定位等权限，只允许 http/https；本地开发地址允许 `localhost` / `127.0.0.1`，其他私网地址会被拦截。
-- **使用情况与费用**：设置 → 应用 → 使用情况与费用。按今天 / 7 天 / 30 天 / 本月 / 全部统计本地会话的 Token、请求数、缓存命中和模型单价估算费用；每日趋势默认按 Tokens 展示，可切换费用；悬停显示当天 Tokens 与调用次数；用量明细默认按「套餐 + 模型」拆分（同一 provider 下的不同模型分行；不同套餐不合并），会话按 Tokens 排序，并统计从会话中读取 SKILL.md 的技能调用次数。当前一个 provider 对应一个套餐；以后接入多账号/多套餐时需要给每个账号单独的 provider 标识。
-- **Computer Use（macOS）**：仓库内 `extensions/computer-use` 提供原生 Accessibility + 截图 + CGEvent 工具，包括 `computer_use_apps`、`computer_use_observe`、`computer_use_act`、`computer_use_batch` 和 `computer_use_permissions`。安装后需要给 Pi Desktop 授予辅助功能与屏幕录制权限；每个动作默认确认，先观察再操作。
-- **从 Chrome 导入登录状态**（设置 → 常规 → 链接）：可选地把指定站点的 Cookie 一次性导入内置浏览器，避免在每个站点重新登录。只导入 Cookie，不导入密码、Passkey 或扩展数据；默认不选择任何站点，导入前需要退出 Chrome。Windows 通过 DPAPI 解密 Chrome Cookie；macOS 通过 Keychain。新版 Chrome 的 App-Bound Encryption（v20）暂不支持。注意：这不是实时同步，部分站点仍会要求二次验证。
-- **输出细节**：工具卡里的文件路径可直接「打开」或「在 Finder 中显示」；diff 默认只显示变更行上下 3 行，一键切全文件并复制改后内容；任意消息里的图片点击放大（⌘滚轮 / +- 缩放，Esc 关闭）。
-- **导出**：会话右键 → 「导出 Markdown」（问题 + 结论 + 过程摘要）或「导出 HTML」（pi 自己的单文件导出，30MB 级别会话实测可用）。
-- **长会话**：超过 40 轮后自动启用 `content-visibility` 按需渲染，只绘制视口附近的轮次。
-- **后台通知**：窗口在后台时，一轮跑完会发系统通知（可关）。
-- **诊断与恢复**：侧栏底部状态点打开诊断抽屉（pi 路径 / 版本 / agent 目录 / 最后 60 行 stderr / `models.json` 错误 / 一键复制）；删除会话进 `.trash` 并在提示条里「撤销」；重启后回到上次的会话。
-- **键盘可达**：菜单支持 ↑↓ / Home / End / Enter / Esc，关闭后焦点回到触发器，全局 `:focus-visible` 环。
-- **流畅度**
-  - 会话切换复用同一个 pi 进程（`switch_session`），不再重启子进程；最近看过的会话直接命中本地缓存。
-  - 流式事件按动画帧合并，消息与工具卡做 memo + 增量渲染，长回复不卡顿。
-  - 发送时立即插入乐观消息；滚动保持贴底，内容长高时自动跟随。
+浏览器可以在工作面板中打开网页，供你查看，也可由 Pi 操作。支持应用内浏览器、专用 Chrome 和 Chrome 扩展桥等接入方式。
 
-| Diff | Light |
+macOS 上还提供 Computer Use，可在授权后观察和操作桌面应用。文件、网络和敏感操作遵守当前会话的权限设置。
+
+### 把重复的工作安排到以后
+
+在对话里描述“5 分钟后提醒我”或“每天整理一次这个项目”，也可以从侧栏进入定时任务，设置执行时间、查看运行状态和历史结果。
+
+任务支持一次性、周期和文件变化触发。执行条件与电脑运行状态有关，详见[常见问题](#常见问题)。
+
+### 找到需要的插件，也管理自己的作品
+
+**Pi 插件**提供三个入口：
+
+| 入口 | 用途 |
 | --- | --- |
-| ![Diff](docs/screenshots/diff.png) | ![Light](docs/screenshots/light.png) |
+| **发现插件** | 搜索社区插件，按类型筛选，阅读作者说明并直接安装。 |
+| **已安装** | 查看已有插件，更新或卸载。 |
+| **我的插件** | 汇总自己创建的草稿和插件，查看所属项目，继续创作、验证与安装。 |
 
-| Settings | Tools |
+插件详情优先展示作者提供的对应语言 README。没有时先显示原文；需要 AI 翻译时，由你主动选择，译文会明确标注来源。
+
+![Pi 插件市场](docs/screenshots/plugins.png)
+
+## 把想法变成插件
+
+输入 **`/create`**，进入创意模式，然后直接描述想实现的功能。
+
+例如：
+
+> 我希望 Pi 在开始修改文件前，先给出一份计划，并让我随时切回执行模式。
+
+> 帮我做一个插件，把长工具输出整理成更适合后续对话使用的内容，保留原始记录。
+
+> 我想把资料收集交给一个独立的 Agent，再把结果带回当前对话。
+
+这些是起点。你也可以描述自己的想法，让 Pi 依据当前运行时支持的工具、命令和扩展接口创作。
+
+创作始终在对话里进行。完成后，到 **Pi 插件 → 我的插件** 找到作品，检查、试运行，再安装使用；后续修改也能回到对应项目继续完成。进入创意模式不会替你更换聊天模型或提高文件权限。
+
+![我的插件](docs/screenshots/my-plugins.png)
+
+## 快速开始
+
+### 1. 安装 Pi Desktop
+
+到 [GitHub Releases](https://github.com/SuperWBY/pi-desktop/releases) 下载适合设备的安装包。macOS Apple Silicon 用户可下载 `arm64.dmg`，打开后将 Pi Desktop 拖入 Applications。
+
+**本 README 介绍当前开发分支。已发布安装包的功能以对应版本说明为准；体验尚未发布的功能，可以[从源码启动](docs/development.md#本地启动)。**
+
+当前主要验证平台为 **macOS Apple Silicon**。仓库也提供 Windows 与 Linux 打包脚本，平台支持情况见[开发指南](docs/development.md#平台与打包)。
+
+### 2. 连接模型
+
+首次启动按引导连接模型。已经使用 Pi 的用户，可以复用本机的模型与登录配置；没有安装 Pi 时，macOS 发布构建可使用随应用提供的运行时。
+
+Pi Desktop 不提供模型额度，模型调用费用取决于你连接的服务。
+
+### 3. 开始一个任务
+
+新建对话，直接输入需求。需要处理本地文件时，选择或添加项目目录，再说明想完成什么。
+
+可以从一个具体任务开始：
+
+- “读一下这个项目，说明它的结构和启动方式。”
+- “把这份资料整理成一个可以预览的网页。”
+- “检查这些文件的改动，列出需要我关注的问题。”
+- “我想为 Pi 增加一个功能，进入创意模式一起做。”
+
+## 让日常使用更顺手
+
+- **看得清过程**：流式回复、工具调用、文件差异和最终结果可以按需展开查看。
+- **长对话也能管理**：支持会话搜索、分支、导出、轮次导航和上下文压缩。
+- **桌面体验**：深浅主题、中英文界面、键盘导航与轻量交互动效。
+- **Mac 触摸板导航**：插件、技能、设置和定时任务支持双指轻扫返回与前进，普通滚动保持系统行为。
+- **了解用量**：查看本地会话的 Token 用量、缓存和费用估算。
+
+| 常用操作 | macOS 快捷键 |
 | --- | --- |
-| ![Settings](docs/screenshots/settings.png) | ![Tools](docs/screenshots/settings-tools.png) |
+| 新建对话 | `⌘N` |
+| 打开项目 | `⌘O` |
+| 收起或展开侧栏 | `⌘B` |
+| 打开工作面板 | `⌘⇧E` |
+| 打开应用内浏览器 | `⌘⇧B` |
+| 打开设置 | `⌘,` |
+| 发送 / 换行 | `Enter` / `Shift+Enter` |
+| 停止当前执行 | `Esc` |
 
-## 架构
+## 常见问题
 
-```
-src/
-  main/            Electron 主进程
-    index.ts       窗口、菜单、IPC、pi 生命周期
-    pi.ts          pi 子进程 + JSONL 协议（id 关联响应）
-    sessions.ts    扫描 ~/.pi/agent/sessions/*.jsonl 生成会话列表
-    pi-locate.ts   解析 pi 可执行文件（GUI 不继承 shell PATH）
-    settings.ts    userData/settings.json（桌面端偏好）
-    pi-settings.ts 读写 pi 的 ~/.pi/agent/settings.json
-    schedules.ts   本地定时任务调度、运行记录与重启恢复
-    schedule-cadence.ts  下一次运行时间计算（cron / 时区 / DST）
-    platform-scheduler.ts  LaunchAgent / Task Scheduler 注册
-  preload/         contextBridge 暴露 window.pi
-  renderer/        React 19 + Vite
-    store.tsx      事件 → 消息 / 工具状态的 reducer
-    components/    侧栏、顶栏、对话、工具卡、输入框、弹窗
-  shared/          主进程与渲染层共享的类型与 API 契约
-```
+**它和 Pi 是什么关系？**
 
-关键设计：
+[Pi](https://pi.dev) 提供 Agent 运行时、模型接入、工具和扩展机制；Pi Desktop 提供围绕这些能力的桌面界面，以及浏览器、定时任务、预览和本机集成。
 
-- 每条命令带 `id`，响应按 id 关联；`message_update` 的 delta 按 `contentIndex` 重建流式消息，`message_end` 用完整消息覆盖。
-- 工具执行有独立的 `tool_execution_start/update/end` 事件，按 `toolCallId` 聚合，不用轮询。
-- 会话列表只读 JSONL 文件头、`session_info` 和首条用户消息，并基于 mtime/size 缓存。
-- 打开项目时用 `realpath` 规范化路径（macOS `/tmp` → `/private/tmp`），避免会话按工作区过滤时丢失。
-- 设置页分两层：实时项用 RPC（`set_steering_mode`、`set_follow_up_mode`、`set_auto_compaction`、`set_auto_retry`）立即作用于当前进程；默认项（默认模型、推理强度、`defaultTools`）合并写入 `~/.pi/agent/settings.json`，不覆盖未知字段。
-- 流式事件先在 `requestAnimationFrame` 里攒成一批再 dispatch；消息用 memo 隔离重渲染，markdown 重解析限制在约 55ms 一次。
-- 会话消息在渲染层按 `sessionPath` 缓存；切换时先显示缓存，再用 `get_messages` 结果覆盖。
-- 保持单换行（`remark-breaks`），模型逐行输出的内容不会被 markdown 折成一段。
+**会话和配置保存在哪里？**
 
-## 开发
+会话与模型配置由本机 Pi 管理，桌面偏好和任务记录保存在应用数据目录。模型请求会发送给你选择的服务；外部工具和连接器也会按其用途访问相应服务。
 
-要求：Node.js 22+、macOS（其他平台未测试）、本机已安装并登录 pi。
+**关闭应用后，定时任务还会执行吗？**
 
-```bash
-npm install
-npm run dev          # electron-vite dev（HMR）
-npm run typecheck    # 主进程 + 渲染层类型检查
-npm run build        # 生产构建到 out/
-npm run smoke        # 启动一次，检查无 pageerror
-npm run e2e          # 交互用例（用 scripts/mock-pi.mjs 假 pi，不烧 token）
-npm run test:cadence # cron / 时区 / DST 纯函数测试
-npm run test:headless-ui # 无窗口渲染层检查；先运行 npm run build，需要本机 Chrome
-```
+默认需要应用运行。可以在设置中启用后台运行相关选项。电脑关机或睡眠期间不能保证准点执行；周期补跑和文件监听的边界见[定时任务说明](docs/development.md#定时任务的运行条件)。
 
-e2e 按场景打了标签，改哪块只跑哪块（会自动先构建过期源码）：
+**所有 Pi 扩展都能直接用于桌面吗？**
 
-```bash
-node scripts/e2e.mjs --list          # 列出所有场景和标签
-E2E_ONLY=tools node scripts/e2e.mjs  # 只跑工具行/分组
-E2E_ONLY=fold,menu npm run e2e       # 跑折叠 + 菜单
-```
+需要看扩展使用的接口。Pi Desktop 使用 RPC 模式，部分专为终端设计的自定义 UI 无法直接显示。创作插件时会检查实际加载情况，具体功能仍需在对话中验证。首版子 Agent 模板以独立只读任务为起点。
 
-无窗口检查使用模拟的桌面 API，不替代 Electron 主进程和真实 pi 的集成测试。Chrome 不在默认位置时可设置 `HEADLESS_CHROME_PATH`。
+**macOS 安装时出现安全提示怎么办？**
 
-`scripts/mock-pi.mjs` 是 `pi --mode rpc` 的替身，支持 `MOCK_SCENARIO=default|auth-error|catalog-huge|model-switch-fails`，
-可以在没有凭证、没有真 pi 的环境（包括 CI）里跑通界面和失败路径。
+先确认安装包来自本仓库的 Releases，并阅读该版本的签名说明。开发构建可能没有 Apple Developer ID 公证；本地构建与正式分发的区别见[签名说明](docs/development.md#macos-签名)。
 
-pi 路径默认自动探测：
+## 参与这个项目
 
-1. 设置里的路径
-2. `PI_DESKTOP_PI_PATH`
-3. `~/.pi/agent/bin/pi`
-4. `/opt/homebrew/bin/pi`、`/usr/local/bin/pi`
-5. 登录 shell 的 `command -v pi`
+遇到问题或有新的使用场景，欢迎[提交 Issue](https://github.com/SuperWBY/pi-desktop/issues)。报告问题时，请说明系统、应用版本、复现步骤和预期结果，并注意移除日志中的凭据与私人内容。
 
-也可以在设置里手动指定。
+准备修改代码，可从[开发指南](docs/development.md)开始；界面、交互、动画和验证约定见 [AGENTS.md](AGENTS.md)。
 
-## 打包
-
-```bash
-npm run pack         # macOS .app
-npm run dmg          # macOS .app + DMG（内含 Applications 快捷方式，可直接拖拽安装）
-npm run pack:win     # Windows x64 免安装目录（release/Pi Desktop-win32-x64）
-npm run check:win    # 在 macOS 上做 Windows 产物静态检查（PE/asar/扩展/认证 helper）
-npm run package:chrome  # Chrome Web Store 上传包：release/pi-desktop-chrome-bridge-<version>.zip
-# macOS 产物：release/Pi Desktop-darwin-arm64/Pi Desktop.app
-#             release/Pi-Desktop-0.1.0-arm64.dmg
-```
-
-macOS 打包支持通过 `PI_MAC_SIGNING_IDENTITY` 指定签名身份；本机也可以在 `~/Library/Application Support/Pi Desktop/local-signing-identity.json` 中配置 `{"identity":"证书 SHA-1 指纹"}`。环境变量优先，均未配置时使用 ad-hoc 签名。固定本地代码签名身份可避免每次构建都改变应用的签名身份；配置后找不到证书时构建会失败，不会悄悄退回临时签名。请妥善保管登录钥匙串中的私钥，证书丢失或更换后可能需要重新授权。自签名证书仅供本地开发，对外分发仍需适当的 Apple Developer ID 签名和公证。
-
-Windows 使用系统原生标题栏（不在网页里模拟窗口按钮），快捷键提示会自动从 `⌘` 切换为 `Ctrl`，pi 的查找会额外检查 `%APPDATA%\npm\pi.cmd`，进程通过 `shell` 启动 `.cmd` shim。
-
-## 快捷键
-
-| 快捷键 | 动作 |
-| --- | --- |
-| `⌘N` | 新建会话 |
-| `⌘O` | 打开项目 |
-| `⌘B` | 收起/展开侧栏 |
-| `⌘⇧L` | 切换主题 |
-| `⌘⇧B` | 打开 / 关闭应用内浏览器 |
-| `⌘,` | 设置 |
-| `Enter` | 发送 |
-| `Shift+Enter` | 换行 |
-| `⌘.` / `⇧⌘.` | 收起 / 展开所有轮次 |
-| `⌘⇧O` | 打开完整记录 |
-| `⌘↑` / `⌘↓` | 跳到上/下一轮 |
-| `Esc` | 停止（并把排队消息退回输入框） |
-
-Windows / Linux 上对应使用 `Ctrl`（界面里的快捷键提示会按平台显示）。
-
-## 已知限制
-
-- RPC 模式下 pi 的部分扩展 UI 能力不可用（`custom()`、自定义编辑器/主题组件等），本应用对 `select / confirm / input / editor` 做了原生实现，其余降级为提示。
-- 会话列表仍会扫描会话目录以发现文件；消息正文搜索已使用 SQLite 索引（`.session-search.sqlite`，0600），首次搜索会为旧会话补建索引。
-- 已通过侧栏菜单支持复制会话、从历史提示创建分支和查看分支树；分支树可以点击用户消息再次分叉。多窗口尚未实现。
-- 定时任务不是系统级 cron：不开启「关闭后继续运行」时，应用需要正在运行（或开启「登录时启动」在后台运行）；开启后会每 60 秒由系统调度器唤醒一次无窗口 tick。电脑睡眠期间不会准点触发，唤醒后会补跑一次。单次运行超时 30 分钟。
-- 文件变化触发只在应用进程或后台 tick 存活时监听；应用完全关闭期间的文件变化不会补触发，只会在下次启动时恢复监听。
-- 会破坏数据的高风险 bash 命令（递归删除、提权、强制推送、远程脚本安装等）会先在桌面端请求确认；其他普通工具仍直接执行。更细粒度的工具审批仍应在 pi 扩展层实现。
-
-沙箱设计、调研和边界说明见 [`docs/sandbox-network.md`](docs/sandbox-network.md)。
-
-## Roadmap
-
-- 工具执行中的文件改动汇总面板
-- 通知中心：长时间任务结束发系统通知
-- Windows 代码签名与自动更新（当前提供 x64 免安装目录）
+感谢 [Pi](https://pi.dev) 及本项目使用的开源组件。第三方分发声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

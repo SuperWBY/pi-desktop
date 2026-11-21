@@ -15,7 +15,12 @@ function collectCandidates(snapshotId) {
     const style = getComputedStyle(el)
     if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue
     const type = (el.getAttribute('type') || '').toLowerCase()
-    const secure = type === 'password' || /(?:^|\s)(?:current-password|new-password|one-time-code)(?:\s|$)/i.test(el.getAttribute('autocomplete') || '')
+    // Passwords, one-time codes and payment fields are secure: values are
+    // masked and typing needs the user's explicit approval (secureApproved).
+    // Keep this predicate in sync with computer-use and src/main/browser.ts.
+    const secure = (type === 'password'
+      || /(?:^|\s)(?:current-password|new-password|one-time-code|cc-[a-z]+)(?:\s|$)/i.test(el.getAttribute('autocomplete') || '')
+      || /(?:^|[^a-z])(?:card[-_ ]?(?:number|no|expiry|exp|code|csc)|cv[vc]|csc|security[-_ ]?code|有效期|安全码|信用卡)(?:[^a-z]|$)/i.test(`${el.getAttribute('autocomplete') || ''} ${el.getAttribute('name') || ''} ${el.getAttribute('id') || ''}`))
     const name = (el.getAttribute('aria-label') || Array.from(el.labels || [], label => { const copy = label.cloneNode(true); copy.querySelectorAll('input,textarea,select,button').forEach(node => node.remove()); return copy.textContent || '' }).join(' ').trim() || el.getAttribute('placeholder') || (!secure && el.innerText) || (!secure && type !== 'file' && el.value) || el.getAttribute('name') || el.getAttribute('title') || '')
       .replace(/\s+/g, ' ')
       .trim()
@@ -36,15 +41,53 @@ function collectCandidates(snapshotId) {
     targets.set(id, { element: el, name, role: el.getAttribute('role') || el.tagName.toLowerCase(), type, secure, destination })
     if (candidates.length >= 120) break
   }
-  globalThis.__piChromeTargets = { snapshotId, targets }
+  // Kept with the snapshot in the extension’s isolated world for the action-time check.
+  const inspectInteraction = (attribute) => {
+    const parseUrl = value => {
+      try { return new URL(value, location.href); }
+      catch { return undefined; }
+    };
+    const visible = el => {
+      const rect = el.getBoundingClientRect(), style = getComputedStyle(el);
+      return rect.width >= 2 && rect.height >= 2 && style.visibility === 'visible' && style.opacity !== '0' && !el.matches(':disabled,[aria-disabled="true"]');
+    };
+    const fields = [...document.querySelectorAll('input[type="password" i],[autocomplete~="current-password" i],[autocomplete~="new-password" i],[autocomplete~="one-time-code" i]')].filter(visible);
+    if (fields.some(el => el.matches('[autocomplete~="one-time-code" i]'))) return { blocker: 'verification' };
+    if (fields.length) {
+      const field = fields[0], form = field.form;
+      if (fields.length === 1 && field.matches('input[type="password" i]:autofill:not([autocomplete~="new-password" i])') && form) {
+        const buttons = [...form.elements].filter(el => el.type === 'submit' && visible(el));
+        const button = buttons.length === 1 ? buttons[0] : undefined;
+        if (button) {
+          const id = button.getAttribute(attribute);
+          const label = (button.getAttribute('aria-label') || button.textContent || '').trim();
+          const destination = parseUrl(button.hasAttribute('formaction') ? button.formAction : form.action);
+          const method = button.getAttribute('formmethod') || form.method;
+          const target = button.getAttribute('formtarget') || form.target;
+          if (id && /^(?:sign[ -]?in|log[ -]?in|登录|登入|登錄)$/i.test(label) && location.protocol === 'https:' && destination?.origin === location.origin
+            && !destination.username && !destination.password && method.toLowerCase() === 'post' && (!target || target.toLowerCase() === '_self')) return { login: id };
+        }
+      }
+      return { blocker: 'login' };
+    }
+    const navigation = [...document.querySelectorAll('a[href][' + attribute + ']')].filter(el => {
+      if (!visible(el) || el.hasAttribute('download') || el.hasAttribute('ping') || el.hasAttribute('onclick') || el.getAttribute('role') === 'button') return false;
+      if (el.target && el.target.toLowerCase() !== '_self') return false;
+      const url = parseUrl(el.href);
+      if (!url || !/^https?:$/.test(url.protocol) || url.origin !== location.origin || url.username || url.password) return false;
+      return !/delete|remove|logout|log[ -]?out|sign[ -]?out|submit|publish|pay|unsubscribe|授权|删除|退出|注销|提交|支付|发布/i.test(url.pathname + url.search + ' ' + (el.getAttribute('aria-label') || el.textContent || ''));
+    }).map(el => el.getAttribute(attribute));
+    return { navigation };
+  }
+  globalThis.__piChromeTargets = { snapshotId, targets, inspectInteraction }
   const visible = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width >= 2 && r.height >= 2 && s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0' }
   const frames = document.querySelectorAll('iframe[src*="recaptcha" i],iframe[src*="hcaptcha" i],iframe[src*="challenges.cloudflare.com" i],iframe[title*="captcha" i],iframe[title*="验证" i]')
   const text = (document.body?.innerText || '').slice(0, 20000)
   const requiresHuman = Array.from(frames).some(visible) || /请完成(?:安全|人机)?验证|请(?:先)?拖动滑块|验证您是真人|verify you are human|verify you are not a robot|checking your browser before accessing/i.test(text)
-  return { candidates, requiresHuman }
+  return { candidates, requiresHuman, title: globalThis.__piTabControl?.title ?? document.title, interaction: inspectInteraction('data-pi-chrome-id') }
 }
 
-function performAction(candidateId, type, text, key, snapshotId, expectedUrl) {
+function performAction(candidateId, type, text, key, snapshotId, expectedUrl, interaction, secureApproved) {
   if (!expectedUrl || location.href !== expectedUrl) return { ok: false, __piGuardRejected: 'page_changed' }
   if (!snapshotId || document.documentElement.getAttribute('data-pi-chrome-snapshot') !== snapshotId) return { ok: false, __piGuardRejected: 'page_changed' }
   const frames = document.querySelectorAll('iframe[src*="recaptcha" i],iframe[src*="hcaptcha" i],iframe[src*="challenges.cloudflare.com" i],iframe[title*="captcha" i],iframe[title*="验证" i]')
@@ -58,12 +101,20 @@ function performAction(candidateId, type, text, key, snapshotId, expectedUrl) {
   const priorFiles = globalThis.__piFileContext
   if (!Array.isArray(priorFiles) || fileInputs.length !== priorFiles.length || fileInputs.length > 100 || !fileInputs.every((item,index) => item === priorFiles[index].element && (item.files?.length || 0) <= 100 && Array.from(item.files || []).every((file,i) => file === priorFiles[index].refs[i]) && JSON.stringify(Array.from(item.files || [], file => [file.name,file.size,file.type,file.lastModified])) === priorFiles[index].files)) return { ok:false, __piGuardRejected:'target_changed' }
   const currentType = (el.getAttribute('type') || '').toLowerCase()
-  const secure = currentType === 'password' || /(?:^|\s)(?:current-password|new-password|one-time-code)(?:\s|$)/i.test(el.getAttribute('autocomplete') || '')
+  // Same sensitive-field predicate as collectCandidates above; keep in sync.
+  const secure = (currentType === 'password'
+    || /(?:^|\s)(?:current-password|new-password|one-time-code|cc-[a-z]+)(?:\s|$)/i.test(el.getAttribute('autocomplete') || '')
+    || /(?:^|[^a-z])(?:card[-_ ]?(?:number|no|expiry|exp|code|csc)|cv[vc]|csc|security[-_ ]?code|有效期|安全码|信用卡)(?:[^a-z]|$)/i.test(`${el.getAttribute('autocomplete') || ''} ${el.getAttribute('name') || ''} ${el.getAttribute('id') || ''}`))
   const name = (el.getAttribute('aria-label') || Array.from(el.labels || [], label => { const copy = label.cloneNode(true); copy.querySelectorAll('input,textarea,select,button').forEach(node => node.remove()); return copy.textContent || '' }).join(' ').trim() || el.getAttribute('placeholder') || (!secure && el.innerText) || (!secure && currentType !== 'file' && el.value) || el.getAttribute('name') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim().slice(0, 160)
   const rect = el.getBoundingClientRect()
   const style = getComputedStyle(el)
   const destination = JSON.stringify([el.getAttribute('href'), el.href || '', el.getAttribute('target'), el.getAttribute('formaction'), el.getAttribute('formmethod'), el.getAttribute('formtarget'), el.form?.action || '', el.form?.method || '', el.form?.target || ''])
   if (!target || target.element !== el || !el.isConnected || target.name !== name || target.role !== (el.getAttribute('role') || el.tagName.toLowerCase()) || target.type !== currentType || target.secure !== secure || target.destination !== destination || el.matches(':disabled,[aria-disabled="true"]') || rect.width < 2 || rect.height < 2 || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return { ok: false, __piGuardRejected: 'target_changed' }
+  if (interaction === 'login' || interaction === 'navigation') {
+    const current = snapshot.inspectInteraction('data-pi-chrome-id')
+    const matches = interaction === 'login' ? current.login === candidateId : current.navigation?.includes(candidateId)
+    if (!matches) return { ok: false, __piGuardRejected: 'target_changed' }
+  }
   if (type === 'check-file') {
     if (!(el instanceof HTMLInputElement) || el.type.toLowerCase() !== 'file' || el.files?.length !== 1) return { ok: false, __piGuardRejected: 'target_changed' }
     return { ok: true }
@@ -74,7 +125,7 @@ function performAction(candidateId, type, text, key, snapshotId, expectedUrl) {
     return { ok: true, title: document.title, url: location.href }
   }
   if (type === 'type') {
-    if ((el.getAttribute('type') || '').toLowerCase() === 'password' || /(?:^|\s)(?:current-password|new-password|one-time-code)(?:\s|$)/i.test(el.getAttribute('autocomplete') || '')) return { ok: false, error: 'secure field' }
+    if (secure && !secureApproved) return { ok: false, error: 'secure field' }
     el.focus()
     if (el.isContentEditable) {
       el.textContent = text
@@ -89,10 +140,20 @@ function performAction(candidateId, type, text, key, snapshotId, expectedUrl) {
     return { ok: true, value: el.value }
   }
   if (type === 'press') {
+    // Pressing keys on a password/payment field, or pressing Enter to submit a
+    // form that contains one, sends credentials: require the same explicit
+    // approval the desktop side obtained (secureApproved).
+    if (secure && !secureApproved) return { ok: false, error: 'secure field' }
+    const formSecure = !secureApproved && el.form && Array.from(el.form.elements).some(f => f instanceof HTMLInputElement && (f.type === 'password'
+      || /(?:^|\s)(?:current-password|new-password|one-time-code|cc-[a-z]+)(?:\s|$)/i.test(f.getAttribute('autocomplete') || '')
+      || /(?:^|[^a-z])(?:card[-_ ]?(?:number|no|expiry|exp|code|csc)|cv[vc]|csc|security[-_ ]?code|有效期|安全码|信用卡)(?:[^a-z]|$)/i.test(`${f.getAttribute('autocomplete') || ''} ${f.getAttribute('name') || ''} ${f.getAttribute('id') || ''}`)))
     el.focus()
     el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
     el.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }))
-    if (key === 'Enter' && el.form) el.form.requestSubmit()
+    if (key === 'Enter' && el.form) {
+      if (formSecure) return { ok: false, error: 'secure form' }
+      el.form.requestSubmit()
+    }
     return { ok: true }
   }
   return { ok: false, error: 'unknown action' }
@@ -152,9 +213,77 @@ async function activeTab() {
   return tab
 }
 
+const setTabControl = (owner, state) => {
+  let marker = globalThis.__piTabControl;
+  if (!state) {
+    if (marker?.owner === owner) marker.clear();
+    return;
+  }
+  if (!marker) {
+    marker = { title: document.title, displayed: document.title };
+    const update = () => {
+      if (document.title !== marker.displayed) marker.title = document.title;
+      const desired = (marker.state === 'waiting' ? '⏸ ' : '🖱 ') + marker.title;
+      marker.displayed = desired;
+      if (document.title !== desired) document.title = desired;
+    };
+    const observer = new MutationObserver(update);
+    observer.observe(document.head || document.documentElement, { childList: true, subtree: true, characterData: true });
+    marker.update = update;
+    marker.clear = () => {
+      observer.disconnect();
+      clearTimeout(marker.timer);
+      if (document.title === marker.displayed) document.title = marker.title;
+      delete globalThis.__piTabControl;
+    };
+    globalThis.__piTabControl = marker;
+  }
+  marker.owner = owner;
+  marker.state = state;
+  clearTimeout(marker.timer);
+  marker.timer = setTimeout(marker.clear, 18000);
+  marker.update();
+}
+
 async function executeTask(task) {
   if (task.type === 'ping') return { protocol: 1, version: chrome.runtime.getManifest().version }
-  const tab = await activeTab()
+  if (task.type === 'control') {
+    if (!Number.isInteger(task.tabId) || typeof task.owner !== 'string' || ![null, 'active', 'waiting'].includes(task.control)) throw new Error('Invalid tab control state.')
+    await chrome.scripting.executeScript({ target: { tabId: task.tabId }, func: setTabControl, args: [task.owner, task.control] })
+    return { ok: true }
+  }
+  if (task.type === 'preview') {
+    if (!Number.isInteger(task.tabId) || typeof task.documentId !== 'string' || typeof task.snapshotId !== 'string' || typeof task.url !== 'string') throw new Error('Missing preview observation.')
+    let changed = false
+    const onActivated = () => { changed = true }
+    const onUpdated = (id, info) => { if (id === task.tabId && (info.url || info.status === 'loading')) changed = true }
+    const onRemoved = id => { if (id === task.tabId) changed = true }
+    const onFocusChanged = () => { changed = true }
+    chrome.tabs.onActivated.addListener(onActivated)
+    chrome.tabs.onUpdated.addListener(onUpdated)
+    chrome.tabs.onRemoved.addListener(onRemoved)
+    chrome.windows.onFocusChanged.addListener(onFocusChanged)
+    try {
+      const tab = await activeTab()
+      if (changed || tab.id !== task.tabId || tab.url !== task.url || !Number.isInteger(tab.windowId)) throw new Error('The task tab is not visible.')
+      const verify = async () => {
+        const [{ result }] = await chrome.scripting.executeScript({ target:{tabId:task.tabId,documentIds:[task.documentId]}, func:(url, snapshot) => location.href === url && document.documentElement.getAttribute('data-pi-chrome-snapshot') === snapshot, args:[task.url, task.snapshotId] })
+        return result === true
+      }
+      if (!await verify() || changed) throw new Error('Browser page changed; observe again.')
+      const image = await chrome.tabs.captureVisibleTab(tab.windowId, { format:'jpeg', quality:55 })
+      const current = await activeTab()
+      if (changed || current.id !== task.tabId || current.windowId !== tab.windowId || current.url !== task.url || !await verify() || changed) throw new Error('Browser page changed during capture.')
+      if (typeof image !== 'string' || image.length > 1_500_000 || !image.startsWith('data:image/jpeg;base64,')) throw new Error('Preview image unavailable.')
+      return { image }
+    } finally {
+      chrome.tabs.onActivated.removeListener(onActivated)
+      chrome.tabs.onUpdated.removeListener(onUpdated)
+      chrome.tabs.onRemoved.removeListener(onRemoved)
+      chrome.windows.onFocusChanged.removeListener(onFocusChanged)
+    }
+  }
+  const tab = task.type === 'observe' && Number.isInteger(task.tabId) ? await chrome.tabs.get(task.tabId) : await activeTab()
   if (!tab?.id) throw new Error('No active Chrome tab.')
   if (task.type === 'observe') {
     const snapshotId = crypto.randomUUID()
@@ -189,6 +318,7 @@ async function executeTask(task) {
       throw new Error(messages[reason] || 'Chrome action rejected.')
     }
     if (!task.tabId || !task.documentId || !task.snapshotId || !task.url) throw new Error('Missing observation. Observe the active tab again.')
+    if (!/^h\d+$/.test(String(task.action?.candidateId ?? ''))) throw new Error('Invalid candidate id; observe again.')
     if (tab.id !== task.tabId) return rejectGuard('page_changed')
     if (tab.url !== task.url) return rejectGuard('page_changed')
     const [{ result }] = await chrome.scripting.executeScript({
@@ -200,7 +330,9 @@ async function executeTask(task) {
         String(task.action?.text ?? ''),
         String(task.action?.key ?? 'Enter'),
         task.snapshotId,
-        task.url
+        task.url,
+        task.action?.interaction ?? null,
+        task.action?.secureApproved === true
       ]
     })
     if (['page_changed', 'human', 'target_changed'].includes(result?.__piGuardRejected)) return rejectGuard(result.__piGuardRejected)

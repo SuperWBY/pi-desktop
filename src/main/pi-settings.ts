@@ -15,7 +15,6 @@ export function piSettingsFile(): string {
 let cached: PiSettings | null = null
 
 export function loadPiSettings(): PiSettings {
-  if (cached) return cached
   try {
     const raw = readFileSync(piSettingsFile(), 'utf8')
     const parsed = JSON.parse(raw) as PiSettings

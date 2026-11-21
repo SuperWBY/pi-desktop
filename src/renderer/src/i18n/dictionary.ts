@@ -1,6 +1,40 @@
 // Only application-owned UI strings are translated. User content, model output,
 // tool output, paths and provider-supplied labels are always left untouched.
 const pairs: Array<[string, string]> = [
+  ['语音输入', 'Dictate'], ['正在准备麦克风…', 'Preparing microphone…'],
+  ['麦克风已开启', 'Microphone on'], ['结束录音并转写', 'Finish recording and transcribe'],
+  ['转写', 'Transcribe'], ['取消录音', 'Cancel dictation'], ['正在转写…', 'Transcribing…'], ['已填入草稿', 'Added to draft'],
+  ['请在系统设置中允许 Pi 使用麦克风。', 'Allow Pi to use your microphone in System Settings.'],
+  ['请在系统设置中允许 Pi 使用语音识别。', 'Allow Pi to use speech recognition in System Settings.'],
+  ['当前语言的本机听写资源不可用。', 'On-device dictation resources are unavailable for this language.'],
+  ['打开听写设置', 'Open Dictation Settings'], ['打开系统设置', 'Open System Settings'],
+  ['当前设备或语言暂不支持本机听写。', 'On-device dictation is unavailable for this device or language.'],
+  ['已有语音输入正在处理。请稍后重试。', 'Dictation is already in progress. Try again in a moment.'],
+  ['没听到清晰的语音，请重试。', 'No clear speech was detected. Try again.'],
+  ['语音输入失败，请确认麦克风可用后重试。', 'Dictation failed. Check your microphone and try again.'],
+  ['转写超时，请试着缩短录音。', 'Transcription timed out. Try a shorter recording.'],
+  ['上下文用量', 'Context usage'],
+  ['历史内容已整理为摘要。', 'History has been summarized.'],
+  ['查看上下文用量', 'View context usage'],
+  ['关闭上下文用量', 'Close context usage'],
+  ['上下文用量暂不可用', 'Context usage is not available yet'],
+  ['暂不可用', 'Unavailable'],
+  ['等待用量更新', 'Waiting for usage update'],
+  ['已用 {used} / {total} tokens', '{used} / {total} tokens used'],
+  ['系统提示词', 'System prompt'], ['项目规则', 'Project rules'],
+  ['工具定义', 'Tool definitions'], ['MCP 与连接器', 'MCP & connectors'],
+  ['历史摘要', 'Conversation summary'], ['对话消息', 'Conversation'],
+  ['工具调用与结果', 'Tool calls & results'], ['其他 / 未分类', 'Other / unclassified'],
+  ['正在整理历史内容，完成后更新用量。', 'Summarizing history. Usage will update when complete.'],
+  ['分类明细暂不可用，总用量仍可参考。', 'Breakdown is unavailable. Total usage is still available.'],
+  ['新会话或压缩后，用量将在下一次模型响应后更新。', 'For a new or compacted chat, usage updates after the next model response.'],
+  ['分类按内容估算，并按总用量校准。', 'Categories are estimated from content and calibrated to total usage.'],
+  ['分类按内容估算，统计差额计入未分类。', 'Categories are estimated from content. The remainder is unclassified.'],
+  ['模型待确认', 'Model unavailable'], ['容量未知', 'Capacity unavailable'],
+  ['状态待确认', 'Status unavailable'], ['自动压缩状态待确认。', 'Automatic compaction status is unavailable.'],
+  ['接近上限时，将历史内容整理为摘要。', 'Summarize history as context approaches the limit.'],
+  ['自动压缩已关闭，可手动整理历史内容。', 'Automatic compaction is off. You can summarize history manually.'],
+  ['本轮结束后可压缩上下文', 'Compact context after this turn finishes'],
   ['已连接并验证本机配对。', 'Connected with verified local pairing.'],
   ['如果之前安装过扩展，更新后请在 Chrome 扩展页点击重新加载。', 'If the extension was already installed, reload it on the Chrome extensions page after an update.'],
   ['未收到扩展响应。请确认扩展已启用；如刚更新，请在 Chrome 扩展页重新加载，然后点击扩展图标并重试。', 'No response from the extension. Make sure it is enabled; after an update, reload it on the Chrome extensions page, click its icon, and try again.'],
@@ -48,6 +82,13 @@ const pairs: Array<[string, string]> = [
   ['选择上传文件', 'Choose a file to upload'], ['已完成选择', 'File selected'], ['等待选择文件', 'Waiting for file selection'], ['取消文件选择', 'Cancel file selection'], ['已取消选择', 'File selection cancelled'],
   ['如果没有看到系统文件选择窗口，请在网页中点击文件选择按钮。使用应用内浏览器时，可先打开工作面板。', 'If no system file picker appears, click the file selection button on the page. For the in-app browser, open the work panel first.'],
   ['打开工作面板', 'Open work panel'],
+  ['Pi 正在操作此网页', 'Pi is controlling this page'],
+  ['等你操作', 'Waiting for you'],
+  ['请完成登录', 'Finish signing in'],
+  ['请完成验证', 'Complete verification'],
+  ['请在 {destination} 中完成这一步，完成后 Pi 会继续。', 'Complete this step in {destination}, then Pi will continue.'],
+  ['我已完成', 'I’m done'],
+  ['当前应用', 'the current app'],
   ['文件内容摘要已匹配', 'File content hash matched'], ['仅核对文件信息', 'File information checked only'],
   ['已打开 Chrome 扩展页，请刷新已安装的扩展。', 'Chrome extensions is open. Refresh the installed extension.'],
   ['Chrome 正在使用旧版扩展。请打开扩展页，找到 Pi Desktop Chrome Bridge，点击卡片上的刷新按钮，然后重新检测。', 'Chrome is using an older extension. Open the extensions page, find Pi Desktop Chrome Bridge, click its refresh button, then check again.'],
@@ -103,39 +144,41 @@ const pairs: Array<[string, string]> = [
   ['先打开文件夹；在 Chrome 点击「加载已解压的扩展程序」，将 Finder 中选中的文件夹拖入选择窗口，再点击「打开」。', 'Open the folder first. In Chrome, click Load unpacked, drag the selected folder from Finder into the file picker, then click Open.'],
   ['扩展目录由 Pi Desktop 自动准备。', 'Pi Desktop prepares the extension folder automatically.'],
   ['这是内测安装方式，需要你手动加载扩展。使用扩展桥时，Pi 可以操作当前 Chrome 标签页。', 'This test installation requires you to load the extension manually. The bridge lets Pi interact with the active Chrome tab.'],
-  ['无法打开会话', 'Could not open session'], ['没有打开项目', 'No project open'], ['先选择一个文件夹再发送。', 'Choose a folder before sending.'], ['会话正在启动', 'Session is starting'], ['稍等一下再发送。', 'Please wait before sending.'], ['消息未发送', 'Message not sent'], ['pi 没有响应。', 'Pi did not respond.'], ['无法重命名会话', 'Could not rename session'], ['已恢复会话', 'Session restored'], ['恢复失败', 'Restore failed'], ['已删除会话', 'Session deleted'], ['撤销', 'Undo'], ['无法删除会话', 'Could not delete session'], ['无法切换模型', 'Could not switch model'], ['无法修改推理强度', 'Could not change reasoning effort'], ['无法修改 steering 模式', 'Could not change steering mode'], ['无法修改 follow-up 模式', 'Could not change follow-up mode'], ['无法修改自动压缩', 'Could not change automatic compaction'], ['无法修改自动重试', 'Could not change automatic retry'], ['正在压缩上下文…', 'Compacting context…'], ['压缩失败', 'Compaction failed'], ['上下文已压缩', 'Context compacted'],
+  ['无法打开会话', 'Could not open session'], ['没有打开项目', 'No project open'], ['先选择一个文件夹再发送。', 'Choose a folder before sending.'], ['会话正在启动', 'Session is starting'], ['稍等一下再发送。', 'Please wait before sending.'], ['消息未发送', 'Message not sent'], ['Pi 没有响应。', 'Pi did not respond.'], ['无法重命名会话', 'Could not rename session'], ['已恢复会话', 'Session restored'], ['恢复失败', 'Restore failed'], ['已删除会话', 'Session deleted'], ['撤销', 'Undo'], ['无法删除会话', 'Could not delete session'], ['无法切换模型', 'Could not switch model'], ['无法修改推理强度', 'Could not change reasoning effort'], ['无法修改 steering 模式', 'Could not change steering mode'], ['无法修改 follow-up 模式', 'Could not change follow-up mode'], ['无法修改自动压缩', 'Could not change automatic compaction'], ['无法修改自动重试', 'Could not change automatic retry'], ['正在压缩上下文…', 'Compacting context…'], ['压缩失败', 'Compaction failed'], ['上下文已压缩', 'Context compacted'],
   ['Not connected', '尚未连接'], ['Wait for the session to finish starting.', '请等待会话启动完成。'], ['Stopped', '已停止'], ['Queued messages were returned to the composer.', '排队的消息已返回输入框。'], ['sending…', '发送中…'],
-  ['Show all {count} lines', '展开全部 {count} 行'], ['{count} lines', '{count} 行'], ['change {count}', '修改 {count}'], ['{count} messages', '{count} 条消息'], ['pi needs your input', 'pi 需要你的输入'], ['Compact context ({percent}% used)', '压缩上下文（已使用 {percent}%）'],
+  ['Show all {count} lines', '展开全部 {count} 行'], ['{count} lines', '{count} 行'], ['change {count}', '修改 {count}'], ['{count} messages', '{count} 条消息'], ['Pi needs your input', 'Pi 需要你的输入'], ['Compact context ({percent}% used)', '压缩上下文（已使用 {percent}%）'],
+  ['正在发送…', 'Sending…'], ['等待模型响应…', 'Waiting for the model…'],
   ['Copy', '复制'], ['Retrying {attempt}/{max}', '正在重试 {attempt}/{max}'], ['Compacting context…', '正在压缩上下文…'],
   ['Bash', '终端'], ['Read', '读取'], ['Write', '写入'], ['Edit', '编辑'],
   ['Give me a tour of this codebase: what it does, the main modules, and where I should start.', '请介绍这个代码库：它的用途、主要模块，以及我应该从哪里开始。'],
   ['Run the test suite, find the first failure, and fix it.', '运行测试套件，找到第一个失败的测试并修复。'],
   ['Review my uncommitted changes for bugs, risky patterns, and missing tests.', '审查我尚未提交的改动，找出错误、风险和缺失的测试。'],
   ['快捷键', 'Shortcuts'], ['版本', 'Version'], ['平台', 'Platform'], ['思维', 'Reasoning'], ['图片', 'Images'],
-  ['Off', '关闭'], ['Minimal', '极低'], ['Medium', '中'], ['Extra high', '极高'], ['Max', '最大'],
+  ['Off', '关闭'], ['Minimal', '最低'], ['Medium', '中'], ['Extra high', '极高'], ['Max', '最高'],
   ['读取文件内容', 'Read file contents'], ['执行 shell 命令', 'Run shell commands'], ['按片段修改文件', 'Edit parts of a file'], ['写入或覆盖文件', 'Write or overwrite a file'], ['按内容搜索文件', 'Search file contents'], ['按名称查找文件', 'Find files by name'], ['列出目录', 'List directory contents'],
   ['自定义', 'Custom'], ['Anthropic 兼容', 'Anthropic compatible'], ['Google 兼容', 'Google compatible'], ['OpenAI 兼容 (openai-completions)', 'OpenAI compatible (openai-completions)'], ['Anthropic 兼容 (anthropic-messages)', 'Anthropic compatible (anthropic-messages)'], ['Google 兼容 (google-generative-ai)', 'Google compatible (google-generative-ai)'],
-  ['Deliver after the current tool calls', '当前工具调用结束后插话'], ['Deliver after pi finishes', '当前任务结束后发送'], ['Steer', '插话'], ['Follow-up', '后续消息'], ['Dismiss', '关闭'], ['Session actions', '会话操作'], ['Delete session?', '删除会话？'], ['No', '否'], ['Yes', '是'], ['Submit', '提交'], ['This extension uses an interface the desktop app cannot render yet.', '此扩展使用的界面暂不支持在桌面端显示。'], ['failed', '失败'], ['running…', '运行中…'], ['Session token usage', '会话 token 用量'],
-  ['复制失败', 'Copy failed'], ['剪贴板不可用', 'Clipboard is unavailable'], ['暂时只能附加图片', 'Only images can be attached'], ['拖进来的是文件，pi 的图片输入只接受图片。', 'Pi only accepts image attachments.'], ['最多添加 6 张图片', 'Up to 6 images'], ['已跳过这张图片', 'Image skipped'], ['无法读取图片', 'Unable to read image'],
+  ['Deliver after the current tool calls', '当前工具调用结束后插话'], ['Deliver after Pi finishes', '当前任务结束后发送'], ['Steer', '插话'], ['Follow-up', '后续消息'], ['Dismiss', '关闭'], ['Session actions', '会话操作'], ['Delete session?', '删除会话？'], ['No', '否'], ['Yes', '是'], ['Submit', '提交'], ['This extension uses an interface the desktop app cannot render yet.', '此扩展使用的界面暂不支持在桌面端显示。'], ['failed', '失败'], ['running…', '运行中…'], ['Session token usage', '会话 token 用量'],
+  ['复制失败', 'Copy failed'], ['剪贴板不可用', 'Clipboard is unavailable'], ['暂时只能附加图片', 'Only images can be attached'], ['拖进来的是文件，Pi 的图片输入只接受图片。', 'Pi only accepts image attachments.'], ['最多添加 6 张图片', 'Up to 6 images'], ['已跳过这张图片', 'Image skipped'], ['无法读取图片', 'Unable to read image'],
   ['已更新 pi 路径', 'Pi path updated'], ['重启会话后生效。', 'Restart the session to apply.'], ['已更新默认模型', 'Default model updated'], ['新建会话时生效。', 'Applies to new sessions.'], ['模型目录已更新', 'Model catalog updated'], ['模型目录更新失败', 'Could not update model catalog'], ['缺少服务商 ID', 'Provider ID is required'], ['例如 ollama、my-gateway。', 'For example, ollama or my-gateway.'], ['已写入 models.json', 'Saved to models.json'], ['保存失败', 'Save failed'], ['删除失败', 'Delete failed'],
   ['设置', 'Settings'], ['返回对话', 'Back to chat'], ['搜索设置', 'Search settings'], ['清空搜索', 'Clear search'],
   ['没有匹配的设置', 'No matching settings'], ['搜索结果', 'Search results'], ['换个关键词试试，比如「压缩」「工具」「模型」。', 'Try another search, such as “compaction”, “tools” or “models”.'],
   ['个人', 'Personal'], ['应用', 'App'], ['常规', 'General'], ['模型', 'Models'], ['工具与技能', 'Tools & skills'], ['外观', 'Appearance'], ['会话', 'Sessions'], ['键盘快捷键', 'Keyboard shortcuts'], ['关于', 'About'],
   ['界面语言', 'Interface language'], ['选择应用界面显示的语言。', 'Choose the language used in the app interface.'], ['语言', 'Language'],
   ['新建会话', 'New session'], ['新建会话 (⌘N)', 'New session (⌘N)'], ['打开项目', 'Open project'], ['打开文件夹…', 'Open folder…'], ['未选择项目', 'No project selected'], ['选择一个文件夹开始', 'Choose a folder to get started'], ['搜索会话', 'Search sessions'], ['没有匹配的会话。', 'No matching sessions.'], ['还没有会话，新建一个开始。', 'No sessions yet. Start a new one.'], ['重命名', 'Rename'], ['在 Finder 中显示', 'Show in Finder'], ['删除', 'Delete'], ['取消', 'Cancel'],
-  ['pi 运行状态与诊断', 'Pi status and diagnostics'], ['输入消息', 'Message'], ['添加图片', 'Add images'], ['选择模型', 'Select model'], ['推理强度', 'Reasoning effort'], ['发送方式', 'Send mode'], ['上下文', 'Context'], ['Enter 发送 · Shift+Enter 换行', 'Enter to send · Shift+Enter for a new line'],
-  ['插话（steer）或排队一条后续消息…', 'Steer or queue a follow-up message…'], ['让 pi 帮你写代码、查问题、解释代码…', 'Ask pi to write code, investigate issues, or explain code…'], ['搜索模型…', 'Search models…'], ['pi 还没就绪，稍等一下…', 'Pi is starting, please wait…'], ['没有匹配的模型', 'No matching models'], [' · 推理', ' · Reasoning'], ['松手添加图片', 'Drop to add images'], ['本轮结束后可切换模型', 'Change models after this turn'], ['本轮结束后可切换推理强度', 'Change reasoning effort after this turn'],
-  ['运行中…', 'Working…'], ['回到最新', 'Jump to latest'], ['讲讲这个代码库', 'Explain this codebase'], ['修一个失败的测试', 'Fix a failing test'], ['帮我 review 改动', 'Review my changes'], ['pi 能读写文件、跑命令、搜网页。发出第一条消息后，这个会话就会被保存下来。', 'Pi can read and write files, run commands, and search the web. This session will be saved when you send your first message.'],
-  ['把 pi 装进桌面。打开一个项目，然后让 pi 读代码、改文件、跑命令。', 'Bring pi to your desktop. Open a project and let pi read code, edit files, and run commands.'], ['pi 没有在运行', 'Pi is not running'], ['检查设置', 'Check settings'], ['Recent projects', '最近项目'],
+  ['Pi 运行状态与诊断', 'Pi status and diagnostics'], ['输入消息', 'Message'], ['添加图片', 'Add images'], ['添加', 'Add'], ['添加文件或图片', 'Add files or images'], ['选择文件夹', 'Choose folder'], ['斜杠命令', 'Slash commands'], ['没有匹配的命令', 'No matching commands'], ['常用', 'Common'], ['命令', 'Commands'], ['创建定时任务', 'Create a scheduled task'], ['压缩上下文', 'Compact context'], ['运行技能', 'Run a skill'], ['选择模型', 'Select model'], ['推理强度', 'Reasoning effort'], ['发送方式', 'Send mode'], ['上下文', 'Context'], ['上下文 {percent}%', 'Context {percent}%'], ['上下文 {percent}% · 已用 {used} / {total} tokens', 'Context {percent}% · {used} / {total} tokens used'], ['Enter 发送 · Shift+Enter 换行', 'Enter to send · Shift+Enter for a new line'],
+  ['插话（steer）或排队一条后续消息…', 'Steer or queue a follow-up message…'], ['让 Pi 帮你写代码、查问题、解释代码…', 'Ask Pi to write code, investigate issues, or explain code…'], ['搜索模型…', 'Search models…'], ['Pi 还没就绪，稍等一下…', 'Pi is starting, please wait…'], ['没有匹配的模型', 'No matching models'], [' · 推理', ' · Reasoning'], ['松手添加图片', 'Drop to add images'], ['本轮结束后可切换模型', 'Change models after this turn'], ['本轮结束后可切换推理强度', 'Change reasoning effort after this turn'],
+  ['运行中…', 'Working…'], ['回到最新', 'Jump to latest'], ['讲讲这个代码库', 'Explain this codebase'], ['修一个失败的测试', 'Fix a failing test'], ['帮我 review 改动', 'Review my changes'], ['Pi 能读写文件、跑命令、搜网页。发出第一条消息后，这个会话就会被保存下来。', 'Pi can read and write files, run commands, and search the web. This session will be saved when you send your first message.'],
+  ['把 Pi 装进桌面。打开一个项目，然后让 Pi 读代码、改文件、跑命令。', 'Bring Pi to your desktop. Open a project and let Pi read code, edit files, and run commands.'], ['Pi 没有在运行', 'Pi is not running'], ['检查设置', 'Check settings'], ['Recent projects', '最近项目'],
   ['Pi 运行时', 'Pi runtime'], ['Pi 可执行文件', 'Pi executable'], ['启动 pi 子进程时使用；更换后需要重启会话。', 'Used to start the pi process. Restart the session after changing it.'], ['更改', 'Change'], ['检测到的版本', 'Detected version'], ['来自当前 pi 可执行文件。', 'Reported by the current pi executable.'], ['未检测到', 'Not detected'], ['重启会话', 'Restart session'], ['会话行为', 'Session behavior'],
   ['Steering 消息投递', 'Steering delivery'], ['运行中插入的指令：一次性全部投递，还是每轮投递一条。', 'Deliver steering messages all at once or one per turn.'], ['Steering 模式', 'Steering mode'], ['逐条投递', 'One at a time'], ['全部投递', 'All at once'], ['Follow-up 消息投递', 'Follow-up delivery'], ['任务结束后排队的消息：一次性全部投递，还是每轮投递一条。', 'Deliver queued follow-ups all at once or one per turn.'], ['Follow-up 模式', 'Follow-up mode'], ['自动压缩上下文', 'Automatic context compaction'], ['上下文接近上限时自动摘要历史，避免请求被截断。', 'Summarize history as the context approaches its limit.'], ['自动重试', 'Automatic retry'], ['遇到限流、过载或 5xx 时按指数退避重试。', 'Retry rate limits, overloads, and 5xx errors with exponential backoff.'],
-  ['主题', 'Theme'], ['界面主题', 'Interface theme'], ['深色为暖调纸墨；浅色适合白天和投屏。', 'Choose a dark or light appearance.'], ['深色', 'Dark'], ['浅色', 'Light'], ['新会话默认值', 'Defaults for new sessions'], ['默认模型', 'Default model'], ['新建会话时使用；当前会话仍可在输入框里随时切换。', 'Used for new sessions. You can change the current session in the composer.'], ['跟随 pi 配置', 'Use pi settings'], ['默认推理强度', 'Default reasoning effort'], ['新会话启动时的 thinking level，可在底部选择器临时覆盖。', 'Used for new sessions; change it temporarily in the composer.'], ['当前模型', 'Current model'], ['模型信息', 'Model information'], ['未选择模型', 'No model selected'], ['支持', 'Supported'], ['不支持', 'Not supported'], ['打开一个会话后显示', 'Available after opening a session'], ['pi 支持的模型', 'Models supported by pi'], ['搜索模型或服务商', 'Search models or providers'], ['清除', 'Clear'], ['重新读取', 'Reload'], ['更新目录', 'Update catalog'], ['没有匹配的模型。', 'No matching models.'],
+  ['跟随系统', 'System'], ['选择深色、浅色，或跟随系统外观自动切换。', 'Choose dark or light, or follow your system appearance.'],
+  ['主题', 'Theme'], ['界面主题', 'Interface theme'], ['深色为暖调纸墨；浅色适合白天和投屏。', 'Choose a dark or light appearance.'], ['深色', 'Dark'], ['浅色', 'Light'], ['新会话默认值', 'Defaults for new sessions'], ['默认模型', 'Default model'], ['新建会话时使用；当前会话仍可在输入框里随时切换。', 'Used for new sessions. You can change the current session in the composer.'], ['跟随 Pi 配置', 'Use Pi settings'], ['自动', 'Auto'], ['默认推理强度', 'Default reasoning effort'], ['默认思考程度', 'Default thinking effort'], ['新会话启动时的 thinking level，可在底部选择器临时覆盖。', 'Used for new sessions; change it temporarily in the composer.'], ['当前模型', 'Current model'], ['模型信息', 'Model information'], ['未选择模型', 'No model selected'], ['支持', 'Supported'], ['不支持', 'Not supported'], ['打开一个会话后显示', 'Available after opening a session'], ['Pi 支持的模型', 'Models supported by Pi'], ['可用模型', 'Available models'], ['搜索模型或服务商', 'Search models or providers'], ['清除', 'Clear'], ['重新读取', 'Reload'], ['更新目录', 'Update catalog'], ['刷新', 'Refresh'], ['重试', 'Retry'], ['个模型', 'models'], ['没有匹配的模型。', 'No matching models.'], ['还没有可用模型', 'No models available yet'], ['密钥只保存在本机', 'Keys stay on this device'], ['用账号登录', 'Sign in with account'],
   ['{count} 次操作', '{count} operations'],
-  ['自定义服务商与模型', 'Custom providers and models'], ['添加模型', 'Add model'], ['还没有自定义服务商。pi 默认使用内置目录与登录凭证。', 'No custom providers. Pi uses its built-in catalog and credentials by default.'], ['跟随内置端点', 'Use built-in endpoint'], ['跟随内置协议', 'Use built-in protocol'], ['移除', 'Remove'], ['添加服务商 / 模型', 'Add provider / model'], ['服务商 ID *', 'Provider ID *'], ['显示名', 'Display name'], ['可选', 'Optional'], ['API 协议', 'API protocol'], ['$MY_API_KEY 或直接填 key；本地服务可留空或填占位', '$MY_API_KEY or a literal key; local services can use an empty or placeholder value'], ['模型 ID（每行一个，或用逗号分隔）*', 'Model IDs (one per line or comma-separated) *'], ['上下文窗口', 'Context window'], ['最大输出', 'Maximum output'], ['支持推理 / 思维链', 'Supports reasoning'], ['支持推理', 'Supports reasoning'], ['支持图片输入', 'Supports image input'], ['保存中…', 'Saving…'], ['保存到 models.json', 'Save to models.json'], ['保存后会重启当前会话，让 pi 重新加载模型。', 'Saving restarts the current session so pi reloads models.'],
-  ['内置工具', 'Built-in tools'], ['已自定义工具列表，重启会话后按新列表加载。', 'A custom tool list is configured. Restart the session to apply it.'], ['当前使用 pi 默认工具集；修改后会写入 pi 设置，重启会话生效。', 'Using the default pi tools. Changes are saved to pi settings and applied after restarting the session.'], ['桌面显示', 'Desktop display'], ['工具调用默认展开', 'Expand tool calls by default'], ['工具卡片显示完整输出，而不是折叠成一行。', 'Show full tool output instead of a collapsed row.'], ['流式输出自动跟随', 'Follow streaming output'], ['新内容到达时保持滚动在底部；关闭后只在你发送消息时跳转。', 'Keep the view at the bottom as content arrives. When off, jump only when you send a message.'],
-  ['存储', 'Storage'], ['会话存储目录', 'Session storage directory'], ['每次对话都会写成一个 JSONL 会话文件。', 'Each conversation is stored in a JSONL session file.'], ['显示', 'Show'], ['会话数量', 'Session count'], ['已缓存的会话文件，由最近修改时间排序。', 'Cached session files, sorted by most recently modified.'], ['刷新', 'Refresh'], ['当前工作区', 'Current workspace'], ['未打开项目', 'No project open'], ['新会话会在这个目录下运行 pi。', 'New sessions run pi in this directory.'], ['当前会话', 'Current session'], ['尚未开始', 'Not started'], ['配置文件', 'Configuration files'], ['pi 设置文件', 'Pi settings file'], ['链接', 'Links'], ['对话中的链接', 'Links in chat'], ['链接打开方式', 'Open links in'], ['右侧浏览器', 'Side browser'], ['系统浏览器', 'System browser'], ['默认在右侧应用内浏览器打开；按住 ⌘/Ctrl 点击可改用系统浏览器。', 'Open links in the side browser by default; hold ⌘/Ctrl to use the system browser.'], ['pi 官网与文档', 'Pi website and documentation'], ['协议、模型与扩展的完整说明。', 'Documentation for protocols, models, and extensions.'],
-  ['诊断', 'Diagnostics'], ['pi 的运行状态与最后 60 行 stderr', 'Pi status and the last 60 lines of stderr'], ['状态', 'Status'], ['Agent 目录', 'Agent directory'], ['会话目录', 'Session directory'], ['models.json 有问题', 'Problem with models.json'], ['没有输出，一切正常。', 'No output. Everything looks good.'], ['已复制', 'Copied'], ['复制诊断信息', 'Copy diagnostics'], ['关闭', 'Close'], ['收起', 'Collapse'], ['读取中…', 'Reading…'], ['写入中…', 'Writing…'], ['参数', 'Arguments'], ['结果', 'Result'], ['你', 'You'],
-  ['新建会话', 'New session'], ['打开设置', 'Open settings'], ['切换主题', 'Toggle theme'], ['发送消息', 'Send message'], ['换行', 'New line'], ['停止运行 / 关闭面板', 'Stop / close panel'], ['收起 / 展开侧栏', 'Hide / show sidebar'], ['极低', 'Minimal'], ['低', 'Low'], ['中', 'Medium'], ['高', 'High'], ['极高', 'Extra high'], ['最大', 'Maximum'],
+  ['自定义服务商与模型', 'Custom providers and models'], ['添加模型', 'Add model'], ['还没有自定义服务商。Pi 默认使用内置目录与登录凭证。', 'No custom providers. Pi uses its built-in catalog and credentials by default.'], ['跟随内置端点', 'Use built-in endpoint'], ['跟随内置协议', 'Use built-in protocol'], ['移除', 'Remove'], ['添加服务商 / 模型', 'Add provider / model'], ['服务商 ID *', 'Provider ID *'], ['显示名', 'Display name'], ['可选', 'Optional'], ['API 协议', 'API protocol'], ['$MY_API_KEY 或直接填 key；本地服务可留空或填占位', '$MY_API_KEY or a literal key; local services can use an empty or placeholder value'], ['模型 ID（每行一个，或用逗号分隔）*', 'Model IDs (one per line or comma-separated) *'], ['上下文窗口', 'Context window'], ['最大输出', 'Maximum output'], ['支持推理 / 思维链', 'Supports reasoning'], ['支持推理', 'Supports reasoning'], ['支持图片输入', 'Supports image input'], ['保存中…', 'Saving…'], ['保存到 models.json', 'Save to models.json'], ['保存后会重启当前会话，让 Pi 重新加载模型。', 'Saving restarts the current session so Pi reloads models.'],
+  ['内置工具', 'Built-in tools'], ['已自定义工具列表，重启会话后按新列表加载。', 'A custom tool list is configured. Restart the session to apply it.'], ['当前使用 Pi 默认工具集；修改后会写入 Pi 设置，重启会话生效。', 'Using the default Pi tools. Changes are saved to Pi settings and applied after restarting the session.'], ['桌面显示', 'Desktop display'], ['工具调用默认展开', 'Expand tool calls by default'], ['工具卡片显示完整输出，而不是折叠成一行。', 'Show full tool output instead of a collapsed row.'], ['流式输出自动跟随', 'Follow streaming output'], ['新内容到达时保持滚动在底部；关闭后只在你发送消息时跳转。', 'Keep the view at the bottom as content arrives. When off, jump only when you send a message.'],
+  ['存储', 'Storage'], ['会话存储目录', 'Session storage directory'], ['每次对话都会写成一个 JSONL 会话文件。', 'Each conversation is stored in a JSONL session file.'], ['显示', 'Show'], ['会话数量', 'Session count'], ['已缓存的会话文件，由最近修改时间排序。', 'Cached session files, sorted by most recently modified.'], ['刷新', 'Refresh'], ['当前工作区', 'Current workspace'], ['未打开项目', 'No project open'], ['新会话会在这个目录下运行 pi。', 'New sessions run pi in this directory.'], ['当前会话', 'Current session'], ['尚未开始', 'Not started'], ['配置文件', 'Configuration files'], ['Pi 设置文件', 'Pi settings file'], ['链接', 'Links'], ['对话中的链接', 'Links in chat'], ['链接打开方式', 'Open links in'], ['右侧浏览器', 'Side browser'], ['系统浏览器', 'System browser'], ['默认在右侧应用内浏览器打开；按住 ⌘/Ctrl 点击可改用系统浏览器。', 'Open links in the side browser by default; hold ⌘/Ctrl to use the system browser.'], ['Pi 官网与文档', 'Pi website and documentation'], ['协议、模型与扩展的完整说明。', 'Documentation for protocols, models, and extensions.'],
+  ['诊断', 'Diagnostics'], ['Pi 的运行状态与最后 60 行 stderr', 'Pi status and the last 60 lines of stderr'], ['状态', 'Status'], ['Agent 目录', 'Agent directory'], ['会话目录', 'Session directory'], ['models.json 有问题', 'Problem with models.json'], ['没有输出，一切正常。', 'No output. Everything looks good.'], ['已复制', 'Copied'], ['复制诊断信息', 'Copy diagnostics'], ['关闭', 'Close'], ['收起', 'Collapse'], ['读取中…', 'Reading…'], ['写入中…', 'Writing…'], ['参数', 'Arguments'], ['结果', 'Result'], ['你', 'You'],
+  ['新建会话', 'New session'], ['打开设置', 'Open settings'], ['切换主题', 'Toggle theme'], ['发送消息', 'Send message'], ['换行', 'New line'], ['停止运行 / 关闭面板', 'Stop / close panel'], ['收起 / 展开侧栏', 'Hide / show sidebar'], ['最低', 'Minimal'], ['低', 'Low'], ['中', 'Medium'], ['高', 'High'], ['极高', 'Extra high'], ['最高', 'Max'],
   ['Projects', '项目'], ['No recent projects', '没有最近项目'], ['Session', '会话'], ['New session', '新建会话'], ['No project', '未选择项目'], ['Rename session', '重命名会话'], ['Settings', '设置'], ['Hide sidebar (⌘B)', '收起侧栏 (⌘B)'], ['Show sidebar (⌘B)', '展开侧栏 (⌘B)'], ['Toggle theme (⌘⇧L)', '切换主题 (⌘⇧L)'], ['New session (⌘N)', '新建会话 (⌘N)'], ['Clear search', '清空搜索'], ['Thinking…', '正在思考…'], ['Thought process', '思考过程'], ['Queued', '排队中'], ['Send (Enter)', '发送 (Enter)'], ['Stop (Esc)', '停止 (Esc)'],
   ['{count} 步', '{count} steps'],
   ['{count} 个文件', '{count} files'],
@@ -175,6 +218,9 @@ const pairs: Array<[string, string]> = [
   ['完全隐藏', 'Hidden'],
   ['变更', 'Changes'],
   ['执行中', 'Running'], ['过程有错误', 'Errors in process'], ['已完成', 'Completed'],
+  ['过程结束', 'Process ended'], ['响应中断', 'Response interrupted'],
+  ['{count} 条异常记录', '{count} issue(s) recorded'],
+  ['展开过程查看异常详情；异常不代表任务一定失败', 'Expand the process to inspect issues; an issue does not necessarily mean the task failed'],
   ['文件', 'Files'],
   ['终端', 'Terminal'],
   ['产物', 'Artifacts'],
@@ -186,14 +232,14 @@ const pairs: Array<[string, string]> = [
   ['本次会话还没有改动文件。', 'No files changed in this session yet.'],
   ['工作区是干净的。', 'The working tree is clean.'],
   ['当前目录不是 git 仓库，或读不到 git 状态。', 'This folder is not a git repository, or git status failed.'],
-  ['提示：工作区模式需要项目是 git 仓库；本会话模式只看 pi 的改动。', 'Workspace mode needs a git repository; session mode only shows pi changes.'],
+  ['提示：工作区模式需要项目是 git 仓库；本会话模式只看 Pi 的改动。', 'Workspace mode needs a git repository; session mode only shows Pi changes.'],
   ['数据来自本会话的工具调用参数，可能和磁盘最终状态略有差异。', 'Data comes from tool-call arguments and may differ slightly from the final file state.'],
   ['执行', 'Run'],
   ['停止', 'Stop'],
   ['清空', 'Clear'],
   ['在项目目录里运行命令。默认不会写进模型上下文。', 'Run commands in the project folder. Output stays out of the model context by default.'],
-  ['默认不写进上下文，需要 pi 看到时再打开', 'Kept out of context by default; enable when pi should see it'],
-  ['同步给 pi', 'Share with pi'],
+  ['默认不写进上下文，需要 Pi 看到时再打开', 'Kept out of context by default; enable when Pi should see it'],
+  ['同步给 Pi', 'Share with Pi'],
   ['输入命令，⏎ 执行', 'Type a command, ⏎ to run'],
   ['先打开一个项目。', 'Open a project first.'],
   ['过滤文件名…', 'Filter file names…'],
@@ -235,7 +281,7 @@ const pairs: Array<[string, string]> = [
   ['一条回答', 'One answer'],
   ['最近对话', 'Recent conversations'],
   ['执行中', 'Running'],
-  ['技能与工具', 'Skills & tools'], ['技能', 'Skills'], ['插件', 'Plugins'],
+  ['技能与工具', 'Skills & tools'], ['Pi 插件', 'Pi plugins'], ['技能', 'Skills'], ['插件', 'Plugins'],
   ['应用连接', 'Connections'], ['搜索应用连接', 'Search connections'],
   ['手动添加', 'Add manually'], ['手动添加连接器', 'Add a connector'], ['编辑连接器', 'Edit connector'],
   ['连接 MCP 服务，让 Pi 在对话中使用它提供的工具。', 'Connect an MCP server to use its tools in chat.'],
@@ -318,7 +364,7 @@ const pairs: Array<[string, string]> = [
   ['上次运行', 'Last run'], ['运行历史', 'Run history'], ['还没有运行记录', 'No runs yet'],
   ['打开会话', 'Open session'], ['查看日志', 'Open log'], ['还没有定时任务', 'No scheduled tasks yet'],
   ['下次', 'Next'], ['编辑定时任务', 'Edit scheduled task'], ['新建定时任务', 'New scheduled task'],
-  ['任务会在后台启动一个独立的 pi 会话', 'Each run starts an isolated pi session in the background'],
+  ['任务会在后台启动一个独立的 Pi 会话', 'Each run starts an isolated Pi session in the background'],
   ['名称', 'Name'], ['例如：每日早报', 'e.g. Daily brief'],
   ['每次运行时要执行的完整指令', 'The full instruction for each run'], ['选择', 'Choose'],
   ['每小时', 'Hourly'], ['每天', 'Daily'], ['工作日', 'Weekdays'], ['每周', 'Weekly'],
@@ -337,7 +383,7 @@ const pairs: Array<[string, string]> = [
   ['格式：分 时 日 月 周，例如 0 9 * * 1-5 表示工作日 09:00', 'Format: minute hour day month weekday, e.g. 0 9 * * 1-5 for weekdays at 09:00'],
   ['目录内任意文件变化后触发，800ms 内合并多次变化', 'Runs when any file in the folder changes; bursts within 800ms are merged'],
   ['按该时区的本地时间运行，夏令时自动跟随', 'Runs in this timezone’s local time and follows DST'],
-  ['逗号分隔，留空使用 pi 默认工具集', 'Comma separated; leave empty to use pi’s default tools'],
+  ['逗号分隔，留空使用 Pi 默认工具集', 'Comma separated; leave empty to use Pi’s default tools'],
   ['文件或目录路径', 'File or folder path'],
   ['在 /schedule 后面写要定时执行的内容', 'Write the task after /schedule'],
   ['未来 8 年没有匹配的运行时间', 'No matching run time in the next 8 years'],
@@ -347,12 +393,13 @@ const pairs: Array<[string, string]> = [
   ['完成通知', 'Completion notification'],
   ['监听当前项目，800ms 内合并多次变化', 'Watch the current project; merge bursts within 800ms'],
   ['定时任务会在无人确认的情况下读写当前项目、执行命令。只给可信的 prompt。', 'Scheduled tasks read and write the current project and run commands unattended. Only use trusted prompts.'],
-  ['也可以直接在对话里说「5 分钟后…」，pi 会创建定时任务', 'You can also say “in 5 minutes…” in chat and pi will create a scheduled task'],
+  ['也可以直接在对话里说「5 分钟后…」，Pi 会创建定时任务', 'You can also say “in 5 minutes…” in chat and Pi will create a scheduled task'],
   ['已创建定时任务', 'Scheduled task created'],
   ['定时任务运行完成', 'Scheduled task finished'],
   ['定时任务运行失败', 'Scheduled task failed'],
   ['查看结果', 'View result'],
-  ['临时对话', 'Temporary chat'],
+  ['新对话', 'New chat'],
+  ['未关联文件夹', 'No folder linked'],
   ['不关联项目，出现在最近对话', 'No project; appears in recent conversations'],
   ['选择文件夹…', 'Choose folder…'],
   ['选择项目', 'Choose project'],
@@ -395,10 +442,129 @@ const pairs: Array<[string, string]> = [
   ['把这条消息作为引导，当前工具结束后立即发送', 'Guide the run after the current tool call'],
   ['无法引导', 'Could not guide'],
   ['移除插件？', 'Remove plugin?'],
-  ['插件会从 pi 设置中移除，技能目录与项目文件不受影响。', 'The plugin is removed from pi settings. Skill folders and project files are untouched.'],
+  ['插件会从 Pi 设置中移除，技能目录与项目文件不受影响。', 'The plugin is removed from Pi settings. Skill folders and project files are untouched.'],
   ['浏览器', 'Browser'], ['浏览器自动化', 'Browser automation'], ['当前默认', 'Default'], ['可用', 'Available'], ['安装指引', 'Setup guide'], ['打开', 'Open'], ['已打开 Chrome 扩展页，请在那里完成安装。', 'Chrome extensions page opened. Finish installation there.'], ['已打开扩展目录。', 'Extension folder opened.'], ['点击这一行，或手动打开 chrome://extensions。', 'Click this row, or open chrome://extensions manually.'], ['打开文件夹', 'Open folder'], ['扩展目录已准备好', 'Extension folder is ready'], ['由 Pi Desktop 自动准备；其他用户会使用自己的目录。', 'Prepared by Pi Desktop; other users get their own folder.'], ['高级：复制路径', 'Advanced: copy path'], ['检测连接', 'Check connection'], ['检测中…', 'Checking…'], ['已连接，可以开始使用', 'Connected. Ready to use.'], ['未检测到扩展', 'Extension not detected'], ['端口被占用，请关闭其他 Pi 任务后重试', 'Port is busy; close other Pi tasks and retry'], ['无法打开扩展目录，请手动复制上面的路径。', 'Could not open the extension folder; copy the path above.'], ['启用日常 Chrome 登录态', 'Use your everyday Chrome session'], ['只需安装一次扩展，之后 Pi 可以直接操作你当前登录的网页。', 'Install the extension once; then Pi can act on pages you are already signed in to.'], ['直接使用你已登录的网站，不用重新登录。', 'Use sites you are already signed in to; no second login.'], ['只操作当前标签页，密码框不会被读取。', 'Acts on the active tab only; password fields are never read.'], ['点击、提交等敏感动作仍会先请求你的确认。', 'Clicks, submits, and other sensitive actions still ask for your approval.'], ['打开扩展页', 'Open extensions page'], ['点击下方按钮，或手动打开 chrome://extensions。', 'Use the button below, or open chrome://extensions manually.'], ['打开开发者模式', 'Enable Developer mode'], ['打开页面右上角的「开发者模式」开关。', 'Turn on the Developer mode switch in the top-right corner.'], ['加载已解压的扩展', 'Load unpacked'], ['点击「加载已解压的扩展程序」，选择下面的目录。', 'Click Load unpacked and choose the directory below.'], ['正在读取扩展目录…', 'Reading extension path…'], ['复制路径', 'Copy path'], ['已复制', 'Copied'], ['复制失败，请手动选择上面的路径。', 'Copy failed; select the path manually.'], ['无法打开 Chrome，请手动打开 chrome://extensions。', 'Could not open Chrome; open chrome://extensions manually.'], ['稍后再说', 'Later'], ['打开 Chrome 扩展页', 'Open Chrome extensions'], ['Chrome 不允许应用自动安装扩展，这一步需要你亲手确认一次。安装后，Pi 会优先使用当前 Chrome 标签页的登录态。', 'Chrome does not allow apps to install extensions automatically; confirm this once yourself. After installation, Pi uses the active Chrome tab session.'], ['规划中', 'Planned'], ['默认方式。登录状态保留在右侧面板，Agent 读取 DOM 后按元素操作。', 'Default mode. The session stays in the side panel; the agent reads the DOM and acts on elements.'], ['使用专用 Chrome profile，适合隔离任务、并行测试和自动化验证。首次使用需在专用窗口登录。', 'Uses a dedicated Chrome profile for isolated tasks, parallel tests, and automation verification. Sign in once in the dedicated window.'], ['复用日常 Chrome 登录态；在 chrome://extensions 加载 extensions/chrome-bridge。', 'Reuses your everyday Chrome session; load extensions/chrome-bridge from chrome://extensions.'], ['后退', 'Back'], ['前进', 'Forward'], ['停止加载', 'Stop loading'], ['输入网址', 'Enter a URL'], ['网址', 'Address'], ['在系统浏览器中打开', 'Open in system browser'], ['关闭浏览器', 'Close browser'], ['重试', 'Retry'], ['应用内浏览器', 'In-app browser'], ['从对话中点击链接，或在上方输入网址。', 'Click a link in the chat, or type a URL above.'], ['使用前请了解', 'Before you start'], ['在这个面板里登录目标网站，登录状态会保留。', 'Sign in to the target site in this panel; the session is kept.'], ['让 Pi 观察页面时，会读取页面 DOM，而不是猜截图坐标。', 'When Pi observes the page it reads the DOM instead of guessing from pixels.'], ['密码框的值不会返回；操作是否需要确认取决于审批设置。', 'Password field values are not returned; whether actions require approval depends on your settings.'], ['下载完成', 'Download complete'], ['下载未完成', 'Download incomplete'],
   ['每日趋势', 'Daily trend'], ['按套餐 + 模型', 'Plan + model'], ['套餐', 'Plan'], ['趋势', 'Trend'], ['柱状', 'Bars'], ['图表类型', 'Chart type'], ['趋势指标', 'Trend metric'], ['费用', 'Cost'], ['峰值', 'Peak'], ['每日趋势图表', 'Daily trend chart'], ['次调用', 'requests'], ['Chrome 登录状态', 'Chrome sign-in'], ['只把选中的站点 Cookie 导入内置浏览器；不会导入密码或 Passkey。', 'Import cookies for selected sites only. Passwords and passkeys are never imported.'], ['从 Chrome 导入…', 'Import from Chrome…'], ['从 Chrome 导入登录状态', 'Import sign-in from Chrome'], ['只导入 Cookie，不导入密码、Passkey 或扩展数据。', 'Cookies only. Passwords, passkeys and extension data are not imported.'], ['这会让 Pi Desktop 以你的身份访问所选站点。只导入你信任的站点，导入的数据仅保存在本机。', 'This lets Pi Desktop visit the selected sites as you. Only import sites you trust; data stays on this Mac.'], ['Chrome 配置文件', 'Chrome profile'], ['Google Chrome 正在运行。请退出 Chrome 后再导入。', 'Google Chrome is running. Quit Chrome before importing.'], ['重新检查', 'Check again'], ['搜索站点…', 'Search sites…'], ['全选', 'Select all'], ['取消全选', 'Clear all'], ['已选', 'Selected'], ['个站点', 'sites'], ['正在读取 Chrome 配置…', 'Reading Chrome profiles…'], ['没有匹配的站点。', 'No matching sites.'], ['导入中…', 'Importing…'], ['导入所选站点', 'Import selected sites'], ['已导入', 'Imported'], ['个 Cookie；跳过', 'cookies; skipped'], ['个；失败', '; failed'], ['个。', '.'], ['已导入 Chrome 登录状态', 'Chrome sign-in imported'],
  ]
+
+
+pairs.push(['读取插件信息失败（HTTP {code}）。', 'Could not read package information (HTTP {code}).'], ['Pi 操作未完成（代码 {code}）。', 'Pi could not finish the operation (code {code}).'], ['无法连接插件源，请检查网络后重试。', 'Could not connect to the package source. Check your connection and try again.'], ['插件信息格式不正确，请稍后重试。', 'Package information is invalid. Try again later.'], ['插件信息超过读取上限。', 'Package information exceeds the size limit.'], ['请提供 npm 包名。', 'Enter an npm package name.'], ['npm 包名格式不正确。', 'The npm package name is invalid.'], ['请提供确切版本号或发布标签。', 'Enter an exact version or release tag.'])
+pairs.push(['翻译暂不可用，已显示原文。可稍后重试。', 'Translation is unavailable. Showing the original. Try again later.'])
+// Pi marketplace UI; package prose is translated separately through Pi.
+pairs.push(
+  ["Pi 插件", "Pi plugins"],
+  ["npm 插件名称、npm 页面或 GitHub 仓库链接", "npm package name, npm page or GitHub repository URL"],
+  ["上一页", "Previous page"],
+  ["下一页", "Next page"],
+  ["从链接安装", "Install from link"],
+  ["作者", "Author"],
+  ["依赖", "Dependencies"],
+  ["全部插件", "All plugins"],
+  ["全部类型", "All types"],
+  ["刷新", "Refresh"],
+  ["前往 GitHub 查看", "View on GitHub"],
+  ["卸载", "Uninstall"],
+  ["卸载插件", "Uninstall plugin"],
+  ["发布于", "Published"],
+  ["发现插件", "Discover"],
+  ["发现社区为 Pi 构建的扩展、技能、提示词与主题。", "Discover community extensions, skills, prompts and themes for Pi."],
+  ["取消", "Cancel"],
+  ["名称排序", "Name"],
+  ["后台继续", "Continue in background"],
+  ["在 pi.dev 查看", "View on pi.dev"],
+  ["大小", "Size"],
+  ["安装", "Install"],
+  ["安装后可在 Pi 中使用", "Available in Pi after installation"],
+  ["安装完成，新会话会加载此插件。", "Installed. New chats will load this plugin."],
+  ["安装未完成，请重试。", "Installation did not finish. Try again."],
+  ["完成", "Done"],
+  ["官网详情", "Official listing"],
+  ["已安装", "Installed"],
+  ["已安装插件", "Installed plugins"],
+  ["已读取的插件中没有匹配项。", "No matches among the plugins loaded so far."],
+  ["所有插件", "All plugins"],
+  ["插件信息", "Plugin information"],
+  ["插件名称或链接", "Package name or URL"],
+  ["插件排序", "Sort plugins"],
+  ["插件目录", "Plugin catalog"],
+  ["插件相关链接", "Plugin links"],
+  ["插件类型", "Plugin type"],
+  ["搜索", "Search"],
+  ["搜索插件", "Search plugins"],
+  ["搜索插件名称、功能或作者…", "Search by plugin name, function or author…"],
+  ["操作失败，请重试", "Operation failed. Try again."],
+  ["支持 npm 发布的 Pi 插件和 GitHub 仓库。", "Supports Pi packages on npm and GitHub repositories."],
+  ["新会话会加载此插件", "New chats will load this plugin"],
+  ["暂时无法连接插件目录，请检查网络后重试。", "Could not reach the catalog. Check your connection and try again."],
+  ["更新", "Update"],
+  ["最近发布", "Recently published"],
+  ["查看详情", "View details"],
+  ["正在加载插件", "Loading plugins"],
+  ["正在卸载", "Uninstalling"],
+  ["正在处理…", "Working…"],
+  ["正在处理，请稍候…", "Working, please wait…"],
+  ["正在安装", "Installing"],
+  ["正在安装…", "Installing…"],
+  ["正在安装插件", "Installing plugin"],
+  ["正在更新", "Updating"],
+  ["正在翻译简介…", "Translating descriptions…"],
+  ["正在读取…", "Loading…"],
+  ["正在读取已安装插件…", "Loading installed plugins…"],
+  ["正在读取插件声明的类型…", "Reading declared plugin types…"],
+  ["正在读取插件详情…", "Loading plugin details…"],
+  ["正在读取说明文档…", "Loading documentation…"],
+  ["此插件暂未提供介绍。", "No description provided."],
+  ["此说明来自仓库，内容可能与当前发布版本不同。", "This documentation comes from the repository and may differ from this release."],
+  ["没有找到匹配的插件，换个关键词或类型试试。", "No matching plugins. Try a different search or type."],
+  ["版本", "Version"],
+  ["目录分页", "Catalog pages"],
+  ["目录来自 npm 社区索引。搜索可查找更多 Pi 插件。", "Catalog sourced from the npm community index. Search to find more Pi plugins."],
+  ["社区作者", "Community author"],
+  ["简介翻译暂不可用，已显示原文。", "Description translation is unavailable. Showing the original."],
+  ["类型", "Type"],
+  ["许可证", "License"],
+  ["请输入 npm 插件名称、npm 页面或 GitHub 仓库链接。", "Enter an npm package name, npm page or GitHub repository URL."],
+  ["读取已安装插件失败。", "Could not load installed plugins."],
+  ["读取插件详情失败，请重试。", "Could not load plugin details. Try again."],
+  ["返回", "Back"],
+  ["还没有安装插件", "No plugins installed yet"],
+  ["重新加载", "Reload"],
+  ["重试", "Retry"],
+  ["重试安装", "Retry installation"],
+  ["重试翻译", "Retry translation"],
+  ["重试读取", "Retry loading"],
+  ["扩展", "Extension"],
+  ["技能", "Skill"],
+  ["提示词", "Prompt"],
+  ["主题", "Theme"],
+  ["默认封面", "Default artwork"],
+  ["插件图标", "Plugin artwork"],
+  ["发布版本 {version}", "Release {version}"],
+  ["已载入 {count} 个", "{count} loaded"],
+  ["{matches} 个匹配 · 已载入 {count} 个", "{matches} matches · {count} loaded"],
+  ["有 {count} 个插件暂未读到类型。", "The types of {count} plugins are unavailable."],
+  ["{count} 个依赖 · {peer} 个 peer", "{count} dependencies · {peer} peers"],
+  ["卸载 {name}", "Uninstall {name}"],
+  ["确定卸载 {name}？新会话将不再加载此插件。", "Uninstall {name}? New chats will no longer load it."],
+  ["此版本暂未提供可读取的说明文档。", "Documentation is unavailable for this release."],
+  ["暂时无法读取说明文档，可稍后重试或查看来源。", "Documentation could not be loaded. Try again later or view the source."],
+  ["正在翻译说明，原文已先行显示。", "Translating documentation. Showing the original for now."],
+  ["翻译暂不可用，已显示原文。请确认已连接模型后重试。", "Translation is unavailable. Showing the original. Connect a model and try again."],
+  ["已按当前语言翻译，代码和链接保留原样。", "Translated to the current language. Code and links are unchanged."],
+  ["作者原文", "Original documentation"],
+  ["显示译文", "Show translation"],
+  ["查看原文", "Show original"],
+  ["连接插件源超时，请重试。", "The package source timed out. Try again."],
+  ["连接插件目录超时或暂不可用，请重试。", "The catalog timed out or is unavailable. Try again."],
+  ["没有找到匹配的插件。", "No matching plugins."],
+  ["没有找到所选插件版本。", "The selected package version was not found."],
+  ["没有找到这个 npm 插件。", "This npm package was not found."],
+  ["操作未完成，请重试。", "The operation did not finish. Try again."],
+  ["无法完成操作，请检查网络和 Pi 是否可用后重试。", "Could not complete the operation. Check your connection and Pi, then try again."],
+  ["下载失败，请检查网络。", "Download failed. Check your connection."],
+  ["读取来源失败", "Could not read the package source"],
+  ["此插件未在 npm 发布。", "This plugin is not published on npm."]
+)
 
 const english = new Map<string, string>()
 const chinese = new Map<string, string>()
@@ -406,7 +572,7 @@ for (const [left, right] of pairs) {
   if (/[\u3400-\u9fff]/.test(left)) { english.set(left, right); chinese.set(right, left) }
   else { chinese.set(left, right); english.set(right, left) }
 }
-english.set('电脑操作', 'Computer use')
+english.set('电脑操作', 'Computer Use')
 english.set('高级：运行环境与会话行为', 'Advanced: Runtime and session behavior')
 english.set('启用电脑操作', 'Enable computer use')
 english.set('允许 Pi 查看和操作桌面应用。关闭时不会影响网页浏览。', 'Allow Pi to view and interact with desktop apps. Turning this off does not affect web browsing.')
@@ -464,8 +630,6 @@ english.set('不逐次确认', 'No per-tool prompts')
 english.set('每次工具调用前都询问你。', 'Ask before each tool call.')
 english.set('仅询问识别出的高风险终端命令，不能识别所有风险。', 'Ask only for identified high-risk terminal commands; not all risks are detected.')
 english.set('跳过工具审批；沙箱、浏览器和电脑操作的独立限制仍然生效。', 'Skip tool approvals. Sandbox, browser and computer-use restrictions still apply.')
-english.set('项目资源待确认', 'Project resources need review')
-english.set('项目资源需要信任', 'Project resources require trust')
 english.set('添加项目', 'Add project')
 english.set('项目名称', 'Project name')
 english.set('例如：经营分析', 'e.g. Business analysis')
@@ -485,9 +649,6 @@ english.set('无法读取项目信任状态。', 'Could not read project trust.'
 english.set('项目扩展未启用', 'Project extensions are off')
 english.set('项目资源将在新建会话时加载。', 'Project resources will load in new conversations.')
 english.set('新建会话时将跳过项目自带的配置和扩展。', 'New conversations will skip this project’s settings and extensions.')
-english.set('检测到项目配置或扩展；信任后可加载。', 'Project configuration or extensions were found; trust this folder to load them.')
-english.set('查看并信任', 'Review trust')
-english.set('收起提示', 'Dismiss notice')
 english.set('检测到的项目资源', 'Detected project resources')
 english.set('更多选项', 'More options')
 english.set('自动', 'Automatic')
@@ -662,6 +823,16 @@ english.set('选择文件夹', 'Choose a folder')
 english.set('用账号登录，或粘贴服务商给你的 API Key。密钥只保存在这台电脑上。', 'Sign in, or paste the API Key from your provider. The key stays on this computer.')
 english.set('用账号登录（推荐）', 'Sign in (recommended)')
 english.set('粘贴 API Key', 'Paste API Key')
+english.set('使用 API Key', 'Use API Key')
+english.set('当前版本暂不支持账号登录，请用 API Key', 'Account sign-in is not available in this build. Use an API Key.')
+english.set('正在读取服务商…', 'Loading providers…')
+english.set('授权在浏览器中完成，Pi Desktop 不会读取你的密码。', 'Authorization finishes in the browser. Pi Desktop never reads your password.')
+english.set('使用账号登录服务商', 'Sign in with a provider account')
+english.set('无法开始登录。', 'Could not start sign-in.')
+english.set('登录失败，请重试。', 'Sign-in failed. Try again.')
+english.set('登录成功', 'Signed in')
+english.set('正在重新读取模型。', 'Refreshing models.')
+english.set('操作失败', 'Something went wrong')
 english.set('已保存登录或 API Key 的模型', 'Models with a saved sign-in or API Key')
 english.set('个服务商', 'providers')
 english.set('还没有自定义服务商。需要对接自己的接口时再添加。', 'No custom providers yet. Add one when you need to connect your own endpoint.')
@@ -679,7 +850,8 @@ english.set('在 console.x.ai 的 API keys 页面创建。', 'Create one on the 
 english.set('在 console.mistral.ai 的 API keys 页面创建。', 'Create one on the API keys page at console.mistral.ai.')
 english.set('在 OpenCode 账号的 API keys 页面创建。', 'Create one on the API keys page of your OpenCode account.')
 english.set('到服务商网站的 API keys 页面创建，然后粘贴到这里。', 'Create one on the provider’s API keys page, then paste it here.')
-english.set('临时对话', 'Temporary chat')
+english.set('新对话', 'New chat')
+english.set('未关联文件夹', 'No folder linked')
 english.set('这次对话没有关联文件夹', 'This chat is not tied to a folder')
 english.set('不关联文件夹', 'No folder')
 english.set('只聊天，不选文件夹', 'Just chat, without a folder')
@@ -687,7 +859,7 @@ english.set('对话会出现在「最近对话」里', 'The chat will appear in 
 english.set('已就绪', 'Ready')
 english.set('需要检查', 'Needs attention')
 english.set('正在准备', 'Preparing')
-english.set('pi 运行状态与诊断', 'Pi status and diagnostics')
+english.set('Pi 运行状态与诊断', 'Pi status and diagnostics')
 english.set('未命名会话', 'Untitled chat')
 english.set('打开保护', 'Turn on protection')
 english.set('打开后，只能修改当前文件夹里的文件，并且只能访问允许的网站。不会影响电脑上的其他应用。', 'When this is on, only files in the current folder can be changed, and only allowed websites can be reached. Other apps on this computer are unaffected.')
@@ -766,3 +938,286 @@ english.set('到点后会自动执行，请只填写你信任的任务。', 'Thi
 english.set('例如，比较两个网页、整理一份资料，或安排一件待办。', 'For example, compare two web pages, organize some notes, or set a reminder.')
 english.set('新对话的默认方式', 'Default for new conversations')
 english.set('只影响之后新建的对话。正在进行的对话不会跟着改变。', 'This only affects conversations you start later. The one you are in stays as it is.')
+english.set('问点什么…', 'Ask something…')
+english.set('约 1 分钟', 'About a minute')
+english.set('还没准备好', 'Not ready yet')
+english.set('准备', 'Setup')
+english.set('先连接模型', 'Connect a model')
+english.set('可以开始了', 'Ready')
+english.set('标准', 'Standard')
+english.set('只读', 'Read only')
+english.set('不受限', 'Unrestricted')
+english.set('保护：标准', 'Protection: standard')
+english.set('保护：只读', 'Protection: read only')
+english.set('保护：不受限', 'Protection: unrestricted')
+english.set('默认设置', 'Defaults')
+english.set('这次不受限？', 'Unrestricted this time?')
+english.set('仅这次对话。', 'This conversation only.')
+english.set(
+  'Pi 可以不经确认运行命令、修改文件，仅这次对话。',
+  'Pi can run commands and edit files without asking, for this chat only.'
+)
+english.set('思考程度', 'Thinking effort')
+english.set('执行中 {duration}', 'Running {duration}')
+english.set('耗时 {duration}', 'Took {duration}')
+english.set('会话操作', 'Chat actions')
+english.set('扩展命令与提示词', 'Extension commands and prompts')
+english.set('查看和管理 MCP 连接器', 'View and manage MCP connectors')
+english.set('整理聊天历史，已使用 {percent}%', 'Summarize chat history · {percent}% used')
+english.set('将较早的聊天历史整理为摘要', 'Summarize earlier messages')
+english.set('当前没有可压缩的历史', 'No history to summarize yet')
+english.set('保存会话后可重命名', 'Available after this chat is saved')
+english.set('重命名当前对话', 'Rename this chat')
+english.set('用自然语言创建定时任务', 'Describe what to run and when')
+english.set('用量与费用', 'Usage and costs')
+english.set('查看模型用量和费用', 'View model usage and costs')
+english.set('使用此技能', 'Use this skill')
+english.set('使用提示词模板', 'Use this prompt template')
+english.set('运行扩展命令', 'Run this extension command')
+english.set('创建对话分支', 'Branch chat')
+english.set('从当前对话的历史消息创建分支', 'Branch from an earlier message in this chat')
+english.set('调整当前模型的思考程度', 'Adjust thinking effort for this model')
+english.set('草稿', 'Drafts')
+english.set('未发送草稿', 'Draft')
+english.set('附件草稿', 'Draft with attachments')
+english.set('模型供应商', 'Model providers')
+english.set('切换供应商', 'Switch provider')
+english.set('搜索模型或供应商…', 'Search models or providers…')
+english.set('视觉', 'Vision')
+english.set('支持生成图片', 'Can generate images')
+english.set('当前使用', 'In use')
+english.set('管理模型', 'Manage models')
+english.set('放大图片', 'Enlarge image')
+english.set('切换预览图片', 'Choose an image preview')
+english.set('图片预览不可用', 'Image preview unavailable')
+english.set('视频预览不可用', 'Video preview unavailable')
+english.set('页面预览不可用', 'Page preview unavailable')
+english.set('打开预览', 'Open preview')
+english.set('关闭预览', 'Close preview')
+english.set('流程图', 'Diagram')
+english.set('图形预览不可用', 'Diagram preview unavailable')
+english.set('正在渲染图形…', 'Rendering diagram…')
+english.set('查看源码', 'View source')
+english.set('读取服务商失败，请重试', 'Could not load providers. Try again.')
+english.set('复制消息', 'Copy message')
+english.set('编辑', 'Edit')
+english.set('密钥无效（401）', 'Key rejected (401)')
+english.set('密钥太短', 'Key is too short')
+english.set('无法连接，请检查网络', 'Cannot connect. Check the network.')
+english.set('获取', 'Get one')
+english.set('更多', 'More')
+english.set('自定义接口', 'Custom endpoint')
+english.set('用账号登录', 'Sign in')
+english.set('接口地址', 'Endpoint')
+english.set('模型 ID', 'Model ID')
+english.set('{count} 步', '{count} steps')
+english.set('改了 {count} 个文件', 'Changed {count} files')
+english.set('正在回复', 'Replying')
+english.set('想做点什么', 'What next')
+english.set('运行', 'Run')
+english.set('读取', 'Read')
+english.set('写入', 'Write')
+english.set('使用', 'Use')
+english.set('暂时无法登录', 'Cannot sign in right now')
+english.set('请检查接口地址', 'Check the endpoint')
+english.set('继续', 'Continue')
+english.set('密钥无效（403）', 'Key rejected (403)')
+
+english.set("权限与安全", "Permissions and safety")
+english.set("对话权限", "Conversation permissions")
+english.set("本次对话", "This conversation")
+english.set("新对话默认", "New conversation defaults")
+english.set("新对话的执行方式", "Default mode for new conversations")
+english.set("当前对话的执行方式可以在输入框下方切换。", "Change the mode for this conversation below the message box.")
+english.set("每次执行工具前先问你。", "Ask before every tool call.")
+english.set("常规操作直接做，检测到危险命令时先问你。", "Run routine actions and ask before detected risky commands.")
+english.set("本次对话可访问电脑文件和网络。", "Allow this conversation to access local files and the network.")
+english.set("本轮结束后可切换权限。", "You can change permissions after this turn ends.")
+english.set("项目文件只读", "Project files are read-only")
+english.set("仅连接已允许的服务和网站", "Only allowed services and sites")
+english.set("当前设备无法限制文件和网络访问。", "File and network restrictions are unavailable on this device.")
+english.set("为本次对话开启完全访问？", "Enable full access for this conversation?")
+english.set("开启完全访问", "Enable full access")
+english.set("Pi 可以访问这台电脑上的文件并联网，执行工具无需逐次确认。仅应用于本次对话。", "Pi can access files on this computer and connect to the network without asking before each tool call. This applies only to this conversation.")
+english.set("联网", "Networking")
+english.set("允许 Pi 连接在线模型和使用联网工具。关闭后，在线模型也不可用。", "Lets Pi connect to online models and use networked tools. Online models are unavailable when networking is off.")
+english.set("联网已关闭", "Networking is off")
+english.set("连接与诊断", "Connection and diagnostics")
+english.set("开发者设置", "Developer settings")
+english.set("需要通过公司网关或本机代理连接时填写。", "Enter a proxy only if your network requires one.")
+english.set('本机', 'This computer')
+english.set('在其他项目中新建对话', 'Start a chat in another project')
+english.set('新建无项目对话', 'New chat without a project')
+english.set('本地网页', 'Local page')
+english.set('预览未运行', 'Preview is not running')
+english.set('在右侧打开', 'Open in side panel')
+english.set('在默认浏览器打开', 'Open in default browser')
+english.set('其他页面', 'Other pages')
+english.set('打开方式', 'Open with')
+english.set('本轮', 'This turn')
+english.set('本轮没有可显示的文件变更。', 'No file changes to show for this turn.')
+english.set('本轮文件变更', 'Files changed in this turn')
+english.set('本轮修改 {count} 个文件', 'Files changed this turn · {count}')
+english.set('查看变更', 'Review changes')
+english.set('部分行数未知', 'Some line counts unavailable')
+english.set('行数未知', 'Line counts unavailable')
+english.set('再显示 {count} 个文件', 'Show {count} more files')
+english.set('收起文件', 'Show fewer files')
+english.set('什么时候做什么？', 'What should Pi do, and when?')
+english.set('想怎么修改？', 'What would you like to change?')
+english.set('改为每周五下午 6 点', 'Move it to Fridays at 6 p.m.')
+english.set('例如 每个工作日上午 9 点，汇总昨天的订单', 'For example, summarize yesterday’s orders every weekday at 9 a.m.')
+english.set('补充一句即可', 'Add a short reply')
+english.set('识别计划', 'Review schedule')
+english.set('创建任务', 'Create task')
+english.set('继续识别', 'Update schedule preview')
+english.set('正在识别…', 'Reading your request…')
+english.set('下次运行', 'Upcoming runs')
+english.set('周一至周五', 'Monday–Friday')
+english.set('识别计划需要联网。打开联网后再试。', 'Turn on network access to use the model for scheduling.')
+english.set('暂时无法连接模型，请检查模型连接后重试。', 'Could not reach the model. Check your model connection and try again.')
+english.set('暂时无法识别计划，请重试。', 'Could not read this request. Try again.')
+english.set('没能识别这条计划。请补充要做的事和具体时间，再试一次。', 'Include what to do and a specific time, then try again.')
+english.set('这个时间已经过去了，请换一个时间。', 'That time has passed. Choose a future time.')
+english.set('任务未保存，请再试一次。', 'Could not save the task. Try again.')
+english.set('{count} 项文件与终端操作', '{count} file and terminal actions')
+english.set('正在 {scope} 中查找文件', 'Finding files in {scope}')
+english.set('在 {scope} 中查找文件', 'Find files in {scope}')
+english.set('正在 {scope} 中搜索', 'Searching in {scope}')
+english.set('已在 {scope} 中搜索', 'Searched in {scope}')
+english.set('在 {scope} 中搜索', 'Search in {scope}')
+english.set('当前目录', 'current folder')
+english.set('已编辑', 'Edited')
+english.set('退出码 {code}', 'Exit code {code}')
+english.set('查看保存的输出', 'View saved output')
+english.set('只看最后几行', 'Show last few lines')
+english.set('展开片段', 'Expand fragment')
+english.set('没有行变更', 'No line changes')
+english.set("拦截记录", "Blocked activity")
+english.set("查看最近的文件和联网保护记录。", "See recent file and network restrictions.")
+english.set("允许修改项目文件", "Allow changes to project files")
+english.set("设为项目只读", "Make project read-only")
+english.set("项目可修改", "Project files are editable")
+english.set("项目已设为只读", "Project is read-only")
+english.set("新启动的对话生效。", "Applies to newly started conversations.")
+english.set("无法保存项目设置", "Could not save project settings")
+english.set("本次对话已关闭联网", "Networking is off for this conversation")
+english.set("联网请求被拦截", "Network request blocked")
+english.set("Pi 无法连接 {host}。", "Pi could not connect to {host}.")
+english.set("正在重试…", "Retrying…")
+english.set("开启本次联网并重试", "Enable networking for this conversation and retry")
+english.set("允许此网站并重试", "Allow this site and retry")
+english.set("无法恢复联网", "Could not restore networking")
+english.set("请从上次中断的地方继续，先核对已经执行的操作，避免重复执行。", "Continue from the last interruption. Check which actions already ran and avoid repeating them.")
+english.set("当前会话已切换，请重试。", "The active conversation changed. Try again.")
+
+english.set('查看可用的连接器', 'View available connectors')
+english.set('返回斜杠菜单', 'Back to slash commands')
+english.set('部分连接器无法读取', 'Some connectors could not be loaded')
+
+english.set('等待确认', 'Awaiting confirmation')
+english.set('等待回复', 'Awaiting response')
+english.set('需要处理', 'Action needed')
+english.set('还有 {count} 项待处理', '{count} more pending')
+english.set('取消请求', 'Cancel request')
+
+english.set('正在启动…', 'Starting…')
+
+english.set('画面暂时不可用', 'Preview unavailable')
+english.set('正在获取画面…', 'Loading preview…')
+english.set('正在准备画面…', 'Preparing preview…')
+english.set('当前浏览器暂不提供预览画面', 'Preview is not available for this browser')
+english.set('画面已在工作面板打开', 'Open in the work panel')
+
+english.set('请打开任务所在的 Chrome 标签页，再重新观察。', 'Open the task’s Chrome tab, then observe it again.')
+english.set('画面暂时不可用，请重新观察。', 'Preview unavailable. Observe the page again.')
+english.set('最近一次观察', 'Last observation')
+
+english.set('触摸板手势', 'Trackpad gestures')
+english.set('返回上一页', 'Go back')
+english.set('前进到下一页', 'Go forward')
+english.set('双指左右轻扫', 'Swipe left or right with two fingers')
+english.set('向右轻扫返回，向左轻扫前进。提示板块随滑动距离逐渐拉出、变清晰；松手前可回拉取消。', 'Swipe right to go back and left to go forward. The overlay pulls out and becomes clearer with the swipe. Reverse before releasing to cancel.')
+english.set('滚动保持系统行为', 'Scrolling keeps its normal behavior')
+english.set('双指上下滚动，以及代码块、表格中的横向滚动照常使用；弹窗和输入框内不触发翻页。', 'Two-finger vertical scrolling and horizontal scrolling in code and tables work as usual. Gestures inside dialogs and text fields do not navigate.')
+
+english.set('请确认任务标签页可见并重新观察；若仍无画面，请更新 Chrome 扩展。', 'Make the task tab visible and observe again. If needed, update the Chrome extension.')
+
+english.set('等待画面更新…', 'Waiting for the preview to update…')
+
+english.set('图片暂时无法加载。', 'Image unavailable.')
+english.set('重新加载图片', 'Reload image')
+
+// README provenance and explicit, opt-in AI translation.
+english.set('作者中文文档', 'Author’s Chinese README')
+english.set('作者英文文档', 'Author’s English README')
+english.set('正在查找作者对应语言的文档…', 'Looking for the author’s README in this language…')
+english.set('AI 翻译中，先显示作者原文。', 'AI translation in progress. Showing the author’s original.')
+english.set('正在准备 AI 翻译，先显示作者原文。', 'Preparing AI translation. Showing the author’s original.')
+english.set('AI 翻译中 {completed}/{total}，未完成部分显示原文。', 'AI translation in progress {completed}/{total}. Unfinished parts show the original.')
+english.set('AI 译文', 'AI translation')
+english.set('AI 翻译失败，已保留作者原文。', 'AI translation failed. Showing the author’s original.')
+english.set('语言文档暂时无法检查', 'Language documents could not be checked')
+english.set('未找到作者对应语言的文档', 'No author-provided README found in this language')
+english.set('内容无需翻译。', 'No translation is needed.')
+english.set('查看作者原文', 'View author’s original')
+english.set('查看 AI 译文', 'View AI translation')
+english.set('重试 AI 翻译', 'Retry AI translation')
+english.set('AI 翻译成英文', 'Translate to English with AI')
+english.set('AI 翻译成中文', 'Translate to Chinese with AI')
+
+// Session-scoped Pi capability creation.
+english.set('创意模式', 'Creator mode')
+english.set('把想法变成插件，为 Pi 创造更多功能', 'Turn ideas into plugins and give Pi new capabilities')
+english.set('当前任务结束后可切换模式', 'Switch modes after the current task finishes')
+english.set('退出创意模式', 'Exit Creator mode')
+english.set('为 Pi 增加能力', 'Build capabilities for Pi')
+english.set('让 Pi 拥有新能力', 'Give Pi new capabilities')
+english.set('进入创意模式', 'Enter Creator mode')
+english.set('工作模式', 'Agent mode')
+english.set('上下文扩展', 'Context extension')
+english.set('子 Agent', 'Sub-agent')
+english.set('组合提示词与真实工具规则，创建规划、研究等模式。', 'Combine instructions with actual tool rules to build planning or research modes.')
+english.set('处理进入模型的工具文本，保留原始会话记录。', 'Process tool text sent to the model while preserving session history.')
+english.set('独立执行只读任务，支持超时、取消和结果回收。', 'Run independent read-only tasks with timeouts, cancellation and returned results.')
+english.set('当前会话只读，开启工作区写入后可创建和试运行插件。', 'This conversation is read-only. Enable workspace writes to create or test plugins.')
+english.set('插件草稿', 'Plugin drafts')
+english.set('刷新插件草稿', 'Refresh plugin drafts')
+english.set('正在处理插件…', 'Working on the plugin…')
+english.set('还没有插件草稿。你可以直接告诉 Pi，想为它增加什么功能。', 'No drafts yet. Tell Pi what capability you want to add.')
+english.set('草稿', 'Draft')
+english.set('检查通过', 'Checks passed')
+english.set('加载验证通过', 'Load test passed')
+english.set('已注册能力', 'Registered capabilities')
+english.set('查看插件文件', 'Show plugin files')
+english.set('继续编辑', 'Continue editing')
+english.set('继续完善这个 Pi 插件：', 'Continue improving this Pi plugin:')
+english.set('源码目录：', 'Source directory:')
+english.set('检查', 'Check')
+english.set('试运行', 'Test')
+english.set('安装并使用', 'Install and use')
+english.set('试运行检查真实加载和能力注册。具体功能还需要在对话中验证。', 'Tests check actual loading and registration. Verify the intended behavior in chat as well.')
+english.set('创意模式操作失败', 'Creator operation failed')
+english.set('创建插件', 'Create a plugin')
+
+// Creation happens in chat; user-authored plugins live in the market.
+english.set('我的插件', 'My plugins')
+english.set('你创建的插件都在这里。继续在对话里完善，验证后即可安装使用。', 'Your own plugins live here. Refine them in chat, then test and install them.')
+english.set('刷新我的插件', 'Refresh my plugins')
+english.set('读取我的插件失败，请重试。', 'Could not load your plugins. Please try again.')
+english.set('部分项目暂时无法读取：', 'Some projects could not be read: ')
+english.set('请检查项目目录后刷新。', 'Check the project folder, then refresh.')
+english.set('正在读取我的插件…', 'Loading your plugins…')
+english.set('还没有创建插件', 'No plugins created yet')
+english.set('想给 Pi 增加什么功能？进入创意模式，在对话里告诉它。', 'What would you like Pi to do? Enter Creator mode and describe it in chat.')
+english.set('开始创作', 'Start creating')
+english.set('继续创作', 'Continue creating')
+english.set('所属项目', 'Project')
+english.set('可安装', 'Ready to install')
+english.set('完成检查和试运行后，即可安装使用。', 'Check and test this plugin before installing it.')
+english.set('检查已通过，下一步试运行插件。', 'Checks passed. Test the plugin next.')
+english.set('加载验证已通过，可以安装并在对话中验证具体功能。', 'Loading passed. Install the plugin, then verify its behavior in chat.')
+english.set('插件已安装，可以继续创作和更新。', 'Installed. Keep refining and updating this plugin in chat.')
+english.set('继续创作会打开此插件所属项目的对话。', 'Continue creating opens a conversation in this plugin’s project.')
+english.set('插件操作已取消', 'Plugin operation cancelled')
+english.set('会话已切换，请在插件所属项目中重试。', 'The conversation changed. Try again in the plugin’s project.')

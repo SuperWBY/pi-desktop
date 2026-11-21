@@ -20,7 +20,7 @@ try {
   const session=await page.evaluate(cwd=>window.pi.openSession({cwd,sessionPath:null}),workspace)
   assert.equal(session.ok,true); assert.ok(session.sessionPath)
   await page.evaluate(()=>{void window.pi.command({type:'prompt',message:'/fixture-confirm'})})
-  await page.getByRole('dialog').getByText('Local crash fixture',{exact:true}).waitFor({timeout:15000})
+  await page.locator('.conversation-prompt:not([hidden])').getByText('Local crash fixture',{exact:true}).waitFor({timeout:15000})
   fixturePid=Number(readFileSync(pidFile,'utf8')); assert.ok(Number.isSafeInteger(fixturePid)&&fixturePid>1)
   const exited=new Promise(resolve=>app.process().once('exit',resolve))
   app.process().kill('SIGKILL'); await exited
@@ -32,7 +32,7 @@ try {
   await page.waitForSelector('.composer-input, .welcome',{timeout:45000}); await page.waitForTimeout(1200)
   const result=await page.evaluate(({cwd,path})=>window.pi.openSession({cwd,sessionPath:path}),{cwd:workspace,path:session.sessionPath})
   assert.equal(result.ok,false,'an unmaterialized session remains unavailable after its process dies')
-  assert.equal(await page.getByRole('dialog').getByText('Local crash fixture',{exact:true}).count(),0)
+  assert.equal(await page.locator('.conversation-prompt:not([hidden])').getByText('Local crash fixture',{exact:true}).count(),0)
   assert.equal(await page.getByText('后台任务等待确认',{exact:true}).count(),0)
   const notice=page.locator('.interrupted-approval').filter({hasText:'任务在等待确认时中断'})
   await notice.waitFor({timeout:15000})

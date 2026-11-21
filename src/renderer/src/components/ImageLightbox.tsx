@@ -1,11 +1,21 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Minus, Plus, X } from 'lucide-react'
+import { useTranslation } from '../i18n'
 
 let openListener: ((src: string | null) => void) | null = null
 
 /** Any <img> inside the transcript can be opened full size. */
 export function openImage(src: string): void {
   openListener?.(src)
+}
+
+export function InlineImage({ src, alt }: { src: string; alt: string }): ReactNode {
+  const t = useTranslation()
+  return (
+    <button type="button" className="inline-image" aria-label={alt ? `${t('放大图片')} · ${alt}` : t('放大图片')} onClick={() => openImage(src)}>
+      <img className="md-image" src={src} alt={alt} loading="lazy" />
+    </button>
+  )
 }
 
 export function ImageLightbox(): ReactNode {

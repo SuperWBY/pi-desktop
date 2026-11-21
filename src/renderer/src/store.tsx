@@ -1,3 +1,4 @@
+import { CREATOR_COMMAND, isCreatorState, type CreatorAction, type CreatorState } from '@shared/creator'
 import {
   createContext,
   useCallback,
@@ -13,6 +14,7 @@ import type {
   AssistantMessage,
   Bootstrap,
   CommandInfo,
+  ConversationNetworkBlock,
   ContentBlock,
   ExtensionUiRequest,
   ModelInfo,
@@ -21,6 +23,8 @@ import type {
   PiState,
   ScheduleCadence,
   SessionNotice,
+  SessionPermissionChange,
+  SessionSecurity,
   SessionStats,
   SessionSummary,
   SessionTreeData,
@@ -33,6 +37,8 @@ import { isTemporaryWorkspace } from '@shared/paths'
 import { contentText } from './lib/tools'
 import { buildTurns, turnsToMarkdown } from './lib/turns'
 import { translate } from './i18n/dictionary'
+import { desktopNotifyCopy } from '@shared/notification-copy'
+import { resolveThinkingAfterModelChange } from './lib/thinking'
 
 export type SendMode = 'steer' | 'followUp'
 export interface QueuedImage { type: 'image'; data: string; mimeType: string }
@@ -69,20 +75,27 @@ export interface AppState {
   workspace: string | null
   scratchWorkspace: boolean
   sessionPath: string | null
+  composerDraftKey: string | null
   sessionName: string | null
+  sessionSecurity: SessionSecurity | null
+  networkBlock: ConversationNetworkBlock | null
   piState: PiState | null
   stats: SessionStats | null
   models: ModelInfo[]
   levels: ThinkingLevel[]
   commands: CommandInfo[]
+  creator: CreatorState | null
+  creatorBusy: boolean
   messages: AgentMessage[]
   streaming: boolean
+  awaitingResponse: boolean
   streamingIndex: number
   turnStartedAt: number
   toolRuns: Record<string, ToolRun>
   queue: { steering: QueuedMessage[]; followUp: QueuedMessage[] }
   notices: Notice[]
   uiRequests: ExtensionUiRequest[]
+  runningSessionPaths: string[]
   backgroundUiPending: { path: string; cwd: string }[]
   interruptedUi: { id: string; cwd: string; sessionPath: string | null; at: number }[]
   interruptedUiError: boolean
@@ -93,12 +106,14 @@ export interface AppState {
   settingsOpen: boolean
   addProjectOpen: boolean
   skillsOpen: boolean
+  skillsSection: 'skills' | 'plugins'
+  pluginMarketTab: 'discover' | 'installed' | 'mine'
   schedulesOpen: boolean
   scheduleDraft: ScheduleDraft | null
   scheduleFocusId: string | null
   sidebarOpen: boolean
   statusText: string | null
-  editorText: { value: string; nonce: number; append?: boolean } | null
+  editorText: { value: string; nonce: number; append?: boolean; suggestion?: boolean } | null
   sendMode: SendMode
   stderr: string
   diagnosticsOpen: boolean
@@ -116,7 +131,7 @@ export interface TerminalState {
   history: { command: string; output: string; exitCode: number | null }[]
 }
 
-const initialSettings: Settings = { theme: 'dark', workspaces: [] }
+const initialSettings: Settings = { theme: window.pi.initialTheme ?? 'dark', workspaces: [] }
 
 export const initialState: AppState = {
   boot: null,
@@ -126,20 +141,27 @@ export const initialState: AppState = {
   workspace: null,
   scratchWorkspace: false,
   sessionPath: null,
+  composerDraftKey: null,
   sessionName: null,
+  sessionSecurity: null,
+  networkBlock: null,
   piState: null,
   stats: null,
   models: [],
   levels: [],
   commands: [],
+  creator: null,
+  creatorBusy: false,
   messages: [],
   streaming: false,
+  awaitingResponse: false,
   streamingIndex: -1,
   turnStartedAt: 0,
   toolRuns: {},
   queue: { steering: [], followUp: [] },
   notices: [],
   uiRequests: [],
+  runningSessionPaths: [],
   backgroundUiPending: [],
   interruptedUi: [],
   interruptedUiError: false,
@@ -150,6 +172,8 @@ export const initialState: AppState = {
   settingsOpen: false,
   addProjectOpen: false,
   skillsOpen: false,
+  skillsSection: 'skills',
+  pluginMarketTab: 'discover',
   schedulesOpen: false,
   scheduleDraft: null,
   scheduleFocusId: null,
@@ -252,17 +276,29 @@ function applyAssistantEvent(
       set({ type: 'text', text: String(event.content ?? '') })
       break
     case 'thinking_start':
-      set({ type: 'thinking', thinking: '' })
+      set({ type: 'thinking', thinking: '', desktopStartedAt: Date.now() })
       break
     case 'thinking_delta': {
       const current = content[index]
-      const thinking = current?.type === 'thinking' ? current.thinking : ''
-      set({ type: 'thinking', thinking: thinking + String(event.delta ?? '') })
+      const previous = current?.type === 'thinking' ? current : undefined
+      set({
+        ...previous,
+        type: 'thinking',
+        thinking: (previous?.thinking ?? '') + String(event.delta ?? ''),
+        desktopStartedAt: previous?.desktopStartedAt ?? Date.now()
+      })
       break
     }
-    case 'thinking_end':
-      set({ type: 'thinking', thinking: String(event.content ?? '') })
+    case 'thinking_end': {
+      const current = content[index]
+      set({
+        ...(current?.type === 'thinking' ? current : undefined),
+        type: 'thinking',
+        thinking: String(event.content ?? ''),
+        desktopEndedAt: Date.now()
+      })
       break
+    }
     case 'toolcall_start':
       set({
         type: 'toolCall',
@@ -295,27 +331,47 @@ function reduceRecord(state: AppState, record: Record<string, unknown>): AppStat
   const type = String(record.type ?? '')
 
   switch (type) {
+    case 'desktop_session_security':
+      return record.sessionPath === state.sessionPath
+        ? { ...state, sessionSecurity: record.security as SessionSecurity }
+        : state
     case 'desktop_interrupted_ui':
       return { ...state, interruptedUi: Array.isArray(record.entries) ? record.entries as AppState['interruptedUi'] : state.interruptedUi }
     case 'desktop_ui_journal_error':
       return addNotice({ ...state, interruptedUiError: true }, 'error', '确认记录不可用', '无法安全记录确认状态，本次确认已取消。请检查应用数据目录。')
+    case 'desktop_running_sessions':
+      return Array.isArray(record.paths)
+        ? { ...state, runningSessionPaths: record.paths.filter((path): path is string => typeof path === 'string') }
+        : state
     case 'desktop_background_ui_pending':
       return { ...state, backgroundUiPending: Array.isArray(record.sessions) ? record.sessions.filter((item): item is { path: string; cwd: string } => Boolean(item) && typeof item === 'object' && typeof item.path === 'string' && typeof item.cwd === 'string') : [] }
     case 'desktop_ui_requests_reset':
       return { ...state, uiRequests: [] }
     case 'agent_start':
-      return { ...state, turnStartedAt: Date.now(), streaming: true, sendMode: state.streaming ? state.sendMode : 'followUp' }
+      return { ...state, networkBlock: null, turnStartedAt: Date.now(), streaming: true, awaitingResponse: false, sendMode: state.streaming ? state.sendMode : 'followUp' }
 
-    case 'agent_settled':
+    case 'agent_settled': {
+      const messages = [...state.messages]
+      if (state.streaming) {
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+          const message = messages[index]
+          if (message.role !== 'user') continue
+          messages[index] = { ...message, desktopFinishedAt: Date.now() }
+          break
+        }
+      }
       return {
         ...state,
+        messages,
         streaming: false,
+        awaitingResponse: false,
         sendMode: 'followUp',
         queue: { steering: [], followUp: [] },
         streamingIndex: -1,
         retry: null,
         compacting: false
       }
+    }
 
     case 'message_start': {
       const message = record.message as AgentMessage
@@ -337,7 +393,7 @@ function reduceRecord(state: AppState, record: Record<string, unknown>): AppStat
           : state.messages
       const messages = [...base, message]
       if (message.role === 'assistant') {
-        return { ...state, messages, queue, streamingIndex: messages.length - 1, streaming: true, sendMode: state.streaming ? state.sendMode : 'followUp' }
+        return { ...state, messages, queue, streamingIndex: messages.length - 1, streaming: true, awaitingResponse: false, sendMode: state.streaming ? state.sendMode : 'followUp' }
       }
       return { ...state, messages, queue }
     }
@@ -362,7 +418,23 @@ function reduceRecord(state: AppState, record: Record<string, unknown>): AppStat
       const index = state.streamingIndex
       if (index >= 0 && index < state.messages.length && state.messages[index].role === incoming.role) {
         const messages = [...state.messages]
-        messages[index] = incoming
+        if (incoming.role === 'assistant') {
+          const assistant = incoming as AssistantMessage
+          const previous = messages[index] as AssistantMessage
+          const finishedAt = Date.now()
+          messages[index] = {
+            ...assistant,
+            desktopFinishedAt: finishedAt,
+            content: assistant.content.map((block, position) => {
+              const partial = previous.content[position]
+              return block.type === 'thinking' && partial?.type === 'thinking' && partial.desktopStartedAt !== undefined
+                ? { ...block, desktopStartedAt: partial.desktopStartedAt, desktopEndedAt: partial.desktopEndedAt ?? finishedAt }
+                : block
+            })
+          }
+        } else {
+          messages[index] = incoming
+        }
         return { ...state, messages, streamingIndex: -1 }
       }
       const last = state.messages[state.messages.length - 1]
@@ -416,7 +488,7 @@ function reduceRecord(state: AppState, record: Record<string, unknown>): AppStat
         startedAt: Date.now()
       }
       const result = record.result as
-        | { content?: ContentBlock[]; details?: unknown }
+        | { content?: ContentBlock[]; details?: unknown; structuredContent?: unknown }
         | undefined
       return {
         ...state,
@@ -428,6 +500,7 @@ function reduceRecord(state: AppState, record: Record<string, unknown>): AppStat
             resultText: contentText(result),
             resultContent: result?.content,
             resultDetails: result?.details,
+            resultStructured: result?.structuredContent,
             durationMs: typeof record.durationMs === 'number' ? record.durationMs : run.durationMs
           }
         }
@@ -459,7 +532,10 @@ function reduceRecord(state: AppState, record: Record<string, unknown>): AppStat
       return { ...state, compacting: true }
 
     case 'compaction_end':
-      return { ...state, compacting: false }
+      return {
+        ...state, compacting: false,
+        stats: state.stats && record.result ? { ...state.stats, contextUsage: state.stats.contextUsage ? { ...state.stats.contextUsage, tokens: null, percent: null, breakdown: null } : null } : state.stats
+      }
 
     case 'auto_retry_start':
       return {
@@ -473,7 +549,7 @@ function reduceRecord(state: AppState, record: Record<string, unknown>): AppStat
       }
 
     case 'auto_retry_end': {
-      if (record.success) return { ...state, retry: null }
+      if (record.success || state.networkBlock) return { ...state, retry: null }
       return addNotice(
         { ...state, retry: null },
         'error',
@@ -493,6 +569,11 @@ function reduceRecord(state: AppState, record: Record<string, unknown>): AppStat
     case 'extension_ui_request': {
       const request = record as unknown as ExtensionUiRequest
       switch (request.method) {
+        case 'creator_result': return state
+        case 'creator_state': {
+          const creator = request.state as CreatorState
+          return isCreatorState(creator) ? { ...state, creator } : state
+        }
         case 'notify':
           return addNotice(
             state,
@@ -525,7 +606,10 @@ export type Action =
   | { type: 'SET_SETTINGS'; settings: Settings }
   | { type: 'SET_PI_SETTINGS'; piSettings: PiSettings }
   | { type: 'PATCH_PI_STATE'; patch: Partial<PiState> }
-  | { type: 'SESSION_START'; workspace: string; sessionPath: string | null; keepMessages?: boolean; scratch?: boolean }
+  | { type: 'CREATOR_BUSY'; busy: boolean }
+  | { type: 'CREATOR_COMMANDS'; commands: CommandInfo[] }
+  | { type: 'CONTEXT_RESET' }
+  | { type: 'SESSION_START'; workspace: string; sessionPath: string | null; composerDraftKey: string; keepMessages?: boolean; scratch?: boolean }
   | {
       type: 'SESSION_READY'
       piState: PiState | null
@@ -539,7 +623,15 @@ export type Action =
       scratch?: boolean
     }
   | { type: 'SESSION_ERROR'; error: string }
-  | { type: 'STATS'; stats: SessionStats | null; piState: PiState | null; sessionPath?: string | null }
+  | { type: 'SESSION_SECURITY'; sessionPath: string | null; security: SessionSecurity | null }
+  | { type: 'NETWORK_BLOCK'; block: ConversationNetworkBlock | null }
+  | {
+      type: 'STATS'
+      stats: SessionStats | null
+      piState: PiState | null
+      sessionPath?: string | null
+      levels?: ThinkingLevel[]
+    }
   | { type: 'RECORD'; record: PiRecord }
   | { type: 'RECORDS'; records: PiRecord[] }
   | { type: 'SEND_OPTIMISTIC'; text: string; images: { data: string; mimeType: string }[] }
@@ -562,7 +654,9 @@ export type Action =
   | { type: 'TOGGLE_SIDEBAR' }
   | { type: 'SET_SETTINGS_OPEN'; open: boolean }
   | { type: 'SET_ADD_PROJECT_OPEN'; open: boolean }
-  | { type: 'SET_SKILLS_OPEN'; open: boolean }
+  | { type: 'SET_SKILLS_OPEN'; open: boolean; section?: 'skills' | 'plugins' }
+  | { type: 'SET_PLUGIN_MARKET_TAB'; tab: 'discover' | 'installed' | 'mine' }
+  | { type: 'CLOSE_NAVIGATION' }
   | { type: 'SET_SCHEDULES_OPEN'; open: boolean }
   | { type: 'SET_SCHEDULE_DRAFT'; draft: ScheduleDraft | null }
   | { type: 'SET_SCHEDULE_FOCUS'; id: string | null }
@@ -572,8 +666,8 @@ export type Action =
   | { type: 'BASH_DONE'; id: string; output: string; exitCode: number | null }
   | { type: 'BASH_CLEAR' }
   | { type: 'SET_DELETED_SESSION'; deleted: { path: string; trashPath: string; name: string } | null }
-  | { type: 'SET_THEME'; theme: 'dark' | 'light' }
-  | { type: 'FILL_COMPOSER'; value: string; append?: boolean }
+  | { type: 'SET_THEME'; theme: Settings['theme'] }
+  | { type: 'FILL_COMPOSER'; value: string; append?: boolean; suggestion?: boolean }
   | { type: 'CONSUME_EDITOR_TEXT'; nonce: number }
 
 export function reducer(state: AppState, action: Action): AppState {
@@ -582,6 +676,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         boot: action.boot,
+        runningSessionPaths: action.boot.runningSessionPaths ?? [],
         interruptedUi: action.boot.interruptedUi ?? [],
         interruptedUiError: action.boot.interruptedUi === null,
         settings: action.boot.settings,
@@ -607,21 +702,30 @@ export function reducer(state: AppState, action: Action): AppState {
         settings: { ...state.settings, theme: action.theme }
       }
 
+    case 'CREATOR_BUSY': return { ...state, creatorBusy: action.busy }
+    case 'CREATOR_COMMANDS': return { ...state, commands: action.commands }
     case 'SESSION_START':
       return {
         ...state,
+        creator: null,
+        creatorBusy: false,
         workspace: action.workspace,
         scratchWorkspace: action.scratch === true,
         sessionPath: action.sessionPath,
+        composerDraftKey: action.composerDraftKey,
+        sessionSecurity: null,
+        networkBlock: null,
+        uiRequests: [],
         sessionName: action.keepMessages ? state.sessionName : null,
         status: 'starting',
         error: null,
         piState: action.keepMessages ? state.piState : null,
-        stats: action.keepMessages ? state.stats : null,
+        stats: null,
         messages: action.keepMessages ? state.messages : [],
         toolRuns: action.keepMessages ? state.toolRuns : {},
         queue: { steering: [], followUp: [] },
         streaming: false,
+        awaitingResponse: false,
         streamingIndex: -1,
         compacting: false,
         retry: null,
@@ -644,6 +748,7 @@ export function reducer(state: AppState, action: Action): AppState {
         sessionPath: action.sessionPath ?? action.piState?.sessionFile ?? null,
         sessionName: action.piState?.sessionName ?? null,
         streaming: action.piState?.isStreaming === true,
+        awaitingResponse: false,
         streamingIndex: -1,
         toolRuns: {}
       }
@@ -651,13 +756,29 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'SESSION_ERROR':
       return { ...state, status: 'error', error: action.error }
 
+    case 'SESSION_SECURITY':
+      return state.sessionPath === action.sessionPath ? { ...state, sessionSecurity: action.security } : state
+
+    case 'NETWORK_BLOCK':
+      return !action.block || state.sessionPath === action.block.sessionPath
+        ? { ...state, networkBlock: action.block }
+        : state
+
+    case 'CONTEXT_RESET':
+      return {
+        ...state,
+        stats: state.stats ? { ...state.stats, contextUsage: state.stats.contextUsage ? { ...state.stats.contextUsage, tokens: null, percent: null, breakdown: null } : null } : null
+      }
+
     case 'STATS':
       return {
         ...state,
         stats: action.stats,
         piState: action.piState ?? state.piState,
         sessionPath:
-          action.sessionPath ?? action.piState?.sessionFile ?? state.sessionPath
+          action.sessionPath ?? action.piState?.sessionFile ?? state.sessionPath,
+        // Re-derive thinking levels when the current model changes.
+        levels: action.levels ?? state.levels
       }
 
     case 'RECORD':
@@ -690,7 +811,7 @@ export function reducer(state: AppState, action: Action): AppState {
         timestamp: Date.now(),
         __optimistic: true
       } as unknown as AgentMessage
-      return { ...state, messages: [...state.messages, message] }
+      return { ...state, messages: [...state.messages, message], awaitingResponse: true }
     }
 
     case 'SET_MESSAGES':
@@ -724,18 +845,32 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'REMOVE_OPTIMISTIC':
       return {
         ...state,
-        messages: state.messages.filter((message) => !(message as { __optimistic?: boolean }).__optimistic)
+        messages: state.messages.filter((message) => !(message as { __optimistic?: boolean }).__optimistic), awaitingResponse: false
       }
 
     case 'STATUS': {
       if (action.status.status === 'idle') return { ...state, status: 'idle' }
       if (action.status.status !== 'exited') return state
-      if (state.status === 'starting') return state
+      if (state.status === 'starting') {
+        // The child died during startup: surface it now instead of hanging
+        // until the open-session timeout.
+        return {
+          ...state,
+          status: 'exited',
+          streaming: false,
+          awaitingResponse: false,
+          error: action.status.code != null ? `Pi 启动后立即退出了（代码 ${action.status.code}）` : 'Pi 在启动过程中退出了'
+        }
+      }
       return {
         ...state,
         status: 'exited',
         streaming: false,
-        error: `pi exited${action.status.code != null ? ` (code ${action.status.code})` : ''}`
+        awaitingResponse: false,
+        error:
+          action.status.code != null
+            ? `Pi 意外停止了（代码 ${action.status.code}）`
+            : 'Pi 已停止'
       }
     }
 
@@ -809,7 +944,7 @@ export function reducer(state: AppState, action: Action): AppState {
 
     case 'SET_MODEL':
       return state.piState
-        ? { ...state, piState: { ...state.piState, model: action.model } }
+        ? { ...state, levels: [], stats: null, piState: { ...state.piState, model: action.model } }
         : state
 
     case 'SET_THINKING':
@@ -833,22 +968,31 @@ export function reducer(state: AppState, action: Action): AppState {
     }
 
     case 'SET_STREAMING':
-      return { ...state, streaming: action.streaming, sendMode: action.streaming && !state.streaming ? 'followUp' : state.sendMode }
+      return { ...state, streaming: action.streaming, awaitingResponse: action.streaming ? false : state.awaitingResponse, sendMode: action.streaming && !state.streaming ? 'followUp' : state.sendMode }
 
     case 'TOGGLE_SIDEBAR':
       return { ...state, sidebarOpen: !state.sidebarOpen }
 
     case 'SET_SETTINGS_OPEN':
-      return { ...state, settingsOpen: action.open }
+      return { ...state, settingsOpen: action.open, ...(action.open ? { skillsOpen: false, schedulesOpen: false } : {}) }
 
     case 'SET_ADD_PROJECT_OPEN':
       return { ...state, addProjectOpen: action.open }
 
     case 'SET_SKILLS_OPEN':
-      return { ...state, skillsOpen: action.open }
+      return {
+        ...state, skillsOpen: action.open,
+        skillsSection: action.open ? action.section ?? 'skills' : state.skillsSection,
+        ...(action.open ? { schedulesOpen: false, settingsOpen: false } : {})
+      }
+
+    case 'SET_PLUGIN_MARKET_TAB': return { ...state, pluginMarketTab: action.tab }
+
+    case 'CLOSE_NAVIGATION':
+      return { ...state, skillsOpen: false, schedulesOpen: false }
 
     case 'SET_SCHEDULES_OPEN':
-      return { ...state, schedulesOpen: action.open }
+      return { ...state, schedulesOpen: action.open, ...(action.open ? { skillsOpen: false, settingsOpen: false } : {}) }
 
     case 'SET_SCHEDULE_DRAFT':
       return { ...state, scheduleDraft: action.draft }
@@ -857,7 +1001,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, scheduleFocusId: action.id }
 
     case 'FILL_COMPOSER':
-      return { ...state, editorText: { value: action.value, nonce: Date.now(), append: action.append } }
+      return { ...state, editorText: { value: action.value, nonce: Date.now(), append: action.append, suggestion: action.suggestion } }
 
     case 'CONSUME_EDITOR_TEXT':
       return state.editorText?.nonce === action.nonce ? { ...state, editorText: null } : state
@@ -879,11 +1023,15 @@ export interface Attachment {
 }
 
 interface AppActions {
+  creatorAction: (input: CreatorAction, expected?: { workspace: string; sessionPath: string | null }) => Promise<boolean>
+  openCreator: () => void
+  beginCreator: (workspace?: string, draft?: { name: string; path: string }) => Promise<boolean>
+  setPluginMarketTab: (tab: 'discover' | 'installed' | 'mine') => void
   refreshSessions: () => Promise<void>
   openSession: (
     cwd: string,
     sessionPath?: string | null,
-    options?: { scratch?: boolean; reload?: boolean }
+    options?: { scratch?: boolean; reload?: boolean; draftKey?: string }
   ) => Promise<boolean>
   newSession: () => Promise<boolean>
   newScratchSession: () => Promise<boolean>
@@ -897,12 +1045,12 @@ interface AppActions {
   reorderQueue: (from: number, to: number) => Promise<boolean>
   renameSession: (name: string) => Promise<void>
   deleteSession: (path: string) => Promise<void>
-  setModel: (model: ModelInfo) => Promise<void>
+  setModel: (model: ModelInfo) => Promise<boolean>
   setThinking: (level: ThinkingLevel) => Promise<void>
   setSendMode: (mode: SendMode) => void
   toggleSidebar: () => void
   openSettings: (open: boolean) => void
-  openSkills: (open: boolean) => void
+  openSkills: (open: boolean, section?: 'skills' | 'plugins') => void
   openSchedules: (open: boolean, draft?: ScheduleDraft) => void
   openScheduleTask: (id: string) => void
   clearScheduleFocus: () => void
@@ -917,7 +1065,7 @@ interface AppActions {
   setFollowUpMode: (mode: 'all' | 'one-at-a-time') => Promise<void>
   setAutoCompaction: (enabled: boolean) => Promise<void>
   setAutoRetry: (enabled: boolean) => Promise<void>
-  setTheme: (theme: 'dark' | 'light') => Promise<void>
+  setTheme: (theme: Settings['theme']) => Promise<void>
   notify: (
     level: NoticeLevel,
     title: string,
@@ -926,8 +1074,10 @@ interface AppActions {
   ) => void
   dismissNotice: (id: string) => void
   respondUi: (response: Record<string, unknown>) => void
-  refreshMeta: () => Promise<void>
+  refreshMeta: () => Promise<{ piState: PiState | null; levels: ThinkingLevel[] | undefined } | null>
   restartSession: () => Promise<void>
+  changeSessionPermission: (change: Omit<SessionPermissionChange, 'cwd' | 'sessionPath'>) => Promise<void>
+  dismissNetworkBlock: () => void
   cloneSession: () => Promise<void>
   forkMessages: () => Promise<{ entryId: string; text: string }[]>
   sessionTree: () => Promise<SessionTreeData | null>
@@ -938,7 +1088,7 @@ interface AppActions {
   stopBash: () => Promise<void>
   clearBash: () => void
   compact: () => Promise<void>
-  fillComposer: (text: string, append?: boolean) => void
+  fillComposer: (text: string, append?: boolean, suggestion?: boolean) => void
   consumeEditorText: (nonce: number) => void
   openExternal: (url: string) => void
   openBrowser: (url: string) => void
@@ -958,11 +1108,26 @@ async function safeCommand<T = unknown>(
   }
 }
 
+/** Messages hold base64 media; keep only the most recent sessions cached so
+ * long multi-session use cannot grow without bound. */
+function rememberMessages(cache: Map<string, AgentMessage[]>, path: string, messages: AgentMessage[]): void {
+  cache.delete(path)
+  cache.set(path, messages)
+  while (cache.size > 8) {
+    const oldest = cache.keys().next().value
+    if (oldest === undefined) break
+    cache.delete(oldest)
+  }
+}
+
 export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   const [state, dispatch] = useReducer(reducer, initialState)
   const stateRef = useRef(state)
   stateRef.current = state
   const messageCache = useRef(new Map<string, AgentMessage[]>())
+  const compactPending = useRef(new Set<string>())
+  const metaVersion = useRef(0)
+  const sessionOpenVersion = useRef(0)
 
   // Panel open state is optimistic: a pending intent wins over any settings
   // response that was already in flight when the user toggled it.
@@ -987,25 +1152,35 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   }, [])
 
   const refreshMeta = useCallback(async () => {
-    const [stateResponse, statsResponse] = await Promise.all([
+    const version = ++metaVersion.current
+    const { workspace, sessionPath } = stateRef.current
+    const [stateResponse, statsResponse, levelsResponse] = await Promise.all([
       safeCommand<PiState>({ type: 'get_state' }, 20_000),
-      safeCommand<SessionStats>({ type: 'get_session_stats' }, 20_000)
+      safeCommand<SessionStats>({ type: 'get_session_stats' }, 20_000),
+      safeCommand<{ levels: ThinkingLevel[] }>({ type: 'get_available_thinking_levels' }, 20_000)
     ])
+    if (version !== metaVersion.current || stateRef.current.workspace !== workspace || stateRef.current.sessionPath !== sessionPath) return null
+    const levels = levelsResponse?.data?.levels
+    const piState = stateResponse?.data ?? null
     dispatch({
       type: 'STATS',
       stats: statsResponse?.data ?? null,
-      piState: stateResponse?.data ?? null,
-      sessionPath: stateResponse?.data?.sessionFile ?? undefined
+      piState,
+      sessionPath: piState?.sessionFile ?? undefined,
+      // Only replace when pi answered; keep the prior list on a failed probe.
+      ...(levelsResponse?.data ? { levels: levels ?? [] } : {})
     })
+    return { piState, levels }
   }, [])
 
   const openSession = useCallback(
     async (
       cwd: string,
       sessionPath?: string | null,
-      options: { scratch?: boolean; reload?: boolean } = {}
+      options: { scratch?: boolean; reload?: boolean; draftKey?: string } = {}
     ): Promise<boolean> => {
       const current = stateRef.current
+      dispatch({ type: 'CLOSE_NAVIGATION' })
       const isScratchCwd = Boolean(
         cwd && stateRef.current.boot?.scratchPath && cwd === stateRef.current.boot.scratchPath
       )
@@ -1022,11 +1197,14 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       ) {
         return true
       }
+      const openVersion = ++sessionOpenVersion.current
+      metaVersion.current++
       dispatch({
         type: 'SESSION_START',
         workspace,
         scratch,
         sessionPath: sessionPath ?? null,
+        composerDraftKey: options.draftKey ?? `pending:${crypto.randomUUID()}`,
         keepMessages: Boolean(sessionPath)
       })
       const cached = sessionPath ? messageCache.current.get(sessionPath) : undefined
@@ -1036,6 +1214,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         sessionPath: sessionPath ?? null,
         scratch
       })
+      if (openVersion !== sessionOpenVersion.current) return false
       if (!result.ok) {
         const message = result.error ?? 'Could not open the session.'
         dispatch({ type: 'SESSION_ERROR', error: message })
@@ -1052,6 +1231,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
           safeCommand<{ levels: ThinkingLevel[] }>({ type: 'get_available_thinking_levels' }, 20_000),
           safeCommand<{ commands: CommandInfo[] }>({ type: 'get_commands' }, 20_000)
         ])
+      if (openVersion !== sessionOpenVersion.current) return false
 
       const piState = stateResponse?.data ?? null
       const readyPath = result.sessionPath ?? piState?.sessionFile ?? sessionPath ?? null
@@ -1060,8 +1240,9 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         // has moved to an as-yet unsaved new session.
         await window.pi.updateSettings({ lastSessionPath: undefined }).catch(() => undefined)
       }
+      if (openVersion !== sessionOpenVersion.current) return false
       const messages = messagesResponse?.data?.messages ?? []
-      if (readyPath) messageCache.current.set(readyPath, messages)
+      if (readyPath) rememberMessages(messageCache.current, readyPath, messages)
       dispatch({
         type: 'SESSION_READY',
         piState,
@@ -1126,7 +1307,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         filters: [{ name: 'Markdown', extensions: ['md'] }]
       })
       if (!path) return
-      const turns = buildTurns(current.messages, current.toolRuns, {}, -1)
+      const turns = buildTurns(current.messages, current.toolRuns, false)
       const ok = await window.pi.writeTextFile(path, turnsToMarkdown(turns, name))
       notify(ok ? 'success' : 'error', ok ? '已导出 Markdown' : '导出失败', path)
       if (ok) window.pi.showItem(path)
@@ -1176,6 +1357,28 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     await window.pi.closeSession()
     await openSession(current.workspace, current.sessionPath, { reload: true })
   }, [openSession])
+
+  useEffect(() => {
+    if (state.status !== 'ready') return
+    const sessionPath = state.sessionPath
+    let live = true
+    void window.pi.sessionSecurity(sessionPath).then((security) => {
+      if (live) dispatch({ type: 'SESSION_SECURITY', sessionPath, security })
+    }).catch(() => undefined)
+    return () => { live = false }
+  }, [state.sessionPath, state.status])
+
+  const changeSessionPermission = useCallback(async (change: Omit<SessionPermissionChange, 'cwd' | 'sessionPath'>) => {
+    const { workspace, sessionPath } = stateRef.current
+    if (!workspace) return
+    const security = await window.pi.setSessionPermission({ ...change, cwd: workspace, sessionPath })
+    if (stateRef.current.workspace !== workspace || stateRef.current.sessionPath !== sessionPath) {
+      throw new Error(translate(stateRef.current.settings.language ?? 'zh-CN', '当前会话已切换，请重试。'))
+    }
+    dispatch({ type: 'SESSION_SECURITY', sessionPath, security })
+  }, [])
+
+  const dismissNetworkBlock = useCallback(() => dispatch({ type: 'NETWORK_BLOCK', block: null }), [])
   const adoptBranchedSession = useCallback(async (): Promise<{ ok: boolean; text?: string; error?: string }> => {
     const current = stateRef.current
     const response = await safeCommand<{ sessionFile?: string | null }>({ type: 'get_state' }, 15_000)
@@ -1191,7 +1394,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     if (!current.workspace || current.streaming) return
     const response = await safeCommand<{ cancelled?: boolean }>({ type: 'clone' }, 60_000)
     if (!response?.success || response.data?.cancelled) {
-      notify('error', '复制会话失败', response?.error ?? 'pi 没有创建新会话。')
+      notify('error', '复制会话失败', response?.error ?? 'Pi 没有创建新会话。')
       return
     }
     const result = await adoptBranchedSession()
@@ -1224,9 +1427,6 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   const newSession = useCallback(async (): Promise<boolean> => {
     const current = stateRef.current
     if (current.status === 'starting' && current.scratchWorkspace && !current.sessionPath) return false
-    const draftCheck = new Event('pi:before-new-session', { cancelable: true })
-    window.dispatchEvent(draftCheck)
-    if (draftCheck.defaultPrevented) return false
     // A fresh conversation starts without a project; the empty chat screen
     // lets the user pick one before the first message.
     return openSession('', null, { scratch: true })
@@ -1298,7 +1498,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       if (!response) {
         if (current.streaming) dispatch({ type: 'QUEUE_REMOVE', kind, value: queuedValue })
         if (optimistic) dispatch({ type: 'REMOVE_OPTIMISTIC' })
-        notify('error', '消息未发送', translate(current.settings.language ?? 'zh-CN', 'pi 没有响应。'))
+        notify('error', '消息未发送', translate(current.settings.language ?? 'zh-CN', 'Pi 没有响应。'))
         return false
       }
       if (!response.success) {
@@ -1311,7 +1511,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         dispatch({ type: 'REMOVE_OPTIMISTIC' })
       }
       if (current.streaming && response.data?.disposition === 'handled') dispatch({ type: 'QUEUE_REMOVE', kind, value: queuedValue })
-      if (!current.streaming && response.data?.disposition === 'started') {
+      if (!current.streaming && response.data?.disposition === 'started' && stateRef.current.awaitingResponse) {
         dispatch({ type: 'SET_STREAMING', streaming: true })
       }
       return true
@@ -1333,7 +1533,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         15_000
       )
       if (!cleared?.success) {
-        notify('error', '无法引导', cleared?.error ?? 'pi 没有响应。')
+        notify('error', '无法引导', cleared?.error ?? 'Pi 没有响应。')
         return false
       }
       const steering = [...current.queue.steering]
@@ -1357,7 +1557,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
           120_000
         )
         dispatch({ type: 'QUEUE_SET', steering, followUp: [guided, ...followUp] })
-        notify('error', '无法引导', response?.error ?? 'pi 没有响应。')
+        notify('error', '无法引导', response?.error ?? 'Pi 没有响应。')
         return false
       }
       for (const item of followUp) {
@@ -1490,22 +1690,41 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
 
   const setModel = useCallback(
     async (model: ModelInfo) => {
+      metaVersion.current++
+      const { workspace, sessionPath, piState } = stateRef.current
+      const stillCurrent = (): boolean => stateRef.current.workspace === workspace && stateRef.current.sessionPath === sessionPath
       const response = await safeCommand({ type: 'set_model', provider: model.provider, modelId: model.id })
-      if (response?.success) {
-        dispatch({ type: 'SET_MODEL', model })
-        void refreshMeta()
-      } else {
+      if (!stillCurrent()) return false
+      if (!response?.success) {
         notify('error', '无法切换模型', response?.error)
+        return false
       }
+      metaVersion.current++
+      dispatch({ type: 'SET_MODEL', model })
+      const result = await refreshMeta()
+      if (!result || !stillCurrent()) return false
+      const reported = result.piState?.thinkingLevel
+      const next = resolveThinkingAfterModelChange(result.levels ?? [], piState?.thinkingLevel, reported)
+      if (next && next !== reported) {
+        const thinking = await safeCommand({ type: 'set_thinking_level', level: next })
+        if (thinking?.success && stillCurrent()) dispatch({ type: 'SET_THINKING', level: next })
+      }
+      return true
     },
     [notify, refreshMeta]
   )
 
   const setThinking = useCallback(
     async (level: ThinkingLevel) => {
+      const { workspace, sessionPath, levels, streaming } = stateRef.current
+      if (streaming || !levels.includes(level)) return
       const response = await safeCommand({ type: 'set_thinking_level', level })
       if (response?.success) {
-        dispatch({ type: 'SET_THINKING', level })
+        if (stateRef.current.workspace !== workspace || stateRef.current.sessionPath !== sessionPath) return
+        const confirmed = await safeCommand<PiState>({ type: 'get_state' })
+        if (confirmed?.data && stateRef.current.workspace === workspace && stateRef.current.sessionPath === sessionPath) {
+          dispatch({ type: 'SET_THINKING', level: confirmed.data.thinkingLevel })
+        }
       } else {
         notify('error', '无法修改推理强度', response?.error)
       }
@@ -1525,8 +1744,8 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     dispatch({ type: 'SET_SETTINGS_OPEN', open })
   }, [])
 
-  const openSkills = useCallback((open: boolean) => {
-    dispatch({ type: 'SET_SKILLS_OPEN', open })
+  const openSkills = useCallback((open: boolean, section: 'skills' | 'plugins' = 'skills') => {
+    dispatch({ type: 'SET_SKILLS_OPEN', open, section })
   }, [])
 
   const openSchedules = useCallback((open: boolean, draft?: ScheduleDraft) => {
@@ -1638,11 +1857,14 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
 
   const setAutoCompaction = useCallback(
     async (enabled: boolean) => {
+      const { workspace, sessionPath } = stateRef.current
       const response = await safeCommand({ type: 'set_auto_compaction', enabled })
+      if (stateRef.current.workspace !== workspace || stateRef.current.sessionPath !== sessionPath) return
       if (!response?.success) {
         notify('error', '无法修改自动压缩', response?.error)
         return
       }
+      metaVersion.current++
       dispatch({ type: 'PATCH_PI_STATE', patch: { autoCompactionEnabled: enabled } })
       await updatePiSettings({ compaction: { enabled } })
     },
@@ -1662,7 +1884,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   )
 
   const setTheme = useCallback(
-    async (theme: 'dark' | 'light') => {
+    async (theme: Settings['theme']) => {
       dispatch({ type: 'SET_THEME', theme })
       await updateSettings({ theme })
     },
@@ -1679,18 +1901,30 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   }, [])
 
   const compact = useCallback(async () => {
-    notify('info', '正在压缩上下文…')
-    const response = await safeCommand({ type: 'compact' }, 600_000)
-    if (!response?.success) {
-      notify('error', '压缩失败', response?.error)
-    } else {
-      notify('success', '上下文已压缩')
-      void refreshMeta()
+    const { workspace, sessionPath, streaming, compacting, status } = stateRef.current
+    const owner = `${workspace}\0${sessionPath ?? ''}`
+    if (compactPending.current.has(owner) || streaming || compacting || status !== 'ready') return
+    metaVersion.current++
+    compactPending.current.add(owner)
+    try {
+      notify('info', '正在压缩上下文…')
+      const response = await safeCommand({ type: 'compact' }, 600_000)
+      if (stateRef.current.workspace !== workspace || stateRef.current.sessionPath !== sessionPath) return
+      if (!response?.success) {
+        notify('error', '压缩失败', response?.error)
+      } else {
+        metaVersion.current++
+        dispatch({ type: 'CONTEXT_RESET' })
+        notify('success', '上下文已压缩', '历史内容已整理为摘要。')
+        await refreshMeta()
+      }
+    } finally {
+      compactPending.current.delete(owner)
     }
   }, [notify, refreshMeta])
 
-  const fillComposer = useCallback((text: string, append = false) => {
-    dispatch({ type: 'FILL_COMPOSER', value: text, append })
+  const fillComposer = useCallback((text: string, append = false, suggestion = false) => {
+    dispatch({ type: 'FILL_COMPOSER', value: text, append, suggestion })
   }, [])
   const consumeEditorText = useCallback((nonce: number) => dispatch({ type: 'CONSUME_EDITOR_TEXT', nonce }), [])
 
@@ -1771,31 +2005,40 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     return off
   }, [])
 
-  // Desktop notification when a run finishes while the window is in the
-  // background. The main process refuses to notify when the window is focused.
-  const notifiedStreaming = useRef(false)
+  // Approval prompts while the window is in the background get a short status notice.
+  const approvalNotified = useRef<string | null>(null)
   useEffect(() => {
-    const finished = notifiedStreaming.current && !state.streaming
-    notifiedStreaming.current = state.streaming
-    if (!finished || state.settings.notifyOnFinish === false) return
+    const request = state.uiRequests[0]
+    if (!request?.id) {
+      approvalNotified.current = null
+      return
+    }
+    if (approvalNotified.current === request.id) return
+    if (state.settings.notifyOnFinish === false) return
     if (typeof document !== 'undefined' && document.hasFocus()) return
-    const lastAssistant = [...state.messages]
-      .reverse()
-      .find((message) => message.role === 'assistant') as
-      | { content?: { type: string; text?: string }[]; errorMessage?: string }
-      | undefined
-    const text =
-      lastAssistant?.errorMessage ??
-      (lastAssistant?.content ?? [])
-        .filter((block) => block.type === 'text')
-        .map((block) => block.text ?? '')
-        .join(' ')
-        .trim()
+    approvalNotified.current = request.id
     void window.pi.notify({
-      title: lastAssistant?.errorMessage ? 'pi 出错了' : 'pi 完成了',
-      body: text ? text.slice(0, 140) : '本轮已结束'
+      ...desktopNotifyCopy('approval', state.settings.language),
+      cwd: state.workspace,
+      sessionPath: state.sessionPath
     })
-  }, [state.streaming, state.messages, state.settings.notifyOnFinish])
+  }, [
+    state.uiRequests,
+    state.settings.notifyOnFinish,
+    state.settings.language,
+    state.sessionPath,
+    state.workspace
+  ])
+
+  // Notification click focuses the app and opens the session that finished.
+  useEffect(() => {
+    return window.pi.onNotifyOpen((payload) => {
+      const cwd = payload.cwd ?? stateRef.current.workspace
+      const path = payload.sessionPath
+      if (!path) return
+      void openSession(cwd ?? '', path)
+    })
+  }, [openSession])
 
   // Batch high-frequency streaming records to one render per frame.
   useEffect(() => {
@@ -1809,6 +2052,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       dispatch({ type: 'RECORDS', records })
     }
     const offRecord = window.pi.onRecord((record) => {
+      if (record.type === 'compaction_start' || record.type === 'compaction_end' || record.type === 'model_changed') metaVersion.current++
       pending.push(record)
       if (!frame) frame = requestAnimationFrame(flush)
     })
@@ -1831,15 +2075,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       } : undefined)
     })
     const offSandboxDenied = window.pi.onSandboxDomainDenied((event) => {
-      const current = stateRef.current
-      const domains = current.settings.sandboxAllowedDomains ?? []
-      if (domains.includes(event.host)) return
-      notify('warning', '沙箱拦截了网络请求', `${event.host}${event.port ? `:${event.port}` : ''} 不在允许列表。`, {
-        label: '允许并重启',
-        run: () => {
-          void updateSettings({ sandboxAllowedDomains: [...domains, event.host] }).then(() => restartSession())
-        }
-      })
+      dispatch({ type: 'NETWORK_BLOCK', block: event })
     })
     const offApp = window.pi.onAppEvent((event) => {
       switch (event.name) {
@@ -1853,7 +2089,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
           dispatch({ type: 'TOGGLE_SIDEBAR' })
           break
         case 'toggle-theme':
-          void setTheme(stateRef.current.settings.theme === 'dark' ? 'light' : 'dark')
+          void setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark')
           break
         case 'settings':
           dispatch({ type: 'SET_SETTINGS_OPEN', open: true })
@@ -1874,8 +2110,20 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   }, [newSession, openAddProject, setTheme, applySettings])
 
   useEffect(() => {
-    const theme = state.settings.theme
-    document.documentElement.dataset.theme = theme
+    if (state.settings.theme !== 'system') {
+      document.documentElement.dataset.theme = state.settings.theme
+      return
+    }
+    let current = true
+    let received = false
+    const unsubscribe = window.pi.onSystemTheme((theme) => {
+      received = true
+      if (current) document.documentElement.dataset.theme = theme
+    })
+    void window.pi.systemTheme().then((theme) => {
+      if (current && !received) document.documentElement.dataset.theme = theme
+    }).catch(() => {})
+    return () => { current = false; unsubscribe() }
   }, [state.settings.theme])
 
   useEffect(() => {
@@ -1892,7 +2140,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
 
   useEffect(() => {
     const path = state.sessionPath
-    if (path && state.messages.length > 0) messageCache.current.set(path, state.messages)
+    if (path && state.messages.length > 0) rememberMessages(messageCache.current, path, state.messages)
   }, [state.messages, state.sessionPath])
 
   const wasStreaming = useRef(false)
@@ -1904,8 +2152,69 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     wasStreaming.current = state.streaming
   }, [state.streaming, state.status, refreshMeta, refreshSessions])
 
+  const creatorPending = useRef(new Map<string, { action: string; done: Promise<void> }>())
+  const creatorAction = useCallback(async function run(input: CreatorAction, expected?: { workspace: string; sessionPath: string | null }): Promise<boolean> {
+    const current=stateRef.current
+    if (expected && (current.workspace !== expected.workspace || current.sessionPath !== expected.sessionPath)) {
+      notify('info', '插件操作已取消', '会话已切换，请在插件所属项目中重试。')
+      return false
+    }
+    const session=current.sessionPath, workspace=current.workspace, key=JSON.stringify([workspace,session])
+    const pending = creatorPending.current.get(key)
+    if (pending) {
+      if (pending.action !== 'status' || input.action === 'status') return false
+      await pending.done
+      if (stateRef.current.sessionPath !== session || stateRef.current.workspace !== workspace) return false
+      return run(input, expected)
+    }
+    if(current.status!=='ready' || (input.action!=='status' && current.streaming)) return false
+    let settled!: () => void
+    const done = new Promise<void>(resolve => { settled = resolve })
+    creatorPending.current.set(key, { action: input.action, done })
+    dispatch({type:'CREATOR_BUSY',busy:true})
+    try {
+      const result=await window.pi.creatorAction(input,session)
+      if(stateRef.current.sessionPath!==session || stateRef.current.workspace!==workspace)return false
+      if(!result.ok){notify('error','创意模式操作失败',result.error??'请稍后重试。');return false}
+      if(result.warning)notify('info','插件已安装',result.warning)
+      const commands=await safeCommand<{commands:CommandInfo[]}>({type:'get_commands'})
+      if(stateRef.current.sessionPath!==session || stateRef.current.workspace!==workspace)return false
+      if(commands?.success)dispatch({type:'CREATOR_COMMANDS',commands:commands.data?.commands??[]})
+      return true
+    }catch(error){if(stateRef.current.sessionPath===session)notify('error','创意模式操作失败',error instanceof Error?error.message:String(error));return false}
+    finally{creatorPending.current.delete(key);if(stateRef.current.sessionPath===session && stateRef.current.workspace===workspace)dispatch({type:'CREATOR_BUSY',busy:false});settled()}
+  },[notify])
+  const openCreator = useCallback((): void => {
+    dispatch({ type: 'SET_PLUGIN_MARKET_TAB', tab: 'mine' })
+    dispatch({ type: 'SET_SKILLS_OPEN', open: true, section: 'plugins' })
+  },[])
+  const setPluginMarketTab = useCallback((tab: 'discover' | 'installed' | 'mine'): void => dispatch({ type: 'SET_PLUGIN_MARKET_TAB', tab }), [])
+  const beginCreator = useCallback(async (workspace?: string, draft?: { name: string; path: string }): Promise<boolean> => {
+    if (stateRef.current.streaming || stateRef.current.creatorBusy) return false
+    if (workspace && stateRef.current.workspace !== workspace) {
+      if (!await openSession(workspace)) return false
+      // Let SESSION_READY commit before addressing the newly opened runtime.
+      await safeCommand({ type: 'get_state' })
+      if (stateRef.current.workspace !== workspace) return false
+    }
+    const expected = { workspace: stateRef.current.workspace ?? '', sessionPath: stateRef.current.sessionPath }
+    if (!await creatorAction({ action: 'enable' }, expected)) return false
+    if (stateRef.current.workspace !== expected.workspace || stateRef.current.sessionPath !== expected.sessionPath) return false
+    dispatch({ type: 'SET_SKILLS_OPEN', open: false })
+    const language = stateRef.current.settings.language ?? 'zh-CN'
+    fillComposer(draft ? `${translate(language, '继续完善这个 Pi 插件：')} ${draft.name}\n${translate(language, '源码目录：')} ${draft.path}\n` : '', true)
+    return true
+  }, [openSession, creatorAction, fillComposer])
+  useEffect(()=>{
+    if(state.status==='ready' && state.commands.some(command=>command.name===CREATOR_COMMAND))void creatorAction({action:'status'})
+  },[state.status,state.workspace,state.sessionPath])
+
   const actions = useMemo(
     () => ({
+      creatorAction,
+      openCreator,
+      beginCreator,
+      setPluginMarketTab,
       refreshSessions,
       openSession,
       newSession,
@@ -1943,6 +2252,8 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       respondUi,
       refreshMeta,
       restartSession,
+      changeSessionPermission,
+      dismissNetworkBlock,
       cloneSession,
       forkMessages,
       sessionTree,
@@ -1960,6 +2271,10 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       revealSession
     }),
     [
+      creatorAction,
+      openCreator,
+      beginCreator,
+      setPluginMarketTab,
       refreshSessions,
       openSession,
       newSession,
@@ -1997,6 +2312,8 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       respondUi,
       refreshMeta,
       restartSession,
+      changeSessionPermission,
+      dismissNetworkBlock,
       cloneSession,
       forkMessages,
       sessionTree,

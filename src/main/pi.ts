@@ -1,9 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import type { PiRecord, PiResponse, SessionSecurity } from '@shared/types'
+import type { PiRecord, PiResponse, SessionSecurity, SessionStats } from '@shared/types'
 import { augmentedPath } from './pi-locate'
-import { quoteWindowsPiPaths } from './pi-launch'
-import { unlinkSync } from 'node:fs'
+import { directPiSpawn } from './pi-exec'
+import { existsSync, readFileSync, unlinkSync } from 'node:fs'
+import { matchingContextBreakdown } from './context-usage'
 
 interface Pending {
   resolve: (value: PiResponse) => void
@@ -43,6 +44,8 @@ export class PiProcess extends EventEmitter {
   startedAt = 0
   desktopToolInfoFile?: string
   security: SessionSecurity = { permission: 'review', mode: 'dangerous', sandboxed: false }
+  allowedNetworkHosts: string[] = []
+  blockedNetworkHost?: string
   sessionPath: string | null = null
 
   get hasPendingWork(): boolean {
@@ -70,18 +73,30 @@ export class PiProcess extends EventEmitter {
     this.security = options.security
     this.stopping = false
     this.sandboxConfigPath = options.sandbox?.configPath
-    const executable = options.sandbox
-      ? options.sandbox.nodePath
-      : process.platform === 'win32' ? `"${options.piPath}"` : options.piPath
-    const launchArgs = options.sandbox
-      ? [
-          options.sandbox.cliPath,
-          '--settings', options.sandbox.configPath,
-          '/usr/bin/env', '-u', 'ELECTRON_RUN_AS_NODE',
-          options.piPath,
-          ...args
-        ]
-      : process.platform === 'win32' ? quoteWindowsPiPaths(args) : args
+    let executable: string
+    let launchArgs: string[]
+    const spawnEnv: Record<string, string> = {}
+    if (options.sandbox) {
+      executable = options.sandbox.nodePath
+      launchArgs = [
+        options.sandbox.cliPath,
+        '--settings', options.sandbox.configPath,
+        '/usr/bin/env', '-u', 'ELECTRON_RUN_AS_NODE',
+        options.piPath,
+        ...args
+      ]
+    } else {
+      const direct = directPiSpawn(options.piPath, args)
+      if (!direct) {
+        const reason = existsSync(options.piPath)
+          ? `找不到 Pi 的 cli.js（"${options.piPath}"），无法在 Windows 上安全启动。请重新安装 Pi 或更新 Pi Desktop。`
+          : `ENOENT: spawn "${options.piPath}"`
+        return Promise.reject(new Error(reason))
+      }
+      executable = direct.executable
+      launchArgs = direct.args
+      Object.assign(spawnEnv, direct.env)
+    }
 
     return new Promise<void>((resolve, reject) => {
       let settled = false
@@ -97,13 +112,14 @@ export class PiProcess extends EventEmitter {
               PATH: augmentedPath(),
               ...(options.desktopSettingsFile ? { PI_DESKTOP_SETTINGS_FILE: options.desktopSettingsFile } : {}),
               ...(options.desktopToolInfoFile ? { PI_DESKTOP_TOOL_INFO_FILE: options.desktopToolInfoFile } : {}),
+              ...(options.desktopToolInfoFile ? { PI_DESKTOP_CONTEXT_FILE: `${options.desktopToolInfoFile}.context.json` } : {}),
               ...(options.sessionPath ? { PI_DESKTOP_SESSION_PATH: options.sessionPath } : {}),
               PI_DESKTOP_TOOL_APPROVAL: options.security.mode,
               ...(options.extraEnv ?? {}),
+              ...spawnEnv,
               ...(options.sandbox ? { PI_DESKTOP_SANDBOX: '1', SRT_DEBUG: '1' } : {})
             },
-            stdio: ['pipe', 'pipe', 'pipe'],
-            shell: process.platform === 'win32'
+            stdio: ['pipe', 'pipe', 'pipe']
           }
         )
       } catch (error) {
@@ -113,6 +129,8 @@ export class PiProcess extends EventEmitter {
 
       this.child = child
       this.startedAt = Date.now()
+      // EPIPE when pi dies mid-write; the exit handler rejects pending work.
+      child.stdin.on('error', () => undefined)
 
       child.once('spawn', () => {
         settled = true
@@ -133,10 +151,15 @@ export class PiProcess extends EventEmitter {
       child.stderr.on('data', (chunk: string) => this.emit('stderr', chunk))
 
       child.on('exit', (code, signal) => {
+        if (options.desktopToolInfoFile) {
+          for (const suffix of ['.context.json', '.context.json.tmp']) {
+            try { unlinkSync(`${options.desktopToolInfoFile}${suffix}`) } catch { /* already removed */ }
+          }
+        }
         if (options.desktopToolInfoFile) { try { unlinkSync(options.desktopToolInfoFile) } catch { /* already removed */ } }
         if (this.sandboxConfigPath) { try { unlinkSync(this.sandboxConfigPath) } catch { /* already removed */ } this.sandboxConfigPath = undefined }
         this.child = null
-        this.rejectPending(new Error(`pi exited (${signal ?? code ?? 'unknown'})`))
+        this.rejectPending(new Error(`Pi 已停止（${signal ?? code ?? 'unknown'}）`))
         this.emit('exit', { code, signal, intentional: this.stopping })
         this.stopping = false
       })
@@ -179,7 +202,11 @@ export class PiProcess extends EventEmitter {
   /** Fire-and-forget record (used for extension UI responses). */
   write(record: Record<string, unknown>): void {
     if (!this.child) return
-    this.child.stdin.write(`${JSON.stringify(record)}\n`)
+    try {
+      this.child.stdin.write(`${JSON.stringify(record)}\n`)
+    } catch {
+      // pi exited between the alive check and the write; exit handler cleans up.
+    }
   }
 
   stop(): void {
@@ -229,6 +256,15 @@ export class PiProcess extends EventEmitter {
       if (pending && id) {
         clearTimeout(pending.timer)
         this.pending.delete(id)
+        if (pending.command === 'get_session_stats' && record.success && this.desktopToolInfoFile) {
+          const stats = (record as unknown as PiResponse<SessionStats>).data
+          if (stats?.contextUsage) {
+            try {
+              const snapshot: unknown = JSON.parse(readFileSync(`${this.desktopToolInfoFile}.context.json`, 'utf8'))
+              stats.contextUsage.breakdown = matchingContextBreakdown(stats, snapshot)
+            } catch { /* Older runtimes still provide the total. */ }
+          }
+        }
         pending.resolve(record as unknown as PiResponse)
         return
       }

@@ -64,7 +64,7 @@ function zonedParts(timestamp: number, timezone?: string): ZonedParts {
   }
 }
 
-function localToUtcUnix(
+export function localToUtcUnix(
   year: number,
   month: number,
   day: number,
@@ -276,20 +276,4 @@ export function nextRuns(
     cursor = next
   }
   return result
-}
-
-export function describeCadence(cadence: ScheduleCadence): string {
-  if (cadence.type === 'once') {
-    const date = new Date(cadence.at)
-    return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(
-      date.getMinutes()
-    ).padStart(2, '0')}`
-  }
-  if (cadence.type === 'hourly') return `每小时 :${String(cadence.minute).padStart(2, '0')}`
-  if (cadence.type === 'daily') return `每天 ${cadence.time}`
-  if (cadence.type === 'weekdays') return `工作日 ${cadence.time}`
-  if (cadence.type === 'cron') return `cron ${cadence.expression}`
-  if (cadence.type === 'event') return `文件变化 · ${cadence.path}`
-  const names = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
-  return `${names[cadence.weekday] ?? '每周'} ${cadence.time}`
 }

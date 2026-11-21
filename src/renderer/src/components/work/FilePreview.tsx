@@ -1,17 +1,19 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ExternalLink, FolderSearch, Pencil, Save, X } from 'lucide-react'
 import { useTranslation } from '../../i18n'
 import { useApp } from '../../store'
 
-export function FilePreview({ path }: { path: string }): ReactNode {
+export function FilePreview({ path, focus }: { path: string; focus?: { line?: number } | null }): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
   const [result, setResult] = useState<{ text?: string; truncated?: boolean; error?: string } | null>(null)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [saving, setSaving] = useState(false)
+  const target = useRef<HTMLElement>(null)
 
   useEffect(() => {
+    if (editing) return
     let cancelled = false
     setResult(null)
     void window.pi.readText(path, 200_000).then((value) => {
@@ -21,13 +23,19 @@ export function FilePreview({ path }: { path: string }): ReactNode {
       else {
         setResult({ text: value.content, truncated: value.truncated })
         setDraft(value.content)
-        setEditing(false)
       }
     }).catch((error: unknown) => {
       if (!cancelled) setResult({ error: error instanceof Error ? error.message : t('无法预览这个文件') })
     })
     return () => { cancelled = true }
-  }, [path, t])
+  }, [path, t, focus, editing])
+
+  useEffect(() => {
+    const line = target.current
+    const pane = line?.parentElement
+    if (!line || !pane) return
+    pane.scrollTop += line.getBoundingClientRect().top - pane.getBoundingClientRect().top - pane.clientHeight / 3
+  }, [focus, result?.text, editing])
 
   const dirty = editing && result?.text !== undefined && draft !== result.text
 
@@ -53,6 +61,10 @@ export function FilePreview({ path }: { path: string }): ReactNode {
     setDraft(result?.text ?? '')
     setEditing(false)
   }
+
+  const parts = focus?.line && result?.text?.split('\n')
+  const targetIndex = (focus?.line ?? 0) - 1
+  const showTarget = parts && targetIndex >= 0 && targetIndex < parts.length
 
   return (
     <div className="file-preview">
@@ -87,7 +99,17 @@ export function FilePreview({ path }: { path: string }): ReactNode {
             }
           }}
         />
-      ) : <pre className="file-preview-body">{result.text}</pre>}
+      ) : (
+        <pre className="file-preview-body">
+          {showTarget ? (
+            <>
+              {targetIndex > 0 && parts.slice(0, targetIndex).join('\n') + '\n'}
+              <mark className="file-preview-target" ref={target} data-line={focus?.line}>{parts[targetIndex] || ' '}</mark>
+              {targetIndex + 1 < parts.length && '\n' + parts.slice(targetIndex + 1).join('\n')}
+            </>
+          ) : result.text}
+        </pre>
+      )}
       {result?.truncated && <div className="work-hint">{t('只显示前 200 KB，暂不支持编辑。')}</div>}
       {dirty && <div className="work-hint">{t('有未保存的修改 · ⌘S 保存 · Esc 取消')}</div>}
     </div>

@@ -55,3 +55,34 @@ await router.close()
 assert.equal(calls.at(-1), 'cdp:close')
 assert.throws(() => router.current(), /session/i)
 console.log('PASS browser router: session lock, approval, stale observation, concurrency and close')
+
+const signInPage = {
+  url: 'https://example.test/sign-in',
+  interaction: { login: 'submit' },
+  candidates: [{ id: 'password', secure: true }, { id: 'submit', name: 'Sign in' }]
+}
+let page = signInPage
+let signInCalls = 0
+const loginAdapter = {
+  async observe() { return page },
+  async act(action) { assert.equal(action.interaction, 'login'); signInCalls++; return { ok: true } },
+  async close() {}
+}
+const loginRouter = new BrowserRouter({ inapp: loginAdapter, cdp: loginAdapter, extension: loginAdapter })
+await loginRouter.open('inapp')
+await loginRouter.observe()
+await assert.rejects(() => loginRouter.act({ type: 'press', candidateId: 'password', key: 'Enter' }), /secure/)
+assert.equal((await loginRouter.act({ type: 'click', candidateId: 'submit' })).verification.requiresHuman, true)
+assert.deepEqual(loginRouter.current().handoff, { kind: 'login', host: 'example.test' })
+await assert.rejects(() => loginRouter.act({ type: 'click', candidateId: 'submit' }), /human/i)
+assert.equal(signInCalls, 1)
+loginRouter.resumeAfterUser()
+page = { url: 'https://example.test/verify', interaction: { blocker: 'verification' }, candidates: [] }
+assert.equal((await loginRouter.observe()).requiresHuman, true)
+assert.equal(loginRouter.current().handoff.kind, 'verification')
+loginRouter.resumeAfterUser()
+await assert.rejects(() => loginRouter.act({ type: 'click', candidateId: 'submit' }), /observe/i)
+page = { url: 'https://example.test/dashboard', candidates: [{ id: 'dashboard' }] }
+assert.equal((await loginRouter.observe()).candidates[0].id, 'dashboard')
+assert.equal(loginRouter.current().paused, false)
+console.log('PASS sign-in attempts do not resubmit; verification and resume require a new observation')

@@ -3,7 +3,8 @@ import { chmod, mkdir, writeFile, unlink } from 'node:fs/promises'
 import { app } from 'electron'
 import { dirname, join } from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { taskPage, browserDownloads, releaseTaskPages } from './browser'
+import { taskPage, browserDownloads, releaseTaskPages, setBrowserControl } from './browser'
+import { storeExternalFrame, clearExternalFrames } from './external-browser-preview'
 
 let server: Server | null = null
 let bridgeFile = ''
@@ -22,7 +23,8 @@ function json(res: import('node:http').ServerResponse, status: number, body: unk
 
 async function readBody(req: import('node:http').IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
-  for await (const chunk of req) chunks.push(Buffer.from(chunk))
+  let size = 0
+  for await (const chunk of req) { size += chunk.length; if (size > 2_000_000) throw new Error('Body too large'); chunks.push(Buffer.from(chunk)) }
   if (!chunks.length) return {}
   try {
     const value = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
@@ -63,6 +65,11 @@ async function openBrowserBridge(): Promise<void> {
     }
     try {
       const owner = req.headers['x-pi-controller']
+      if (req.method === 'POST' && req.url === '/external-preview') {
+        if (typeof owner !== 'string') throw new Error('Invalid preview owner.')
+        const generation = storeExternalFrame(owner, await readBody(req))
+        json(res, 200, { ok: true, generation }); return
+      }
       if (controller) {
         try { process.kill(controller.pid, 0) }
         catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') { controller = null; releaseTaskPages() } }
@@ -92,6 +99,13 @@ async function openBrowserBridge(): Promise<void> {
       const key = req.headers['x-pi-page'] ?? 'main'
       if (typeof key !== 'string' || (key !== 'main' && !controller)) throw new Error('Claim the in-app browser first.')
       const page = taskPage(key)
+      if (req.method === 'POST' && req.url === '/control') {
+        if (!controller || owner !== controller.id) throw new Error('Claim the browser before marking a controlled tab.')
+        const { state } = await readBody(req)
+        if (state !== 'active' && state !== 'waiting' && state !== null) throw new Error('Invalid tab control state.')
+        setBrowserControl(key, state)
+        json(res, 200, { ok: true }); return
+      }
       if (req.method === 'GET' && req.url === '/state') {
         json(res, 200, { ok: true, state: page.browserState() })
         return
@@ -176,6 +190,7 @@ export function stopBrowserBridge(): Promise<void> {
     if (starting) await starting.catch(() => undefined)
     if (bridgeFile) await unlink(bridgeFile).catch(() => undefined)
     bridgeFile = ''
+    clearExternalFrames()
     const current = server
     server = null
     if (current?.listening) await new Promise<void>((resolve) => current.close(() => resolve()))

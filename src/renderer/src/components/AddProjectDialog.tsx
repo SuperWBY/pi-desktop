@@ -1,5 +1,6 @@
 import { useId, useRef, useState, type ReactNode } from 'react'
 import { FolderOpen, FolderPlus, ShieldAlert } from 'lucide-react'
+import { userFacingError } from '@shared/errors'
 import type { AddProjectResult } from '@shared/types'
 import { useTranslation } from '../i18n'
 import { projectName, shortenPath } from '../lib/format'
@@ -43,7 +44,7 @@ export function AddProjectDialog(): ReactNode {
     try {
       await work()
     } catch (error) {
-      setError((error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': Error: /, ''))
+      setError(userFacingError(error))
     } finally {
       pending.current = false
       setBusy(false)

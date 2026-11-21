@@ -77,8 +77,7 @@ export function turnKey(user: UserMessage | null, index: number): string {
 export function buildTurns(
   messages: AgentMessage[],
   toolRuns: Record<string, ToolRun>,
-  results: Record<string, ToolResultMessage>,
-  streamingIndex: number
+  streaming: boolean
 ): Turn[] {
   const turns: Turn[] = []
   let current: Turn | null = null
@@ -116,21 +115,24 @@ export function buildTurns(
     current.items.push(message)
   })
 
+  const latest = turns.at(-1)
   for (const turn of turns) {
     const files = new Set<string>()
     const tools: Record<string, number> = {}
     const seenCalls = new Set<string>()
     const failedCalls = new Set<string>()
-    let started: number | undefined
+    let started = turn.user?.timestamp
     let ended: number | undefined
 
     for (const item of turn.items) {
-      if (typeof item.timestamp === 'number') {
-        if (started === undefined) started = item.timestamp
-        ended = item.timestamp
-      }
+      if (started === undefined && typeof item.timestamp === 'number') started = item.timestamp
       if (item.role === 'assistant') {
         const assistant = item as AssistantMessage
+        // Pi timestamps an assistant message at the start of generation.
+        ended = assistant.desktopFinishedAt ??
+          (assistant.timestamp !== undefined && assistant.durationMs !== undefined
+            ? assistant.timestamp + assistant.durationMs
+            : undefined)
         const calls = toolCallsOf(assistant)
         turn.stats.steps += 1 + calls.length
         turn.stats.thinkingLines += thinkingLinesOf(assistant)
@@ -158,6 +160,7 @@ export function buildTurns(
         turn.finalText = calls.length ? '' : assistantText(assistant)
       } else if (item.role === 'toolResult') {
         const result = item as ToolResultMessage
+        ended = result.timestamp ?? ended
         // A toolResult that already has its call in this turn must not be
         // counted twice (the summary would read `read×10` for five reads).
         if (!seenCalls.has(result.toolCallId)) {
@@ -172,36 +175,23 @@ export function buildTurns(
       }
     }
 
-    for (const run of Object.values(toolRuns)) {
-      const name = run.name
-      if (run.status === 'error' && !turn.stats.tools[name]) {
-        // A run without a matching message still belongs to the streaming turn.
-        if (turn === turns[turns.length - 1]) turn.failed = true
-      }
+    // A failed live run can arrive before its matching tool-result message.
+    if (turn === latest && Object.values(toolRuns).some((run) => run.status === 'error')) {
+      turn.failed = true
     }
 
     turn.stats.tools = tools
     turn.stats.errors += failedCalls.size
     turn.stats.files = [...files]
     turn.stats.startedAt = started
-    turn.stats.endedAt = ended
-    turn.streaming =
-      streamingIndex >= 0 &&
-      turn === turns[turns.length - 1] &&
-      turn.items.some((item, position) => {
-        const absolute = messages.indexOf(item)
-        return absolute === streamingIndex && position >= 0
-      })
+    ended = turn.user?.desktopFinishedAt ?? ended
+    turn.stats.endedAt = started !== undefined && ended !== undefined && ended >= started ? ended : undefined
+    turn.streaming = streaming && turn === latest
 
     if (turn.streaming) {
-      // Live turn: close over runs still in flight so the summary ticks.
-      turn.stats.endedAt = Date.now()
       if (Object.values(toolRuns).some((run) => run.status === 'running')) turn.failed = false
     }
   }
-
-  // `results` is only needed for error detection; keep the signature stable.
-  void results
 
   return turns
 }

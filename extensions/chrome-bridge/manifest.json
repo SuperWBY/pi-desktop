@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Pi Desktop Chrome Bridge",
-  "version": "0.1.13",
+  "version": "0.1.16",
   "description": "Connects the active Chrome tab to Pi Desktop computer use.",
   "permissions": [
     "scripting",

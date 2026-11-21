@@ -1,10 +1,12 @@
 import { useTranslation } from '../i18n'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Clock,
   ChevronRight,
   FolderOpen,
+  Lock,
   MoreHorizontal,
+  Package,
   Plus,
   Search,
   Settings,
@@ -17,7 +19,9 @@ import clsx from 'clsx'
 import type { SessionSearchMatch, SessionSummary, SessionTreeData, SessionTreeNode } from '@shared/types'
 import { useApp } from '../store'
 import { baseName, disambiguateProjectNames, projectName, relativeTime, shortenPath, truncate } from '../lib/format'
-import { isTemporaryWorkspace, pathsEqual } from '@shared/paths'
+import { sessionDisplayTitle } from '../lib/session-title'
+import { useDraftLocations } from '../lib/composer-drafts'
+import { isTemporaryWorkspace, pathsEqual, projectReadOnly } from '@shared/paths'
 import { mod } from '../lib/platform'
 import { PiLogo } from './PiLogo'
 import { ContextMenu, Modal, Popover, Spinner } from './ui'
@@ -146,6 +150,7 @@ function treeEntryText(entry: SessionTreeNode['entry']): string {
 export function Sidebar(): ReactNode {
   const t = useTranslation()
   const { state, actions } = useApp()
+  const draftLocations = useDraftLocations()
   const [query, setQuery] = useState('')
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -283,6 +288,7 @@ export function Sidebar(): ReactNode {
     if (
       state.sessionPath &&
       isTemporaryWorkspace(workspace, scratchPath) &&
+      !draftLocations.some((item) => item.key === `session:${state.sessionPath}`) &&
       (!queryText || activeText.includes(queryText)) &&
       !listed.some((session) => session.path === state.sessionPath) &&
       !matching.some((session) => session.path === state.sessionPath)
@@ -291,7 +297,11 @@ export function Sidebar(): ReactNode {
         path: state.sessionPath,
         id: state.sessionPath,
         cwd: workspace || scratchPath || '',
-        name: state.sessionName || '未命名会话',
+        name: sessionDisplayTitle({
+          sessionName: state.sessionName,
+          messages: state.messages,
+          emptyLabel: t('未命名会话')
+        }),
         preview: '',
         updatedAt: Date.now(),
         createdAt: Date.now(),
@@ -300,7 +310,7 @@ export function Sidebar(): ReactNode {
       })
     }
     return listed
-  }, [matching, queryText, scratchPath, state.messages.length, state.sessionName, state.sessionPath, workspace, workspaces])
+  }, [draftLocations, matching, queryText, scratchPath, state.messages, state.sessionName, state.sessionPath, t, workspace, workspaces])
   const projectLabels = useMemo(
     () => disambiguateProjectNames(workspaces, state.settings.workspaceNames),
     [workspaces, state.settings.workspaceNames]
@@ -308,7 +318,16 @@ export function Sidebar(): ReactNode {
 
   const renderSession = (session: SessionSummary, showProject: boolean): ReactNode => {
     const active = state.sessionPath === session.path
-    const running = active && state.streaming
+    const running = state.runningSessionPaths.includes(session.path)
+    const label = sessionDisplayTitle({
+      sessionName: session.name,
+      messages: active
+        ? state.messages
+        : session.preview
+          ? [{ role: 'user', content: session.preview }]
+          : [],
+      emptyLabel: t('未命名会话')
+    })
 
     if (renaming === session.path) {
       return (
@@ -356,14 +375,14 @@ export function Sidebar(): ReactNode {
             event.stopPropagation()
             setPendingRename({ path: session.path, name: session.name })
           }}
-          title={session.name}
+          title={label}
         >
           {running && (
-            <span className="session-running" aria-label={t('执行中')}>
+            <span className="session-running" title={t('执行中')} aria-label={t('执行中')}>
               <Spinner size={11} />
             </span>
           )}
-          <span className="session-title">{truncate(session.name, 52)}</span>
+          <span className="session-title">{truncate(label, 52)}</span>
           {showProject && (
             <span className="session-meta">{relativeTime(session.updatedAt, language)}</span>
           )}
@@ -405,7 +424,7 @@ export function Sidebar(): ReactNode {
     )
   }
 
-  const openFork = async (session: SessionSummary): Promise<void> => {
+  const openFork = useCallback(async (session: SessionSummary): Promise<void> => {
     if (session.path !== state.sessionPath) {
       const opened = await actions.openSession(session.cwd, session.path)
       if (!opened) return
@@ -419,7 +438,16 @@ export function Sidebar(): ReactNode {
     } catch {
       setForkList([])
     }
-  }
+  }, [actions, state.sessionPath])
+
+  useEffect(() => {
+    const forkCurrent = (): void => {
+      const session = state.sessions.find((item) => item.path === state.sessionPath)
+      if (session && state.status === 'ready' && !state.streaming && !state.compacting) void openFork(session)
+    }
+    window.addEventListener('pi:fork-current-session', forkCurrent)
+    return () => window.removeEventListener('pi:fork-current-session', forkCurrent)
+  }, [openFork, state.compacting, state.sessionPath, state.sessions, state.status, state.streaming])
 
   const chooseFork = async (send: boolean): Promise<void> => {
     if (forkBusy || !forkSelected) return
@@ -489,12 +517,21 @@ export function Sidebar(): ReactNode {
           <span>{t("新建会话")}</span>
           <span className="shortcut">{mod('N')}</span>
         </button>
-        <button className="skills-entry skills-page-entry" onClick={() => actions.openSkills(true)}>
+        <button className={clsx('skills-entry skills-page-entry', state.skillsOpen && state.skillsSection === 'skills' && 'is-current')}
+          aria-current={state.skillsOpen && state.skillsSection === 'skills' ? 'page' : undefined}
+          onClick={() => actions.openSkills(true)}>
           <Sparkles size={13} />
           <span>{t('技能与工具')}</span>
         </button>
+        <button className={clsx('skills-entry plugins-page-entry', state.skillsOpen && state.skillsSection === 'plugins' && 'is-current')}
+          aria-current={state.skillsOpen && state.skillsSection === 'plugins' ? 'page' : undefined}
+          onClick={() => actions.openSkills(true, 'plugins')}>
+          <Package size={13} />
+          <span>{t('Pi 插件')}</span>
+        </button>
         <button
-          className="skills-entry schedules-entry"
+          className={clsx('skills-entry schedules-entry', state.schedulesOpen && 'is-current')}
+          aria-current={state.schedulesOpen ? 'page' : undefined}
           onClick={() => {
             setScheduleUnread(0)
             actions.openSchedules(true)
@@ -571,6 +608,7 @@ export function Sidebar(): ReactNode {
         )}
         {workspaces.map((path) => {
           const name = projectLabels.get(path) || projectName(state.settings.workspaceNames, path)
+          const readOnly = projectReadOnly(state.settings, path)
           const matches = matching.filter((session) => pathsEqual(session.cwd, path))
           const activeText = `${state.sessionName ?? ''} ${workspace ?? ''}`.toLowerCase()
           if (
@@ -585,7 +623,11 @@ export function Sidebar(): ReactNode {
               path: state.sessionPath,
               id: state.sessionPath,
               cwd: path,
-              name: state.sessionName || t('未命名会话'),
+              name: sessionDisplayTitle({
+                sessionName: state.sessionName,
+                messages: state.messages,
+                emptyLabel: t('未命名会话')
+              }),
               preview: '',
               updatedAt: Date.now(),
               createdAt: Date.now(),
@@ -618,9 +660,6 @@ export function Sidebar(): ReactNode {
                   aria-label={state.settings.language === 'en' ? `New conversation in ${name}` : `在 ${name} 中新建对话`}
                   onClick={(event) => {
                     event.stopPropagation()
-                    const draftCheck = new Event('pi:before-new-session', { cancelable: true })
-                    window.dispatchEvent(draftCheck)
-                    if (draftCheck.defaultPrevented) return
                     void actions.openSession(path, null)
                   }}
                 >
@@ -637,6 +676,14 @@ export function Sidebar(): ReactNode {
                       close()
                       window.dispatchEvent(new CustomEvent('pi:manage-project-trust', { detail: path }))
                     }}><ShieldCheck size={14} />{t('项目信任')}</button>
+                    <button className="menu-item" onClick={() => {
+                      close()
+                      const preferences = Object.fromEntries(Object.entries(state.settings.workspaceReadOnly ?? {})
+                        .filter(([project]) => !pathsEqual(project, path)))
+                      void actions.updateSettings({ workspaceReadOnly: { ...preferences, [path]: !readOnly } })
+                        .then(() => actions.notify('success', t(readOnly ? '项目可修改' : '项目已设为只读'), t('新启动的对话生效。')))
+                        .catch(() => actions.notify('error', t('无法保存项目设置')))
+                    }}><Lock size={14} />{t(readOnly ? '允许修改项目文件' : '设为项目只读')}</button>
                     <button className="menu-item" onClick={() => { close(); setPendingProjectRemoval(path) }}>
                       <Trash2 size={14} />{t('从列表移除')}
                     </button>
@@ -674,14 +721,34 @@ export function Sidebar(): ReactNode {
         <button
           className="footer-meta"
           onClick={() => actions.openDiagnostics(true)}
-          title={`${t('pi 运行状态与诊断')}${state.boot?.piVersion ? ` · ${state.boot.piVersion}` : ''}`}
+          title={(() => {
+            const version = state.boot?.piVersion
+            const needsCheck = state.status === 'error' || state.status === 'exited' || Boolean(state.boot && !version)
+            const preparing = !needsCheck && state.status !== 'ready' && state.status !== 'idle'
+            const needsModel = Boolean(
+              version && !preparing && !state.piSettings?.defaultProvider && !state.piSettings?.defaultModel
+            )
+            const ready = !needsCheck && !preparing && !needsModel
+            if (needsModel) return t('先连接模型')
+            return ready && version ? `${t('已就绪')} · ${version}` : needsCheck ? t('需要检查') : ready ? t('已就绪') : t('正在准备')
+          })()}
         >
-          <span className={clsx('status-dot', `is-${state.status}`)} />
-          <span>{state.status === 'error' || (state.boot && !state.boot.piVersion)
-            ? t('需要检查')
-            : state.status === 'ready' || state.status === 'idle'
-              ? t('已就绪')
-              : t('正在准备')}</span>
+          {(() => {
+            const version = state.boot?.piVersion
+            const needsCheck = state.status === 'error' || state.status === 'exited' || Boolean(state.boot && !version)
+            const preparing = !needsCheck && state.status !== 'ready' && state.status !== 'idle'
+            const needsModel = Boolean(
+              version && !preparing && !state.piSettings?.defaultProvider && !state.piSettings?.defaultModel
+            )
+            const ready = !needsCheck && !preparing && !needsModel
+            const label = needsCheck ? t('需要检查') : preparing ? t('正在准备') : needsModel ? t('先连接模型') : ready ? t('已就绪') : t('正在准备')
+            return (
+              <>
+                <span className={clsx('status-dot', needsCheck || needsModel ? 'is-error' : ready ? 'is-ready' : 'is-starting')} />
+                <span>{label}</span>
+              </>
+            )
+          })()}
         </button>
       </div>
 
@@ -757,7 +824,7 @@ export function Sidebar(): ReactNode {
         <p className="modal-text">
           {state.settings.language === 'en' ? 'The session will be moved to ' : '会话记录会被移到 '}
           <code>{shortenPath(state.boot?.sessionsRoot)}/.trash</code>
-          {state.settings.language === 'en' ? '. You can undo this from the notification within 24 hours. Files changed by pi are not affected.' : '，24 小时内可在提示条里「撤销」。pi 在磁盘上改过的文件不受影响。'}
+          {state.settings.language === 'en' ? '. You can undo this from the notification within 24 hours. Files changed by Pi are not affected.' : '，24 小时内可在提示条里「撤销」。Pi 在磁盘上改过的文件不受影响。'}
         </p>
       </Modal>
       <Modal

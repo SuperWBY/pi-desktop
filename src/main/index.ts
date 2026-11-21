@@ -1,3 +1,7 @@
+import { sendCreatorControl } from './creator-control'
+import { validCreatorAction, isCreatorState, decodeCreatorRecord, type CreatorState } from '@shared/creator'
+import { installCreatorDraft, listCreatedPlugins } from './creator'
+import { resolvePiCliJs } from './pi-exec'
 import { chromePairingPath, prepareChromePairing } from '../../extensions/computer-use/src/chrome-bridge-pairing'
 import {
   app,
@@ -7,6 +11,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  nativeTheme,
   Notification,
   powerMonitor,
   screen,
@@ -35,6 +40,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import type {
   AddProjectResult,
+  AssistantMessage,
   Bootstrap,
   CustomProviderEntry,
   ModelsConfig,
@@ -43,11 +49,15 @@ import type {
   PiRecord,
   PiState,
   PiSettings,
+  ScheduleInterpretationInput,
   SessionPermission,
+  SessionPermissionChange,
   SessionSecurity,
   Settings
 } from '@shared/types'
 import { PiProcess } from './pi'
+import { registerDictation } from './dictation'
+import { MediaPreview, mediaScheme, registerMediaScheme } from './media-preview'
 import { prepareComputerUseRuntime } from './computer-use-runtime'
 import { findExistingComputerUse } from './existing-computer-use'
 import {
@@ -56,21 +66,24 @@ import {
 } from './browser'
 import { importChromeCookies, listChromeProfiles, previewChromeProfile } from './chrome-import'
 import { browserBridgePath, startBrowserBridge, stopBrowserBridge } from './browser-bridge'
+import { externalBrowserFrame } from './external-browser-preview'
 import { augmentedPath, piVersion } from './pi-locate'
 import { resolvePiPath } from './pi-runtime'
 import { projectTrustStatus, setProjectTrust } from './project-trust'
 import { checkForUpdate, downloadUpdate, openReleasePage } from './update'
-import { listAuthProviders, removeAuthProvider, saveApiKey } from './auth-store'
+import { listAuthProviders, removeAuthProvider, saveApiKey, validateApiKey } from './auth-store'
 import { cancelOAuth, listOAuthProviders, respondOAuth, startOAuth } from './pi-auth'
 import { deleteSession, listSessions, restoreSession, searchSessions, sessionExists, sessionsRoot } from './sessions'
 import { listWorkspaceFiles } from './workspace-files'
 import { inspectPackage } from './package-inspect'
-import { createSandbox, sandboxStatus } from './sandbox'
+import { createSandbox, sandboxStatus, validNetworkHost } from './sandbox'
 import { proxyEnv } from './network-env'
 import { appendSandboxAudit, readSandboxAudit } from './sandbox-audit'
 import { searchPackageCatalog } from './package-catalog'
+import { getPackageDetails } from './package-details'
 import { browserRouterStatus, startCdpBrowser } from './browser-router-status'
-import { isTemporaryWorkspace } from '@shared/paths'
+import { isTemporaryWorkspace, pathsEqual, projectReadOnly } from '@shared/paths'
+import { desktopNotifyCopy } from '@shared/notification-copy'
 import { loadSettings, saveSettings, settingsFile } from './settings'
 import { jevEnv, jevStatus, saveJevSettings } from './jev-store'
 import { validateCron } from './schedule-cadence'
@@ -91,8 +104,11 @@ import {
 import { countSkills, listConnectors, listSkills, readSkillFile } from './skills'
 import { listMcpConnectors, removeMcpConnector, saveMcpConnector, testMcpConnector } from './mcp-connectors'
 import type { McpConnectorInput } from '@shared/types'
-import { listPackages, listPackagesAsync, runPiPackageCommand } from './packages'
+import { listPackagesAsync, runPiPackageCommand, validPackageSourceArg } from './packages'
 import { scheduler } from './schedules'
+import { createPackageTranslator } from './package-translation'
+import { translatePackageTexts, stopPackageTranslations } from './package-translation-model'
+import { interpretSchedule } from './schedule-interpret'
 import { listSessionNotices } from './session-notices'
 import { rememberActiveSession } from './active-sessions'
 import { usageSummary } from './usage'
@@ -103,8 +119,11 @@ process.env.PI_DESKTOP_ELECTRON ||= process.execPath
 
 let mainWindow: BrowserWindow | null = null
 let proc: PiProcess | null = null
+registerMediaScheme()
+const mediaPreview = new MediaPreview()
 let changingSessionPermission = false
 const processes = new Map<string, PiProcess>()
+const runningProcesses = new Set<PiProcess>()
 let sessionCounter = 0
 let permissionGuideWindow: BrowserWindow | null = null
 type PiInstallResult = { ok: boolean; piPath?: string; piVersion?: string | null; output?: string; error?: string }
@@ -259,6 +278,59 @@ function send(channel: string, payload: unknown): void {
   }
 }
 
+// Keep Notification instances alive until click/close so macOS delivers the click.
+const liveNotifications = new Set<Notification>()
+
+function showDesktopNotification(payload: {
+  title?: string
+  body?: string
+  cwd?: string | null
+  sessionPath?: string | null
+}): boolean {
+  if (!Notification.isSupported()) return false
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) return false
+  const notification = new Notification({
+    title: payload?.title?.trim() || 'Pi',
+    body: payload?.body ?? ''
+  })
+  liveNotifications.add(notification)
+  const release = (): void => {
+    liveNotifications.delete(notification)
+  }
+  notification.once('click', () => {
+    release()
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    if (payload?.sessionPath) {
+      mainWindow.webContents.send('notify:open-session', {
+        cwd: payload.cwd ?? null,
+        sessionPath: payload.sessionPath
+      })
+    }
+  })
+  notification.once('close', release)
+  notification.once('failed', release)
+  if (process.env.PI_DESKTOP_NOTIFY_LOG) {
+    try {
+      console.log(
+        '[notify:desktop]',
+        JSON.stringify({
+          title: payload?.title,
+          body: payload?.body,
+          cwd: payload?.cwd ?? null,
+          sessionPath: payload?.sessionPath ?? null
+        })
+      )
+    } catch {
+      /* ignore */
+    }
+  }
+  notification.show()
+  return true
+}
+
 const sessionUiRequests = new SessionUiRequests(
   (record) => send('pi:record', record),
   (owner, response) => (owner as PiProcess).write(response),
@@ -295,18 +367,75 @@ function sessionKey(sessionPath: string): string {
   return `session:${sessionPath}`
 }
 
+function runningSessionPaths(): string[] {
+  return [...runningProcesses].flatMap((process) => {
+    const path = process.sessionPath
+    return path && processes.get(sessionKey(path)) === process ? [path] : []
+  })
+}
+
+function publishRunningSessions(): void {
+  send('pi:record', { type: 'desktop_running_sessions', paths: runningSessionPaths() })
+}
+
 function bindSessionPath(process: PiProcess, path: string | null): void {
+  const changed = process.sessionPath !== path || Boolean(path && processes.get(sessionKey(path)) !== process)
   if (process.sessionPath && process.sessionPath !== path && processes.get(sessionKey(process.sessionPath)) === process) {
     processes.delete(sessionKey(process.sessionPath))
   }
   process.sessionPath = path
   if (path) processes.set(sessionKey(path), process)
+  if (changed && runningProcesses.has(process)) publishRunningSessions()
 }
 
+const creatorStates = new WeakMap<PiProcess, CreatorState>()
+const creatorOperations = new WeakSet<PiProcess>()
+
 function wireProcess(process: PiProcess, key: string): void {
-  process.on('record', (record: PiRecord) => {
+  let heldStderr = ''
+  let lastAssistantFailed = false
+  process.on('record', (rawRecord: PiRecord) => {
+    const record = decodeCreatorRecord(rawRecord) as PiRecord
+    if (record.type === 'agent_start') {
+      process.blockedNetworkHost = undefined
+      if (!runningProcesses.has(process)) {
+        lastAssistantFailed = false
+        runningProcesses.add(process)
+        publishRunningSessions()
+        if (!process.sessionPath) {
+          // A fresh chat may only get a path when its first turn starts.
+          void process.send<PiState>({ type: 'get_state' }).then((result) => {
+            const path = result.data?.sessionFile
+            if (result.success && path && !process.sessionPath && process.alive && processes.get(key) === process) {
+              bindSessionPath(process, path)
+            }
+          }).catch(() => undefined)
+        }
+      }
+    } else if (record.type === 'message_end') {
+      const message = record.message as AssistantMessage | undefined
+      if (message?.role === 'assistant') lastAssistantFailed = Boolean(message.errorMessage)
+    } else if (record.type === 'agent_settled' && runningProcesses.delete(process)) {
+      publishRunningSessions()
+      const settings = loadSettings()
+      if (settings.notifyOnFinish !== false) {
+        showDesktopNotification({
+          ...desktopNotifyCopy(lastAssistantFailed ? 'error' : 'done', settings.language),
+          cwd: process.cwd,
+          sessionPath: process.sessionPath ?? (key.startsWith('session:') ? key.slice('session:'.length) : null)
+        })
+      }
+    }
+    if (record.type === 'extension_ui_request' && record.method === 'creator_state') {
+      const value = record.state as CreatorState | undefined
+      if (isCreatorState(value)) creatorStates.set(process, value)
+    }
+    if (record.type === 'extension_ui_request' && record.method === 'creator_result') return
     if (sessionUiRequests.receive(process, record)) return
-    if (proc === process) send('pi:record', record)
+    if (proc === process) {
+      send('pi:record', record)
+      return
+    }
   })
   process.on('stderr', (chunk: string) => {
     const visible: string[] = []
@@ -317,7 +446,12 @@ function wireProcess(process: PiProcess, key: string): void {
         const host = match?.[1]
         const port = match?.[2] ? Number(match[2]) : undefined
         appendSandboxAudit({ type: 'network_denied', host, port, line: line.slice(0, 500) })
-        if (host && proc === process) send('sandbox:domain-denied', { host, port })
+        if (host && validNetworkHost(host)) {
+          process.blockedNetworkHost = host
+          if (proc === process) send('sandbox:domain-denied', {
+            host, port, sessionPath: process.sessionPath, offline: process.security.network === 'off'
+          })
+        }
       } else if (process.sandboxed && /Allowed by config rule:/i.test(line)) {
         const match = line.match(/Allowed by config rule:\s*([^\s:]+)(?::(\d+))?/i)
         appendSandboxAudit({ type: 'network_allowed', host: match?.[1], port: match?.[2] ? Number(match[2]) : undefined, line: line.slice(0, 500) })
@@ -327,9 +461,20 @@ function wireProcess(process: PiProcess, key: string): void {
         visible.push(line)
       }
     }
-    if (visible.length && proc === process) send('pi:stderr', `${visible.join('\n')}\n`)
+    if (visible.length) {
+      const text = `${visible.join('\n')}\n`
+      if (proc === process) send('pi:stderr', text)
+      else heldStderr += text
+    }
   })
+  const flushStderr = (): void => {
+    if (!heldStderr || proc !== process) return
+    send('pi:stderr', heldStderr)
+    heldStderr = ''
+  }
+  ;(process as PiProcess & { flushStderr?: () => void }).flushStderr = flushStderr
   process.on('exit', (info: { code: number | null; signal: string | null; intentional?: boolean }) => {
+    if (runningProcesses.delete(process)) publishRunningSessions()
     if (process.sandboxed) appendSandboxAudit({ type: 'exit', code: info.code, signal: info.signal })
     sessionUiRequests.drop(process)
     if (processes.get(key) === process) processes.delete(key)
@@ -350,6 +495,7 @@ function stopProcess(process: PiProcess): void {
   for (const [candidate, value] of processes) {
     if (value === process) processes.delete(candidate)
   }
+  if (runningProcesses.delete(process)) publishRunningSessions()
   process.stop()
 }
 
@@ -409,10 +555,13 @@ async function doOpenSession(options: {
   sessionPath?: string | null
   scratch?: boolean
   permission?: SessionPermission
+  network?: 'model' | 'off'
+  allowedNetworkHosts?: string[]
   replace?: PiProcess
   emptySession?: boolean
 }): Promise<OpenSessionResult> {
   const english = loadSettings().language === 'en'
+  if(options.replace&&creatorOperations.has(options.replace))return {ok:false,error:english?'Wait for the creator operation to finish.':'请等待创意模式操作结束后再重启会话。'}
   const requested = options.cwd?.trim()
   if (!options.scratch && (!requested || !existsSync(requested) || !statSync(requested).isDirectory())) {
     return { ok: false, error: english ? 'Please choose an existing folder.' : '请选择一个存在的文件夹。' }
@@ -427,6 +576,7 @@ async function doOpenSession(options: {
     if (existing?.alive) {
       proc = existing
       sessionUiRequests.activate(existing)
+      ;(existing as PiProcess & { flushStderr?: () => void }).flushStderr?.()
       try {
         const stateResponse = await existing.send<{ sessionFile?: string | null }>(
           { type: 'get_state' },
@@ -435,7 +585,7 @@ async function doOpenSession(options: {
         const existingPath = stateResponse.data?.sessionFile ?? options.sessionPath ?? null
         const existingScratch = existing.cwd === scratchRoot
         if (existingPath) rememberActiveSession(existing.cwd, existingPath)
-        if (!existingScratch && !isTemporaryWorkspace(existing.cwd)) {
+        if (!existingScratch && !isTemporaryWorkspace(existing.cwd, scratchRoot)) {
           saveSettings({
             lastWorkspace: existing.cwd,
             workspaces: [...loadSettings().workspaces, existing.cwd]
@@ -462,7 +612,15 @@ async function doOpenSession(options: {
 
   const settings = loadSettings()
   const permission = options.permission ?? (settings.toolApprovalMode === 'all' ? 'ask' : 'review')
-  const needsSandbox = permission !== 'full' && settings.sandboxEnabled === true
+  const network = options.network ?? settings.sandboxNetwork ?? 'model'
+  const wantsSandbox = permission !== 'full'
+  const readOnly = projectReadOnly(settings, cwd)
+  const networkHosts = options.allowedNetworkHosts ?? []
+  const sandboxSettings = {
+    ...settings,
+    sandboxNetwork: network,
+    sandboxAllowedDomains: [...(settings.sandboxAllowedDomains ?? []), ...networkHosts]
+  }
   const piPath = resolvePiPath(settings.piPath)
   const process = new PiProcess()
   const key = targetKey ?? `new:${cwd}:${++sessionCounter}`
@@ -475,21 +633,24 @@ async function doOpenSession(options: {
     const infoDir = join(app.getPath('userData'), 'computer-use-sessions')
     mkdirSync(infoDir, { recursive: true, mode: 0o700 })
     process.desktopToolInfoFile = join(infoDir, `${randomUUID()}.json`)
+    const creatorRuntime = app.isPackaged ? prepareComputerUseRuntime(join(app.getAppPath(), 'extensions', 'creator'), app.getPath('userData'), 'creator') : join(app.getAppPath(), 'extensions', 'creator')
+    const creatorCli = /\.[cm]?js$/.test(piPath) ? piPath : resolvePiCliJs(piPath)
     const additionalArgs = [
       '--extension', join(runtime, 'src', 'desktop-access-extension.ts'),
+      '--extension', join(creatorRuntime, 'index.ts'),
       '--skill', join(runtime, 'desktop-guidance')
     ]
-    const sandbox = needsSandbox ? createSandbox(cwd, settings) : null
-    if (needsSandbox && !sandbox) {
-      throw new Error('沙箱已启用，但当前环境没有可用的 sandbox runtime 或 Node.js。请在设置中关闭沙箱后重试。')
+    const sandbox = wantsSandbox ? createSandbox(cwd, sandboxSettings) : null
+    if (wantsSandbox && !sandbox && (network === 'off' || readOnly)) {
+      throw new Error(english ? 'File and network protection is unavailable on this device.' : '当前设备无法应用文件和网络保护。请检查连接与诊断设置。')
     }
     if (sandbox) {
       appendSandboxAudit({
         type: 'start',
         cwd,
-        mode: settings.sandboxMode ?? 'workspace-write',
-        network: settings.sandboxNetwork ?? 'model',
-        domains: settings.sandboxAllowedDomains ?? []
+        mode: readOnly ? 'read-only' : 'workspace-write',
+        network,
+        domains: sandboxSettings.sandboxAllowedDomains
       })
     }
     await process.start({
@@ -503,11 +664,12 @@ async function doOpenSession(options: {
         permission,
         mode: permission === 'full' ? 'never' : permission === 'ask' ? 'all' : 'dangerous',
         sandboxed: Boolean(sandbox),
-        ...(sandbox ? { files: settings.sandboxMode ?? 'workspace-write', network: settings.sandboxNetwork ?? 'model' } : {})
+        files: sandbox ? (readOnly ? 'read-only' : 'workspace-write') : undefined,
+        network: sandbox ? network : 'unrestricted'
       },
-      extraEnv: { ...jevEnv(), ...proxyEnv(settings) },
+      extraEnv: { ...jevEnv(), ...proxyEnv(settings), PI_DESKTOP_NETWORK: wantsSandbox ? network : 'unrestricted', PI_DESKTOP_CREATOR_CLI: creatorCli ?? '', PI_DESKTOP_CREATOR_FILES: readOnly ? 'read-only' : 'workspace-write' },
       sandbox: sandbox ?? undefined,
-      appendSystemPrompt: scheduleGuidance()
+      appendSystemPrompt: `${scheduleGuidance()}\n\nWhen your final answer delivers a working website or a specific web page the user needs to return to, link to it as [Page title](https://example.com "pi:website"). Use the actual URL, including an HTTP localhost URL for a running local preview. Use ordinary links for citations and pages visited only for research.`
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -519,6 +681,7 @@ async function doOpenSession(options: {
     }
   }
 
+  process.allowedNetworkHosts = networkHosts
   try {
     const response = await process.send<{ sessionFile?: string | null }>(
       { type: 'get_state' },
@@ -540,7 +703,7 @@ async function doOpenSession(options: {
     if (sessionFile) rememberActiveSession(cwd, sessionFile)
 
     saveSettings(
-      scratch || isTemporaryWorkspace(cwd)
+      scratch || isTemporaryWorkspace(cwd, scratchRoot)
         ? {}
         : {
             lastWorkspace: cwd,
@@ -550,6 +713,7 @@ async function doOpenSession(options: {
     processes.set(key, process)
     bindSessionPath(process, sessionFile)
     proc = process
+    ;(process as PiProcess & { flushStderr?: () => void }).flushStderr?.()
     sessionUiRequests.activate(process)
     if (options.replace) stopProcess(options.replace)
     publishPendingSessionRequests()
@@ -559,11 +723,11 @@ async function doOpenSession(options: {
     stopProcess(process)
     sessionUiRequests.drop(process)
     const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, error: english ? `Pi is not ready: ${message}` : `pi 没有就绪：${message}` }
+    return { ok: false, error: english ? `Pi is not ready: ${message}` : `Pi 没有就绪：${message}` }
   }
 }
 
-async function setSessionPermission(input: { cwd: string; sessionPath: string | null; permission: SessionPermission }): Promise<SessionSecurity> {
+async function setSessionPermission(input: SessionPermissionChange): Promise<SessionSecurity> {
   const settings = loadSettings()
   const english = settings.language === 'en'
   const current = proc
@@ -571,13 +735,17 @@ async function setSessionPermission(input: { cwd: string; sessionPath: string | 
     throw new Error(english ? 'The active conversation changed. Try again.' : '当前会话已切换，请重试。')
   }
   if (input.permission !== 'ask' && input.permission !== 'review' && input.permission !== 'full') throw new Error('Invalid permission mode.')
-  if (input.permission === 'full' && settings.allowFullAccess !== true) {
-    throw new Error(english ? 'Enable full access in Settings first.' : '请先在设置中允许使用完全访问。')
+  if (input.network !== undefined && input.network !== 'model' && input.network !== 'off') throw new Error('Invalid network preference.')
+  if (input.allowHost !== undefined && (input.allowHost !== current.blockedNetworkHost || !validNetworkHost(input.allowHost))) {
+    throw new Error(english ? 'This destination is no longer awaiting permission.' : '该网站已不在此次拦截记录里。')
   }
-  if (current.security.permission === input.permission) return current.security
+  const network = input.network ?? (current.security.network === 'off' ? 'off'
+    : current.security.network === 'model' ? 'model' : settings.sandboxNetwork)
+  if (current.security.permission === input.permission && !input.allowHost &&
+    (!input.network || current.security.network === network)) return current.security
 
   const busy = english ? 'Wait for the current operation to finish before switching permissions.' : '请等待当前操作结束后再切换权限。'
-  if (current.hasPendingWork || sessionUiRequests.pendingOwners().includes(current)) throw new Error(busy)
+  if (creatorOperations.has(current) || current.hasPendingWork || sessionUiRequests.pendingOwners().includes(current)) throw new Error(busy)
   changingSessionPermission = true
   try {
     const state = await current.send<PiState>({ type: 'get_state' }, 5000)
@@ -587,11 +755,15 @@ async function setSessionPermission(input: { cwd: string; sessionPath: string | 
     if (actualPath !== input.sessionPath) throw new Error(english ? 'The active conversation changed. Try again.' : '当前会话已切换，请重试。')
     // Pi reserves a path before it writes the first message. Reopen that same
     // path in an empty conversation so the composer keeps its draft owner.
+    const allowedNetworkHosts = input.allowHost
+      ? [...new Set([...current.allowedNetworkHosts, input.allowHost])]
+      : current.allowedNetworkHosts
     const opened = await doOpenSession({
-      cwd: current.cwd, sessionPath: actualPath, permission: input.permission,
+      cwd: current.cwd, sessionPath: actualPath, permission: input.permission, network, allowedNetworkHosts,
       replace: current, emptySession: state.data.messageCount === 0
     })
     if (!opened.ok || !proc) throw new Error(opened.error ?? (english ? 'Could not change permissions.' : '无法切换权限。'))
+    send('pi:record', { type: 'desktop_session_security', sessionPath: proc.sessionPath, security: proc.security })
     return proc.security
   } finally {
     changingSessionPermission = false
@@ -615,7 +787,9 @@ const IGNORED_DIRS = new Set([
 function runGit(cwd: string, args: string[]): string {
   const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
   try {
-    return execFileSync('git', args, {
+    // core.quotePath=false keeps non-ASCII filenames readable instead of
+    // octal-escaped, so status paths and numstat keys stay real filenames.
+    return execFileSync('git', ['-c', 'core.quotePath=false', ...args], {
       cwd,
       encoding: 'utf8',
       timeout: 15_000,
@@ -631,7 +805,7 @@ function runGit(cwd: string, args: string[]): string {
 function runGitCapture(cwd: string, args: string[]): { ok: boolean; output: string; error?: string } {
   const { execFileSync } = require('node:child_process') as typeof import('node:child_process')
   try {
-    const output = execFileSync('git', args, {
+    const output = execFileSync('git', ['-c', 'core.quotePath=false', ...args], {
       cwd,
       encoding: 'utf8',
       timeout: 30_000,
@@ -666,7 +840,10 @@ function commandTimeout(type: string): number {
   return 60_000
 }
 
+let cancelDictation: (() => void) | undefined
+
 function registerIpc(): void {
+  cancelDictation = registerDictation(() => mainWindow?.webContents)
   ipcMain.on('desktop:permission-guide-close', (event) => {
     if (permissionGuideWindow && (event.sender === permissionGuideWindow.webContents || event.sender === mainWindow?.webContents)) permissionGuideWindow.close()
   })
@@ -677,6 +854,8 @@ function registerIpc(): void {
     const icon = nativeImage.createFromPath(join(app.getAppPath(), 'build', 'icon.png')).resize({ width: 48, height: 48 })
     event.sender.startDrag({ file: bundle, icon })
   })
+  ipcMain.handle('app:system-theme', () => nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
+  nativeTheme.on('updated', () => send('app:system-theme', nativeTheme.shouldUseDarkColors ? 'dark' : 'light'))
   ipcMain.handle('desktop:permission-check', async () => {
     const value = await desktopPermissionService()
     const status = await value.service.check()
@@ -695,6 +874,7 @@ function registerIpc(): void {
   ipcMain.handle('app:download-update', () => downloadUpdate((progress) => send('app:update-progress', progress)))
   ipcMain.handle('auth:list', () => listAuthProviders())
   ipcMain.handle('auth:save-api-key', (_event, provider: string, key: string) => saveApiKey(provider, key))
+  ipcMain.handle('auth:validate-api-key', (_event, provider: string, key: string) => validateApiKey(provider, key))
   ipcMain.handle('auth:remove', (_event, provider: string) => removeAuthProvider(provider))
   ipcMain.handle('auth:oauth-providers', () => listOAuthProviders())
   ipcMain.handle('auth:oauth-start', (event, provider: string) => startOAuth(provider, event.sender))
@@ -724,6 +904,7 @@ function registerIpc(): void {
       piSettings: loadPiSettings(),
       piSettingsFile: piSettingsFile(),
       agentDir: agentDir(),
+      runningSessionPaths: runningSessionPaths(),
       interruptedUi: (() => { try { return uiJournal().interrupted() } catch { return null } })()
     }
   })
@@ -795,9 +976,10 @@ function registerIpc(): void {
     const current = proc
     return current?.alive && current.sessionPath === sessionPath ? current.security : null
   })
-  ipcMain.handle('session:set-permission', (_event, input: Parameters<typeof setSessionPermission>[0]) =>
-    enqueue(() => setSessionPermission(input))
-  )
+  ipcMain.handle('session:set-permission', (event, input: SessionPermissionChange) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('Only the main window can change conversation permissions.')
+    return enqueue(() => setSessionPermission(input))
+  })
 
   ipcMain.handle(
     'session:open',
@@ -813,7 +995,7 @@ function registerIpc(): void {
         return { type: 'response', command: String(command.type), success: false, error: 'Session permissions are changing.' }
       }
       if (!process) {
-        return { type: 'response', command: String(command.type), success: false, error: 'pi 没有在运行' }
+        return { type: 'response', command: String(command.type), success: false, error: 'Pi 没有在运行' }
       }
       try {
         const result = await process.send<PiState>(command, timeoutMs ?? commandTimeout(String(command.type)))
@@ -832,6 +1014,45 @@ function registerIpc(): void {
     }
   )
 
+  ipcMain.handle('creator:list', async (event) => {
+    if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error('Invalid creator request.')
+    const settings = loadSettings()
+    return listCreatedPlugins([...settings.workspaces, ...(proc ? [proc.cwd] : []), scratchWorkspace()])
+  })
+  ipcMain.handle('creator:action', async (event, input: unknown, sessionPath: unknown) => {
+    const process = proc
+    if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame || !validCreatorAction(input) || (sessionPath !== null && typeof sessionPath !== 'string')) return {ok:false,error:'Invalid creator request.'}
+    if (!process || sessionPath !== process.sessionPath) return {ok:false,error:'The conversation changed. Try again in the current conversation.'}
+    if (input.action === 'status' && creatorStates.has(process) && (runningProcesses.has(process) || creatorOperations.has(process) || process.hasPendingWork)) {send('pi:record',{type:'extension_ui_request',id:'pi-creator-state',method:'creator_state',state:creatorStates.get(process)});return {ok:true}}
+    if (creatorOperations.has(process) || changingSessionPermission || (input.action !== 'status' && (runningProcesses.has(process) || process.hasPendingWork))) return {ok:false,error:'Wait for the current task to finish.'}
+    if (!['enable','disable','status'].includes(input.action) && (process.security.files === 'read-only' || projectReadOnly(loadSettings(),process.cwd))) return {ok:false,error:'This conversation is read-only.'}
+    if (!['enable','disable','status'].includes(input.action) && !creatorStates.get(process)?.enabled) return {ok:false,error:'Enable Creator mode first.'}
+    creatorOperations.add(process)
+    const command = (value: import('@shared/creator').CreatorAction | {action:'reload'}) => sendCreatorControl(process,value)
+    try {
+      if (input.action === 'install') {
+        const beforePackages=await listPackagesAsync(process.cwd)
+        const installed=await installCreatorDraft({cwd:process.cwd,id:input.id,storage:join(app.getPath('userData'),'creator-plugins'),
+          isConfigured:source=>beforePackages.some(entry=>pathsEqual(entry.path,source)),
+          rollback:source=>runPiPackageCommand(['remove',source],process.cwd,progress=>send('packages:progress',progress)),
+          install:source=>runPiPackageCommand(['install',source],process.cwd,progress=>send('packages:progress',progress)),
+          verify:async(source,name)=>(await listPackagesAsync(process.cwd)).find(entry=>pathsEqual(entry.path,source)&&entry.name===name)?.source??null})
+        if (proc === process) {
+          let reload: import('@shared/creator').CreatorResult
+          try{reload=await command({action:'reload'})}catch{return {ok:true,warning:'Plugin installed. Restart this conversation to load the updated commands.'}}
+          if(!reload.ok)return {ok:true,warning:'Plugin installed. Restart this conversation to load the updated commands.'}
+          const restored=await command({action:'enable'})
+          if(!restored.ok)return {ok:true,warning:`Plugin installed. Re-enter Creator mode to continue editing. ${restored.error??''}`}
+          await command({action:'status'})
+        }
+        return {ok:true,warning:proc===process?installed.warning:'Plugin installed. Open or restart the target conversation to load it.'}
+      }
+      const result=await command(input)
+      return result
+    }catch(error){return {ok:false,error:error instanceof Error?error.message:String(error)}}
+    finally{creatorOperations.delete(process)}
+  })
+
   ipcMain.on('pi:ui-response', (_event, response: Record<string, unknown>) => {
     sessionUiRequests.respond(response)
   })
@@ -849,39 +1070,77 @@ function registerIpc(): void {
   })
   ipcMain.handle('mcp-connectors:remove', (_event, id: string) => removeMcpConnector(id))
   ipcMain.handle('skills:read', (_event, path: string) => readSkillFile(path))
-  ipcMain.handle('packages:list', (_event, cwd: string) => listPackages(cwd))
+  ipcMain.handle('packages:list', (_event, cwd: string) => listPackagesAsync(cwd || homedir()))
   ipcMain.handle('packages:inspect', (_event, source: string, cwd: string) => inspectPackage(source, cwd))
   ipcMain.handle('packages:catalog', (_event, query: string) => searchPackageCatalog(query))
+  const translatePackages = createPackageTranslator(join(app.getPath('userData'), 'market-translations'), (texts, language) => translatePackageTexts(texts, language, scratchWorkspace()))
+  ipcMain.handle('packages:translate', (event, input: import('@shared/types').PackageTranslationRequest) => {
+    if (event.sender !== mainWindow?.webContents) return { ok: false, error: 'model' }
+    const requestId = typeof input?.requestId === 'string' && input.requestId.length <= 100 ? input.requestId : null
+    return translatePackages(input, requestId ? (progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send('packages:translation-progress', { requestId, ...progress })
+    } : undefined)
+  })
+  ipcMain.handle('packages:details', (_event, input: import('@shared/types').PackageDetailsRequest) => getPackageDetails(input))
 
   ipcMain.handle(
     'packages:install',
     (_event, source: string, options: { cwd: string; local?: boolean }) => {
+      if (!validPackageSourceArg(source)) return Promise.resolve({ ok: false, code: null, error: '插件来源不合法。' })
       const args = ['install', source]
       if (options?.local) args.push('--local')
-      return runPiPackageCommand(args, options?.cwd || homedir(), (progress) =>
+      const cwd = typeof options?.cwd === 'string' && options.cwd ? options.cwd : homedir()
+      return runPiPackageCommand(args, cwd, (progress) =>
         send('packages:progress', progress)
       )
     }
   )
 
-  ipcMain.handle('packages:remove', (_event, source: string, cwd: string) =>
-    runPiPackageCommand(['remove', source], cwd || homedir(), (progress) =>
+  ipcMain.handle('packages:remove', async (_event, source: string, cwd: string) => {
+    if (!validPackageSourceArg(source)) return Promise.resolve({ ok: false, code: null, error: '插件来源不合法。' })
+    const workspace=typeof cwd==='string'&&cwd?cwd:homedir()
+    const target=/^\.\.?[\\/]/.test(source)?(await listPackagesAsync(workspace)).find(entry=>entry.source===source&&entry.scope==='user')?.path??source:source
+    return runPiPackageCommand(['remove', target], workspace, (progress) =>
       send('packages:progress', progress)
     )
-  )
+  })
 
-  ipcMain.handle('packages:update', (_event, source: string, cwd: string) =>
-    runPiPackageCommand(['update', source], cwd || homedir(), (progress) =>
+  ipcMain.handle('packages:update', async (_event, source: string, cwd: string) => {
+    if (!validPackageSourceArg(source)) return Promise.resolve({ ok: false, code: null, error: '插件来源不合法。' })
+    const workspace=typeof cwd==='string'&&cwd?cwd:homedir()
+    const target=/^\.\.?[\\/]/.test(source)?(await listPackagesAsync(workspace)).find(entry=>entry.source===source&&entry.scope==='user')?.path??source:source
+    return runPiPackageCommand(['update', target], workspace, (progress) =>
       send('packages:progress', progress)
     )
-  )
+  })
 
   ipcMain.handle('schedules:list', () => scheduler.list())
   ipcMain.handle('usage:summary', (_event, range) => usageSummary(range))
   ipcMain.handle('session:notices', (_event, sessionPath: string) => listSessionNotices(sessionPath))
   ipcMain.handle('schedules:get', (_event, id: string) => scheduler.get(id))
-  ipcMain.handle('schedules:create', (_event, input) => scheduler.create(input))
-  ipcMain.handle('schedules:update', (_event, id: string, patch) => scheduler.update(id, patch))
+  let scheduleRequest: { id: string; controller: AbortController } | null = null
+  ipcMain.handle('schedules:interpret', async (event, id: string, input: ScheduleInterpretationInput) => {
+    if (event.sender !== mainWindow?.webContents || typeof id !== 'string' || !input) return { error: 'invalid' }
+    scheduleRequest?.controller.abort()
+    const controller = new AbortController()
+    scheduleRequest = { id, controller }
+    try {
+      const scratch = scratchWorkspace()
+      const existing = typeof input.taskId === 'string' ? scheduler.get(input.taskId)?.task : undefined
+      const workspace = existing?.projectPath ?? proc?.cwd
+      const project = workspace && workspace !== scratch ? workspace : ''
+      return await interpretSchedule(input, scratch, project, controller.signal, existing)
+    } finally {
+      if (scheduleRequest?.controller === controller) scheduleRequest = null
+    }
+  })
+  ipcMain.handle('schedules:cancel-interpret', (event, id: string) => {
+    if (event.sender === mainWindow?.webContents && scheduleRequest?.id === id) scheduleRequest.controller.abort()
+  })
+  ipcMain.handle('schedules:create', (_event, input, requireFuture?: boolean) =>
+    scheduler.create(input, false, requireFuture === true))
+  ipcMain.handle('schedules:update', (_event, id: string, patch, requireFuture?: boolean) =>
+    scheduler.update(id, patch, requireFuture === true))
   ipcMain.handle('schedules:delete', (_event, id: string) => scheduler.remove(id))
   ipcMain.handle('schedules:set-enabled', (_event, id: string, enabled: boolean) =>
     scheduler.setEnabled(id, enabled)
@@ -925,6 +1184,7 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('browser:preview', (event, doc: string, url: string, candidate?: string) => event.sender === mainWindow?.webContents ? browserPreview(doc, url, candidate) : null)
+  ipcMain.handle('browser:external-preview', (event, sessionId: string, backend: string, doc: string, url: string, generation: string) => event.sender === mainWindow?.webContents ? externalBrowserFrame(sessionId, backend, doc, url, generation) : null)
   ipcMain.handle('browser:reveal-page', (event, doc: string, openPanel = true) => event.sender === mainWindow?.webContents && revealPage(doc, openPanel))
   ipcMain.handle('browser:current', () => panelPage().getFallbackState())
   ipcMain.handle('browser:open', (_event, url: string, separate = false) => panelPage(separate).browserOpen(url))
@@ -962,13 +1222,23 @@ function registerIpc(): void {
     else if (process.platform === 'win32') execFileSync('cmd', ['/c', 'start', 'chrome', 'chrome://extensions'])
     else execFileSync('google-chrome', ['chrome://extensions'])
   })
-  ipcMain.handle('shell:show-item', (_event, path: string) => {
+  ipcMain.handle('shell:show-item', (event, path: string) => {
+    if (event.sender !== mainWindow?.webContents) return
     if (path) shell.showItemInFolder(path)
+  })
+
+  ipcMain.handle('media:preview', async (event, context: { path: string; workspace: string; sessionPath: string | null }) => {
+    const owner = proc
+    if (!owner?.alive || event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame ||
+        typeof context?.workspace !== 'string' || !pathsEqual(context.workspace, owner.cwd) || context.sessionPath !== owner.sessionPath) return null
+    const url = await mediaPreview.issue(owner, owner.cwd, context.path)
+    return proc === owner ? url : null
   })
 
   ipcMain.handle(
     'fs:read-dir',
-    (_event, path: string, options?: { showHidden?: boolean }) => {
+    (event, path: string, options?: { showHidden?: boolean }) => {
+      if (event.sender !== mainWindow?.webContents) return []
       const dir = resolve(path)
       const entries = readdirSync(dir, { withFileTypes: true })
         .filter((entry) => options?.showHidden || !entry.name.startsWith('.'))
@@ -990,7 +1260,8 @@ function registerIpc(): void {
     }
   )
 
-  ipcMain.handle('fs:read-text', (_event, path: string, maxBytes = 200_000) => {
+  ipcMain.handle('fs:read-text', (event, path: string, maxBytes = 200_000) => {
+    if (event.sender !== mainWindow?.webContents) return { ok: false, error: 'not allowed' }
     try {
       const stat = statSync(path)
       if (!stat.isFile()) return { ok: false, error: 'not a file' }
@@ -1005,6 +1276,18 @@ function registerIpc(): void {
       }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  ipcMain.handle('git:branch', async (_event, cwd: string) => {
+    if (typeof cwd !== 'string' || !cwd) return null
+    try {
+      const { stdout } = await execFileAsync('git', ['-c', 'core.quotePath=false', 'symbolic-ref', '--quiet', '--short', 'HEAD'], {
+        cwd: resolve(cwd), encoding: 'utf8', timeout: 2500, windowsHide: true
+      })
+      return stdout.trim() || null
+    } catch {
+      return null
     }
   })
 
@@ -1063,32 +1346,20 @@ function registerIpc(): void {
     return { ...commit, output: [add.output, commit.output].filter(Boolean).join('\n') }
   })
 
-  ipcMain.handle('shell:open-path', async (_event, path: string): Promise<boolean> => {
-    if (!path) return false
+  ipcMain.handle('shell:open-path', async (event, path: string): Promise<boolean> => {
+    if (event.sender !== mainWindow?.webContents || !path) return false
     const error = await shell.openPath(path)
     return error === ''
   })
 
   // Desktop notification, only when the window is not in front: a focused
-  // window already shows the result.
+  // window already shows the result. Click focuses the app and opens that session.
   ipcMain.handle(
     'notify:desktop',
-    (_event, payload: { title?: string; body?: string }): boolean => {
-      if (!Notification.isSupported()) return false
-      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) return false
-      const notification = new Notification({
-        title: payload?.title ?? 'Pi Desktop',
-        body: payload?.body ?? ''
-      })
-      notification.on('click', () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.show()
-          mainWindow.focus()
-        }
-      })
-      notification.show()
-      return true
-    }
+    (
+      _event,
+      payload: { title?: string; body?: string; cwd?: string | null; sessionPath?: string | null }
+    ): boolean => showDesktopNotification(payload ?? {})
   )
 
   ipcMain.handle(
@@ -1113,7 +1384,8 @@ function registerIpc(): void {
     }
   )
 
-  ipcMain.handle('fs:write-text', (_event, path: string, content: string): boolean => {
+  ipcMain.handle('fs:write-text', (event, path: string, content: string): boolean => {
+    if (event.sender !== mainWindow?.webContents) return false
     try {
       writeFileSync(path, content, 'utf8')
       return true
@@ -1220,7 +1492,7 @@ function buildMenu(): void {
       role: 'help',
       submenu: [
         {
-          label: english ? 'Pi documentation' : 'pi 文档',
+          label: english ? 'Pi documentation' : 'Pi 文档',
           click: () => shell.openExternal('https://pi.dev')
         }
       ]
@@ -1267,6 +1539,7 @@ function prepareChromeBridge(): string {
 function createWindow(): void {
   const settings = loadSettings()
   const bounds = settings.windowBounds
+  const initialTheme = settings.theme === 'system' ? (nativeTheme.shouldUseDarkColors ? 'dark' : 'light') : settings.theme
 
   mainWindow = new BrowserWindow({
     width: bounds?.width ?? 1280,
@@ -1276,7 +1549,7 @@ function createWindow(): void {
     minWidth: 860,
     minHeight: 560,
     show: false,
-    backgroundColor: settings.theme === 'light' ? '#f7f6f3' : '#0c0d0f',
+    backgroundColor: initialTheme === 'light' ? '#f7f6f3' : '#0c0d0f',
     ...(process.platform === 'darwin'
       ? {
           titleBarStyle: 'hiddenInset' as const,
@@ -1285,6 +1558,7 @@ function createWindow(): void {
       : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
+      additionalArguments: [`--pi-initial-theme=${initialTheme === 'light' ? 'light' : 'dark'}`],
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
@@ -1293,6 +1567,22 @@ function createWindow(): void {
   })
 
   const background = process.argv.includes('--background')
+  let nativeScrollPhase = false
+  if (process.platform === 'darwin' && process.env.PI_DISABLE_NATIVE_SCROLL_PHASE !== '1') {
+    try {
+      const addonPath = app.isPackaged ? join(process.resourcesPath, 'scroll-phase.node') : join(app.getAppPath(), 'build', 'scroll-phase.node')
+      const addon = require(addonPath) as { start: (callback: (phase: 'begin' | 'end' | 'cancel') => void) => boolean }
+      nativeScrollPhase = addon.start((phase) => {
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) mainWindow.webContents.send('app:scroll-phase', phase)
+      })
+    } catch (error) { console.warn('[scroll-phase] native monitor unavailable:', error) }
+  }
+  if (process.platform === 'darwin') mainWindow.webContents.on('input-event', (_event, input) => {
+    const phase = input.type === 'gestureScrollBegin' ? 'begin'
+      : input.type === 'gestureScrollEnd' || input.type === 'gestureFlingStart' ? 'end'
+      : input.type === 'gesturePinchBegin' ? 'cancel' : null
+    if (phase && (!nativeScrollPhase || phase === 'cancel')) mainWindow?.webContents.send('app:scroll-phase', phase)
+  })
   initBrowser(mainWindow)
   prepareChromeBridge()
   const bridgeReady = startBrowserBridge().catch((error) => {
@@ -1325,6 +1615,11 @@ function createWindow(): void {
       event.preventDefault()
       if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
     }
+  })
+  mainWindow.webContents.on('will-frame-navigate', (event) => {
+    const isArtifact = event.frame?.url.startsWith(`${mediaScheme}:`)
+    const fromArtifact = event.initiator?.url.startsWith(`${mediaScheme}:`)
+    if ((isArtifact || fromArtifact) && event.url !== event.frame?.url) event.preventDefault()
   })
 
   // A renderer can immediately start a Pi child. Publish its bridge before the
@@ -1376,6 +1671,7 @@ if (!gotLock) {
         // icon is optional in development
       }
     }
+    mediaPreview.register(() => proc)
     registerIpc()
     buildMenu()
     createWindow()
@@ -1428,10 +1724,13 @@ if (!gotLock) {
   })
 
   app.on('before-quit', () => {
+    cancelDictation?.()
+    stopPackageTranslations()
     void stopBrowserBridge()
     scheduler.shutdown()
     for (const process of new Set(processes.values())) process.stop()
     processes.clear()
+    runningProcesses.clear()
     proc = null
     sessionUiRequests.dispose()
   })

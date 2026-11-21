@@ -30,7 +30,7 @@ messaging host, and does not enable Chrome remote debugging.
 
 ### Safety
 
-- Password fields are never read or typed into.
+- Password and payment values are masked. Sensitive input requires an explicitly user-provided value or approval for that operation; otherwise Pi Desktop stops for handoff. Existing login and CAPTCHA handoffs remain in place.
 - `chrome://` and extension pages are rejected.
 - The bridge is bound to 127.0.0.1 and authenticated with a per-user key.
 - The extension operates only on the active tab.

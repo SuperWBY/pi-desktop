@@ -5763,35 +5763,74 @@ body.is-resizing .work-panel { transition: none; }
   border-radius: 2px;
 }
 
-/* Terminal tab */
+/* Terminal tab: one continuous terminal surface — head bar, scrollback with
+ * command echoes, inline prompt. Replaces the old output/status/history strips. */
+
+.terminal {
+  background: var(--code-bg);
+}
+
+.terminal-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.terminal-title {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-head-spacer {
+  flex: 1;
+}
+
+.terminal-head .work-check {
+  font-size: 10.5px;
+}
 
 .terminal-output {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 10px;
-  background: var(--code-bg);
+  padding: 10px 10px 2px;
   font-family: var(--mono);
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
-.terminal-output pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--text-dim);
+.terminal-entry {
+  padding-bottom: 10px;
 }
 
-.terminal-status {
+.terminal-echo {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-top: 1px solid var(--border);
-  font-size: 10.5px;
-  color: var(--text-faint);
+  align-items: baseline;
+  gap: 7px;
   font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+}
+
+.terminal-prompt {
+  color: var(--accent-strong);
+  user-select: none;
+}
+
+.terminal-cmd {
+  overflow-wrap: anywhere;
+}
+
+.terminal-echo .terminal-exit {
+  font-size: 10px;
+  line-height: 1;
 }
 
 .terminal-exit.ok,
@@ -5804,17 +5843,44 @@ body.is-resizing .work-panel { transition: none; }
   color: var(--red);
 }
 
+.terminal-output pre {
+  margin: 2px 0 0;
+  padding-left: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-dim);
+}
+
 .terminal-running {
   color: var(--accent-strong);
+}
+
+.terminal-run-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  align-self: center;
+  animation: terminal-run-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes terminal-run-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-run-dot {
+    animation: none;
+  }
 }
 
 .terminal-input {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
-  border-top: 1px solid var(--border);
-  background: var(--panel);
+  gap: 7px;
+  padding: 6px 10px 10px;
 }
 
 .terminal-prompt {
@@ -5828,38 +5894,18 @@ body.is-resizing .work-panel { transition: none; }
   min-width: 0;
   font-family: var(--mono);
   font-size: 11.5px;
+  background: none;
+  border: none;
+  color: var(--text);
+  caret-color: var(--accent-strong);
 }
 
-.terminal-history {
-  max-height: 130px;
-  overflow-y: auto;
-  border-top: 1px solid var(--border);
-  padding: 4px 6px 8px;
-}
-
-.terminal-history-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  height: 22px;
-  padding: 0 4px;
-  border-radius: 5px;
-  text-align: left;
-  font-family: var(--mono);
-  font-size: 10.5px;
+.terminal-input input::placeholder {
   color: var(--text-faint);
 }
 
-.terminal-history-item:hover {
-  background: var(--hover);
-  color: var(--text-dim);
-}
-
-.history-cmd {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.terminal-input input:focus-visible {
+  outline: none;
 }
 
 /* Artifacts tab */

@@ -25,7 +25,7 @@ async function main() {
       let settings = {
         theme: 'dark', language: 'zh-CN', workspaces: ['/work/alpha', '/work/beta'],
         lastWorkspace: '/work/alpha', lastSessionPath: '/session/1', workPanelOpen: true, workPanelWidth: 360,
-        workPanelTab: 'changes', followStream: true, turnAutoFold: true
+        workPanelTab: 'changes', workPanelTabs: ['home', 'changes', 'terminal'], followStream: true, turnAutoFold: true
       }
       settings = { ...settings, ...JSON.parse(sessionStorage.getItem('mock-settings') || '{}') }
       const models = [
@@ -123,6 +123,11 @@ async function main() {
           if (['prompt', 'steer', 'follow_up'].includes(command.type)) window.sentCommands.push(command)
           if (['steer', 'follow_up'].includes(command.type) && window.failNextQueue) { window.failNextQueue = false; return { success: false, error: 'queue rejected' } }
           if (command.type === 'set_model') currentModel = models.find((model) => model.id === command.modelId)
+          if (command.type === 'bash') {
+            if (/fail|push|missing/.test(command.command)) return { success: false, error: 'fatal: unable to access remote: authentication failed' }
+            if (/npm test/.test(command.command)) return await new Promise((resolve) => setTimeout(() => resolve({ success: true, data: { exitCode: 0, output: 'Mock suite passed\n  42 tests ✓' } }), 2500))
+            return { success: true, data: { exitCode: 0, output: `> pi-desktop@0.7.8 build\n> vite build\n\ndist/index.html                  1.2 kB\nassets/index-BvQyLwNb.js  2,546.6 kB\n✓ built in 579ms` } }
+          }
           return { success: true, data: ({
             get_state: { thinkingLevel: 'high', model: currentModel, isStreaming: window.mockStreaming === true },
             get_messages: { messages: currentSessionPath === '/session/new' ? [] : messages }, get_session_stats: {}, get_available_models: { models },
@@ -254,6 +259,53 @@ async function main() {
       assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'light')
       if (errors.length) throw Error(`页面异常: ${errors.join('; ')}`)
       console.log('跟随系统主题检查通过：实时切换、重启恢复、手动覆盖与设置状态')
+      return
+    }
+    if (process.env.HEADLESS_UI_ONLY === 'terminal-shots') {
+      const shots = path.resolve(__dirname, '../output/terminal')
+      fs.mkdirSync(shots, { recursive: true })
+      const openTerminal = async () => {
+        await page.locator('.work-tab-button').filter({ hasText: '终端' }).click()
+        await page.locator('.terminal-input input').waitFor()
+      }
+      const runCommand = async (text) => {
+        await page.locator('.terminal-input input').fill(text)
+        await page.keyboard.press('Enter')
+      }
+      await openTerminal()
+      await runCommand('npm run build')
+      await page.getByText('✓ built in 579ms').waitFor()
+      await runCommand('git push')
+      await page.getByText('authentication failed').waitFor()
+      await runCommand('npm test')
+      await page.locator('.terminal-run-dot').waitFor()
+      await page.screenshot({ path: path.join(shots, 'dark-running.png'), animations: 'disabled' })
+      await page.getByText('Mock suite passed').waitFor()
+      const terminalInput = page.locator('.terminal-input input')
+      await terminalInput.fill('echo not submitted')
+      await terminalInput.press('ArrowUp')
+      if (await terminalInput.inputValue() !== 'npm test') throw Error('Up must recall the latest command')
+      await terminalInput.press('ArrowUp')
+      if (await terminalInput.inputValue() !== 'git push') throw Error('Up must recall the preceding command')
+      await terminalInput.press('ArrowDown')
+      await terminalInput.press('ArrowDown')
+      if (await terminalInput.inputValue() !== 'echo not submitted') throw Error('Down must restore the unsubmitted command')
+      await page.screenshot({ path: path.join(shots, 'dark.png'), animations: 'disabled' })
+      await page.getByRole('button', { name: '清空', exact: true }).click()
+      if (await page.locator('.terminal-echo').count()) throw Error('Clear must remove completed scrollback')
+      if ((await page.locator('.terminal-output').innerText()).includes('Mock suite passed')) throw Error('Clear must remove completed output')
+      await terminalInput.press('ArrowUp')
+      if (await terminalInput.inputValue() !== 'npm test') throw Error('Clearing scrollback must preserve command recall')
+      await page.evaluate(() => sessionStorage.setItem('mock-settings', JSON.stringify({ ...JSON.parse(sessionStorage.getItem('mock-settings')), theme: 'light' })))
+      await page.reload()
+      await page.waitForSelector('.turn')
+      await openTerminal()
+      await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
+      await runCommand('npm run build')
+      await page.getByText('✓ built in 579ms').waitFor()
+      await page.screenshot({ path: path.join(shots, 'light.png'), animations: 'disabled' })
+      if (errors.length) throw Error(`页面异常: ${errors.join('; ')}`)
+      console.log('terminal-shots: dark-running / dark / light 已保存到 output/terminal/')
       return
     }
     if (process.env.HEADLESS_UI_ONLY === 'settings-shots') {

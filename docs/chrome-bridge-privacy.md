@@ -1,6 +1,6 @@
 # Pi Desktop Chrome Bridge — Privacy Policy
 
-Last updated: 2026-11-09
+Last updated: 2026-11-21
 
 Pi Desktop Chrome Bridge is an optional companion extension for the local
 Pi Desktop application. It has one purpose: let the user's own Pi Desktop app
@@ -10,14 +10,17 @@ browser task.
 ## What the extension accesses
 
 - The URL, title, and visible interactive elements of the **active tab**.
-- Element labels, roles, values (except password fields), and file metadata
+- Element labels, roles, non-sensitive values, and file metadata
   needed to identify a target.
 - The page's visible text when Pi Desktop explicitly requests a text read.
 - The extension's pairing key, stored in Chrome's extension storage, so it can
   authenticate to the local Pi Desktop bridge.
 
-Password field values are never returned. Typing into password fields is
-refused.
+Password and payment fields are marked as sensitive and their values are not
+returned. Typing or key actions on these fields require explicit authorization:
+the user provides the value for the operation or approves it in Pi Desktop's
+confirmation dialog. Without that authorization, the operation stops for user
+handoff. Existing login and CAPTCHA handoffs remain in place.
 
 ## Where data goes
 

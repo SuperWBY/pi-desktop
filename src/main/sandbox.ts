@@ -2,9 +2,10 @@ import { app } from 'electron'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { Settings } from '@shared/types'
+import { canonicalWorkspacePath, projectReadOnly } from '@shared/paths'
 import { agentDir } from './pi-settings'
 import { sessionsRoot } from './sessions'
 
@@ -30,6 +31,7 @@ const MODEL_DOMAINS = [
   '*.googleapis.com',
   'openrouter.ai',
   '*.openrouter.ai',
+  'opencode.ai',
   'api.deepseek.com',
   '*.deepseek.com',
   'api.groq.com',
@@ -103,7 +105,11 @@ function validDomain(value: string): boolean {
   return /^(\*\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?::[0-9]{1,5})?$/i.test(value)
 }
 
-function allowedDomains(settings: Settings): string[] {
+export function validNetworkHost(value: string): boolean {
+  return !value.includes('*') && !value.includes(':') && validDomain(value)
+}
+
+export function allowedDomains(settings: Settings): string[] {
   if (settings.sandboxNetwork === 'off') return []
   const custom = Array.isArray(settings.sandboxAllowedDomains)
     ? settings.sandboxAllowedDomains.map((value) => value.trim()).filter(validDomain)
@@ -114,20 +120,30 @@ function allowedDomains(settings: Settings): string[] {
 export function createSandbox(cwd: string, settings: Settings, additionalRuntimeWrites: string[] = []): SandboxLaunch | null {
   if (!sandboxAvailable()) return null
   const workspace = resolve(cwd || homedir())
-  const runtimeWrites = [agentDir(), sessionsRoot(), join(app.getPath('userData'), 'computer-use-sessions'), tmpdir(), ...additionalRuntimeWrites]
-  const writes = settings.sandboxMode === 'read-only'
-    ? runtimeWrites
-    : [workspace, ...runtimeWrites]
+  // Keep existing operation journals (including unresolved actions) in place.
+  // Only their SQLite files and audit log need writes, not the Chrome profile
+  // and the rest of the user's computer-use directory.
+  const journalDir = join(homedir(), '.pi', 'computer-use')
+  mkdirSync(journalDir, { recursive: true, mode: 0o700 })
+  const journalFiles = ['browser-actions.sqlite', 'desktop-actions.sqlite'].flatMap((name) => ['', '-wal', '-shm', '-journal'].map((suffix) => join(journalDir, `${name}${suffix}`)))
+  const runtimeWrites = [agentDir(), sessionsRoot(), join(app.getPath('userData'), 'computer-use-sessions'), join(journalDir, 'audit.jsonl'), ...journalFiles, tmpdir(), ...additionalRuntimeWrites]
+  const readOnly = projectReadOnly(settings, cwd)
+  const writes = readOnly ? runtimeWrites : [workspace, ...runtimeWrites]
+  const insideRuntimeWrite = runtimeWrites.some((path) => {
+    const child = relative(canonicalWorkspacePath(path), canonicalWorkspacePath(workspace))
+    return child && !isAbsolute(child) && child !== '..' && !child.startsWith(`..${sep}`)
+  })
   const config = {
     filesystem: {
       denyRead: SECRET_PATHS.filter((path) => existsSync(path)),
       allowRead: ['/'],
       allowWrite: [...new Set(writes)],
-      denyWrite: []
+      // A project in the temporary directory is still read-only.
+      denyWrite: readOnly && insideRuntimeWrite ? [workspace] : []
     },
     network: {
       allowedDomains: allowedDomains(settings),
-      deniedDomains: [],
+      deniedDomains: settings.sandboxNetwork === 'off' ? ['*'] : [],
       allowLocalBinding: true
     }
   }

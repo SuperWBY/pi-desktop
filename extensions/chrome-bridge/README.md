@@ -40,8 +40,8 @@ The extension only operates the active tab. It does not install a native messagi
 
 ## Safety
 
-- Password-field values are never returned.
-- Typing into password fields is refused.
+- Password and payment fields are marked as sensitive; their values are not returned.
+- Sensitive input requires explicit authorization: the user provides the value for that operation or approves it in the confirmation dialog. Without authorization, typing and key actions stop for handoff. Existing login and CAPTCHA handoffs still apply.
 - `chrome://` and extension pages are rejected.
 - Actions request approval by default; the Pi extension permits this to be disabled by configuration.
 - The bridge is bound to `127.0.0.1` and only lives while a Pi tool call is waiting.

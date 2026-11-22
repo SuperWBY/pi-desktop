@@ -23,6 +23,7 @@ export interface ModelInfo {
   baseUrl?: string
   reasoning?: boolean
   input?: string[]
+  output?: string[]
   contextWindow?: number
   maxTokens?: number
   cost?: ModelCost
@@ -51,7 +52,24 @@ export interface SessionSecurity {
   mode: ToolApprovalMode
   sandboxed: boolean
   files?: 'workspace-write' | 'read-only'
+  network?: 'model' | 'off' | 'unrestricted'
+}
+
+export interface SessionPermissionChange {
+  cwd: string
+  sessionPath: string | null
+  permission: SessionPermission
+  /** Apply a connection preference to this conversation only. */
   network?: 'model' | 'off'
+  /** Allow a specific destination already blocked in this conversation. */
+  allowHost?: string
+}
+
+export interface ConversationNetworkBlock {
+  host: string
+  port?: number
+  sessionPath: string | null
+  offline: boolean
 }
 
 export interface TokenCounts {
@@ -76,7 +94,20 @@ export interface SessionStats {
     tokens: number | null
     contextWindow: number | null
     percent: number | null
+    breakdown?: ContextBreakdown | null
   } | null
+}
+
+export type ContextCategoryId = 'system' | 'rules' | 'tools' | 'mcp' | 'skills' | 'summary' | 'conversation' | 'toolResults' | 'other'
+export interface ContextBreakdown {
+  sessionId: string
+  modelKey: string | null
+  contextWindow: number | null
+  totalTokens: number | null
+  capturedAt: number
+  estimated: true
+  calibrated: boolean
+  categories: Array<{ id: ContextCategoryId; tokens: number }>
 }
 
 export interface Usage {
@@ -104,6 +135,9 @@ export interface ThinkingBlock {
   type: 'thinking'
   thinking: string
   redacted?: boolean
+  /** Stream timestamps observed by the desktop renderer. */
+  desktopStartedAt?: number
+  desktopEndedAt?: number
 }
 
 export interface ToolCallBlock {
@@ -119,6 +153,8 @@ export interface UserMessage {
   role: 'user'
   content: string | ContentBlock[]
   timestamp?: number
+  /** When the desktop received the end of this run. */
+  desktopFinishedAt?: number
   [key: string]: unknown
 }
 
@@ -135,6 +171,7 @@ export interface AssistantMessage {
   timestamp?: number
   /** Wall time pi spent producing this step (thinking + text). */
   durationMs?: number
+  desktopFinishedAt?: number
   [key: string]: unknown
 }
 
@@ -144,6 +181,7 @@ export interface ToolResultMessage {
   toolName: string
   content: ContentBlock[]
   details?: unknown
+  structuredContent?: unknown
   isError?: boolean
   timestamp?: number
   [key: string]: unknown
@@ -182,6 +220,7 @@ export interface ToolRun {
   resultText?: string
   resultContent?: ContentBlock[]
   resultDetails?: unknown
+  resultStructured?: unknown
   startedAt: number
   durationMs?: number
 }
@@ -190,6 +229,11 @@ export interface CommandInfo {
   name: string
   description?: string
   source?: 'extension' | 'prompt' | 'skill'
+  sourceInfo?: {
+    scope?: 'user' | 'project' | 'temporary'
+    origin?: 'package' | 'top-level'
+    source?: string
+  }
 }
 
 export interface SessionSummary {
@@ -234,6 +278,9 @@ export interface BrowserState {
   canGoForward: boolean
   error: string | null
   download?: BrowserDownload
+  documentId?: string
+  controlledTab?: { documentId: string; title: string; state: 'active' | 'waiting' }
+  otherTab?: { documentId: string; title: string }
 }
 
 export interface ChromeProfile {
@@ -260,9 +307,14 @@ export interface Settings {
   computerUseEnabled?: boolean
   piPath?: string
   language?: 'zh-CN' | 'en'
-  theme: 'dark' | 'light'
+  theme: 'dark' | 'light' | 'system'
   workspaces: string[]
   workspaceNames?: Record<string, string>
+  /** Session paths explicitly pinned in the sidebar, newest pin first. */
+  pinnedSessionPaths?: string[]
+  /** Sessions hidden from active lists without changing their files. */
+  archivedSessionPaths?: string[]
+  workspaceReadOnly?: Record<string, boolean>
   lastWorkspace?: string
   lastSessionPath?: string
   /** Fold the process away once the final answer of a turn lands. */
@@ -275,8 +327,8 @@ export interface Settings {
   notifyOnFinish?: boolean
   workPanelOpen?: boolean
   workPanelWidth?: number
-  workPanelTab?: 'home' | 'changes' | 'files' | 'terminal' | 'artifacts' | 'browser'
-  workPanelTabs?: ('home' | 'changes' | 'files' | 'terminal' | 'artifacts' | 'browser')[]
+  workPanelTab?: 'home' | 'changes' | 'files' | 'terminal' | 'artifacts' | 'browser' | 'creator'
+  workPanelTabs?: ('home' | 'changes' | 'files' | 'terminal' | 'artifacts' | 'browser' | 'creator')[]
   /** Where links in chat open: the in-app browser panel or the OS browser. */
   linkOpenMode?: 'browser' | 'external'
   /** Check GitHub Releases once after launch; never downloads without confirmation. */
@@ -284,10 +336,9 @@ export interface Settings {
   toolCardsExpanded?: boolean
   /** dangerous = confirm only high-risk bash; all = confirm every tool; never = no desktop approval. */
   toolApprovalMode?: ToolApprovalMode
-  allowFullAccess?: boolean
-  /** OS-level sandbox for the pi process tree (macOS/Linux). */
+  /** Retained for reading settings from older releases. */
   sandboxEnabled?: boolean
-  /** workspace-write = edit project; read-only = project read, session/tmp writes only. */
+  /** Legacy file preference, used for projects without a saved override. */
   sandboxMode?: 'workspace-write' | 'read-only'
   /** model = model hosts + custom domains; off = no network at all. */
   sandboxNetwork?: 'model' | 'off'
@@ -421,6 +472,7 @@ export interface Bootstrap {
   piSettings: PiSettings
   piSettingsFile: string
   agentDir: string
+  runningSessionPaths?: string[]
   interruptedUi?: { id: string; cwd: string; sessionPath: string | null; at: number }[] | null
 }
 
@@ -615,7 +667,7 @@ export interface McpConnectorInput {
 
 export type McpConnectionTest =
   | { status: 'connected'; toolCount: number }
-  | { status: 'unauthorized' | 'unreachable' | 'unsupported' }
+  | { status: 'unauthorized' | 'unreachable' | 'unsupported' | 'unknown' }
 
 export interface PackageCatalogEntry {
   name: string
@@ -628,6 +680,67 @@ export interface PackageCatalogEntry {
   repositoryUrl: string | null
   source: string
 }
+
+export interface PackageDetailsRequest {
+  /** An npm package name, optionally prefixed with npm:. */
+  name: string
+  /** Exact published version or dist-tag; defaults to latest. */
+  version?: string
+  /** Catalog artwork/type discovery does not need to fetch README content. */
+  metadataOnly?: boolean
+  /** Read one release manifest; skip the complete package history. */
+  fast?: boolean
+  /** Prefer an author-provided README in this language; never invokes AI. */
+  language?: 'zh-CN' | 'en'
+}
+
+export interface PackageReadme {
+  markdown: string
+  fileName?: string
+  language?: 'zh-CN' | 'en'
+  localizationStatus?: 'matched' | 'not-found' | 'unavailable'
+  source: 'npm' | 'npm-cdn' | 'github'
+  url: string
+  /** Resolve relative README images/links against this URL. */
+  baseUrl: string
+  /** Alternate location for relative images omitted from npm, pinned to the release gitHead. */
+  imageFallbackBaseUrl?: string
+  versionMatched: boolean
+}
+
+export interface PackageDetails {
+  name: string
+  version: string
+  latestVersion: string | null
+  versions: string[]
+  description: string
+  author: string | null
+  publisher: string | null
+  license: string | null
+  publishedAt: string | null
+  homepage: string | null
+  repositoryUrl: string | null
+  npmUrl: string
+  catalogUrl: string
+  installSource: string
+  unpackedSize: number | null
+  dependencies: Record<string, string>
+  peerDependencies: Record<string, string>
+  engines: Record<string, string>
+  manifest: {
+    extensions: string[]
+    skills: string[]
+    prompts: string[]
+    themes: string[]
+    image: string | null
+    video: string | null
+  }
+  readme: PackageReadme | null
+  warnings: string[]
+  fetchedAt: number
+}
+
+export type PackageDetailsResult = { ok: true; details: PackageDetails } | { ok: false; error: string }
 
 export interface PackageInspection {
   source: string
@@ -659,6 +772,27 @@ export type ScheduleCadence =
   | { type: 'weekly'; weekday: number; time: string }
   | { type: 'cron'; expression: string }
   | { type: 'event'; event: 'file-change'; path: string; debounceMs: number }
+
+export interface SchedulePlan {
+  name: string
+  prompt: string
+  cadence: ScheduleCadence
+  timezone: string
+  summary?: string
+  nextRuns: number[]
+}
+
+export interface ScheduleInterpretationInput {
+  description: string
+  replies?: { question: string; answer: string }[]
+  taskId?: string
+  model?: { provider: string; id: string }
+}
+
+export type ScheduleInterpretation =
+  | { plan: SchedulePlan }
+  | { question: string }
+  | { error: 'model' | 'offline' | 'invalid' | 'expired' }
 
 export type ScheduledRunStatus =
   | 'running'
@@ -824,3 +958,7 @@ export interface ScheduledTaskInput {
   notifications?: boolean
   enabled?: boolean
 }
+
+export interface PackageTranslationRequest { language: 'zh-CN' | 'en'; texts: string[]; markdown?: boolean; requestId?: string }
+export interface PackageTranslationProgress { requestId: string; text: string; completed: number; total: number }
+export type PackageTranslationResult = { ok: true; texts: string[] } | { ok: false; error: 'model' | 'too-large' }

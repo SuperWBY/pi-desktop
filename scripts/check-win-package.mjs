@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
@@ -22,6 +22,15 @@ if (existsSync(exe)) {
 }
 check('app.asar exists', existsSync(asar))
 check('auth helper is packaged', existsSync(helper))
+const seed = join(app, 'resources', 'pi-seed')
+check('pi-seed is packaged outside asar', existsSync(seed), seed)
+if (existsSync(seed)) {
+  const versions = readdirSync(seed).filter((name) => /^\d+\.\d+\.\d+/.test(name))
+  const authModule = versions
+    .map((version) => join(seed, version, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'index.js'))
+    .find((file) => existsSync(file))
+  check('pi-coding-agent auth module is packaged', Boolean(authModule), authModule || 'missing')
+}
 if (existsSync(asar)) {
   const list = execFileSync('npx', ['asar', 'list', asar], { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 })
   check('computer-use extension is packaged', list.includes('/extensions/computer-use/index.ts'))

@@ -1,0 +1,42 @@
+.creator-mode-bar { display:grid; grid-template-rows:0fr; opacity:0; visibility:hidden; transition:grid-template-rows var(--motion-2) var(--ease-out),opacity var(--motion-2) var(--ease-out),visibility var(--motion-2); }
+.creator-mode-bar[data-open="true"] { grid-template-rows:1fr; opacity:1; visibility:visible; }
+.creator-mode-bar>div { min-height:0; overflow:hidden; display:flex; align-items:center; gap:5px; }
+.creator-mode-label { display:inline-flex; align-items:center; gap:7px; padding:8px; font-size:12px; color:var(--text); }
+.creator-mode-bar button { display:inline-flex; align-items:center; gap:5px; padding:8px; border:0; background:transparent; color:var(--text); font:inherit; font-size:12px; cursor:pointer; transition:opacity var(--motion-1),transform var(--motion-1); }
+.creator-mode-bar .creator-mode-library { margin-left:auto; color:var(--text-dim); }
+.creator-mode-bar button:hover { opacity:.75; }
+.creator-mode-bar button:active { transform:scale(.97); }
+.creator-mode-exit:disabled { opacity:.4; cursor:default; }
+.creator-mode-bar button:focus-visible { outline:2px solid var(--text-dim); outline-offset:-2px; }
+.my-plugins { animation:creator-in var(--motion-2) var(--ease-out); }
+.my-plugins-heading { display:flex; align-items:flex-start; gap:20px; justify-content:space-between; margin:0 0 24px; }
+.my-plugins p { margin:8px 0; color:var(--text-dim); font-size:13px; line-height:1.7; }
+.my-plugins button { display:inline-flex; align-items:center; justify-content:center; gap:7px; background:transparent; border:0; border-radius:6px; padding:10px 12px; min-height:40px; color:var(--text); font:inherit; font-size:13px; transition:opacity var(--motion-1),transform var(--motion-1),background-color var(--motion-1); }
+.my-plugins button:hover { background:var(--hover); }
+.my-plugins button:active { transform:scale(.97); }
+.my-plugins button:disabled { opacity:.45; cursor:default; transform:none; }
+.my-plugins-empty { display:flex; flex-direction:column; align-items:center; text-align:center; padding:64px 20px; gap:12px; color:var(--text-dim); }
+.my-plugins h3 { color:var(--text); font-weight:550; font-size:16px; margin:0; }
+.my-plugins-empty p { max-width:400px; }
+.my-plugins-empty button,.my-plugins .my-plugin-install { background:var(--accent); color:var(--accent-contrast); }
+.my-plugins-empty button:hover,.my-plugins .my-plugin-install:hover { opacity:.85; }
+.my-plugins-list { display:grid; gap:16px; }
+.my-plugin { display:flex; align-items:flex-start; gap:18px; padding:24px; background:var(--panel); border-radius:10px; animation:creator-in var(--motion-2) var(--ease-out); }
+.my-plugin-icon { flex:none; color:var(--text-faint); margin-top:3px; }
+.my-plugin-body { flex:1; min-width:0; }
+.my-plugin-title { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+.my-plugin-title h3 { overflow-wrap:anywhere; }
+.my-plugin-status { display:inline-flex; align-items:center; gap:5px; flex:none; font-size:12px; color:var(--text-dim); animation:creator-in var(--motion-2) var(--ease-out); }
+.my-plugin .my-plugin-project { font-size:12px; overflow-wrap:anywhere; }
+.my-plugin-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:14px; }
+.my-plugin-actions button:first-child { margin-left:-12px; }
+.my-plugin-files { margin-left:auto; }
+.my-plugin small { display:block; margin-top:10px; color:var(--text-dim); line-height:1.7; }
+.my-plugins .my-plugins-error { color:var(--danger,var(--text)); overflow-wrap:anywhere; }
+.my-plugins .my-plugins-warning { color:var(--text-dim); }
+.creator-spin { animation:creator-spin 1s linear infinite; flex:none; }
+@keyframes creator-spin { to { transform:rotate(360deg); } }
+@keyframes creator-in { from { opacity:0;transform:translateY(3px); } to { opacity:1;transform:translateY(0); } }
+@media(max-width:640px) { .my-plugin { padding:18px 14px; gap:12px; } .my-plugin-title { flex-wrap:wrap; gap:8px; } .my-plugins-heading { margin-bottom:18px; } }
+@media(prefers-reduced-motion:reduce) { .creator-mode-bar,.creator-mode-bar button,.my-plugins,.my-plugins button,.my-plugin,.my-plugin-status { transition:none;animation:none; } .my-plugins button:active,.creator-mode-bar button:active { transform:none; } .creator-spin { animation:none; } }
+.my-plugin-description { overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }

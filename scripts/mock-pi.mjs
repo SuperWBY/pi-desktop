@@ -12,16 +12,33 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 
+if (process.argv.includes('--version')) {
+  console.log('0.74.0')
+  process.exit(0)
+}
+
 const scenario = process.env.MOCK_SCENARIO ?? 'default'
 const args = process.argv.slice(2)
+if (process.env.MOCK_RPC_EXEC_PATH_FILE && args.includes('rpc')) writeFileSync(process.env.MOCK_RPC_EXEC_PATH_FILE, process.execPath)
+if (process.env.MOCK_RPC_PID_FILE && args.includes('rpc')) writeFileSync(process.env.MOCK_RPC_PID_FILE, String(process.pid))
+if (process.env.MOCK_EXEC_PATH_FILE && (args.includes('--list-models') || (args[0] === 'update' && args.includes('--models')))) {
+  writeFileSync(process.env.MOCK_EXEC_PATH_FILE, process.execPath)
+  if (args.includes('--list-models')) console.log(process.env.MOCK_MODEL_TABLE || 'provider  model  context  max-out  thinking  images\nmock  test  1M  32K  yes  yes')
+  else console.log('updated')
+  process.exit(0)
+}
 const sessionFlag = args.indexOf('--session')
 let sessionFile = sessionFlag !== -1 ? args[sessionFlag + 1] : null
 const cwd = process.cwd()
 
-if (args.includes('rpc') && basename(cwd) === 'scratch' && process.env.MOCK_SCRATCH_START_DELAY) {
+if (args.includes('rpc') && (basename(cwd) === 'scratch' || (basename(dirname(cwd)) === 'conversations' && basename(dirname(dirname(cwd))) === 'scratch')) && process.env.MOCK_SCRATCH_START_DELAY) {
   await new Promise((resolve) => setTimeout(resolve, Number(process.env.MOCK_SCRATCH_START_DELAY)))
 }
 
+if (args[0] === 'list' && process.env.MOCK_LIST_OUTPUT) {
+  process.stdout.write(process.env.MOCK_LIST_OUTPUT)
+  process.exit(0)
+}
 if (args[0] === 'list' && process.env.MOCK_LIST_SOURCE) {
   await new Promise(resolve => setTimeout(resolve, Number(process.env.MOCK_LIST_DELAY_MS || 0)))
   process.stdout.write(`User packages:\n  ${process.env.MOCK_LIST_SOURCE}\n    ${process.env.MOCK_LIST_SOURCE}\n`)
@@ -135,7 +152,17 @@ const MODELS = [
   }
 ]
 
-const LEVELS = ['off', 'low', 'medium', 'high', 'max']
+if (scenario === 'multi-providers') {
+  MODELS[1].output = ['image']
+  MODELS.push({ ...MODELS[0], provider: 'volcengine-ark' })
+}
+
+/** Per-model thinking levels (order matters for the UI). */
+function levelsFor(next) {
+  if (next?.provider === 'volcengine-ark') return ['low', 'high', 'max']
+  if (next?.id === 'mock-deep') return ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+  return ['off', 'low', 'medium', 'high', 'max']
+}
 let model = MODELS[0]
 let thinkingLevel = 'medium'
 let streamingTimer = null
@@ -147,15 +174,19 @@ if (process.env.MOCK_ENV_FILE) { try { writeFileSync(process.env.MOCK_ENV_FILE, 
 const sessionRoot = process.env.PI_CODING_AGENT_SESSION_DIR?.trim()
 
 /** Real pi creates the transcript lazily; the desktop app relies on the file existing. */
-function createSessionFile() {
+function createSessionFile(lazy = false) {
   const dir = sessionRoot ? join(sessionRoot, '--mock-project--') : '/tmp'
   mkdirSync(dir, { recursive: true })
   const file = join(dir, `mock-${Date.now()}.jsonl`)
+  if (!lazy) writeSessionHeader(file)
+  return file
+}
+
+function writeSessionHeader(file) {
   writeFileSync(
     file,
     `${JSON.stringify({ type: 'session', id: `mock-${Date.now()}`, cwd, timestamp: new Date().toISOString() })}\n`
   )
-  return file
 }
 
 function loadSessionMessages(file) {
@@ -234,6 +265,7 @@ function seededTurn(i) {
   const answer = {
     role: 'assistant',
     timestamp: base + 2000,
+    durationMs: 4500,
     content: [{ type: 'text', text: `seeded answer ${i}: ${'lorem ipsum dolor sit amet '.repeat(14)}` }],
     usage: { input: 100, output: 200, totalTokens: 300, cost: { total: 0.0002 } }
   }
@@ -307,33 +339,53 @@ function stats() {
 }
 
 function stream(text) {
+  write({ type: 'agent_start' })
   const message = {
     role: 'assistant',
-    content: [{ type: 'text', text: '' }],
+    timestamp: Date.now(),
+    content: [],
     usage: { input: 100, output: 20, totalTokens: 120, cost: { total: 0.001 } }
   }
-  write({ type: 'message_start', message: { role: 'assistant', content: [] } })
-  let index = 0
-  const chunk = 12
-  streamingTimer = setInterval(() => {
-    const next = text.slice(index, index + chunk)
-    index += chunk
-    if (!next) {
-      clearInterval(streamingTimer)
-      streamingTimer = null
-      message.content[0].text = text
-      messages.push(message)
-      write({ type: 'message_end', message })
-      write({ type: 'agent_settled' })
-      return
-    }
-    message.content[0].text += next
+  write({ type: 'message_start', message })
+  const emitUpdate = (assistantMessageEvent) => {
     write({
       type: 'message_update',
       message,
-      assistantMessageEvent: { type: 'text_delta', delta: next, contentIndex: 0 }
+      assistantMessageEvent
     })
-  }, Number(process.env.MOCK_STREAM_INTERVAL || 25))
+  }
+  const streamText = () => {
+    const block = { type: 'text', text: '' }
+    const contentIndex = message.content.push(block) - 1
+    let index = 0
+    const chunk = 12
+    streamingTimer = setInterval(() => {
+      const next = text.slice(index, index + chunk)
+      index += chunk
+      if (!next) {
+        clearInterval(streamingTimer)
+        streamingTimer = null
+        message.durationMs = Date.now() - message.timestamp
+        messages.push(message)
+        write({ type: 'message_end', message })
+        write({ type: 'agent_settled' })
+        return
+      }
+      block.text += next
+      emitUpdate({ type: 'text_delta', delta: next, contentIndex })
+    }, Number(process.env.MOCK_STREAM_INTERVAL || 25))
+  }
+  const thinkingMs = Number(process.env.MOCK_THINKING_MS || 0)
+  if (!thinkingMs) return streamText()
+
+  emitUpdate({ type: 'thinking_start', contentIndex: 0 })
+  const thinking = 'Checking the relevant details.'
+  message.content.push({ type: 'thinking', thinking })
+  emitUpdate({ type: 'thinking_delta', contentIndex: 0, delta: thinking })
+  streamingTimer = setTimeout(() => {
+    emitUpdate({ type: 'thinking_end', contentIndex: 0, content: thinking })
+    streamText()
+  }, thinkingMs)
 }
 
 function handle(command) {
@@ -381,10 +433,10 @@ function handle(command) {
     case 'get_available_models':
       return response('get_available_models', { models: MODELS })
     case 'get_available_thinking_levels':
-      return response('get_available_thinking_levels', { levels: LEVELS })
+      return response('get_available_thinking_levels', { levels: levelsFor(model) })
     case 'get_commands':
       if (process.env.MOCK_COMMANDS_FAIL === '1') return response('get_commands', undefined, false, 'registry unavailable')
-      return response('get_commands', { commands: [] })
+      return response('get_commands', { commands: JSON.parse(process.env.MOCK_COMMANDS_JSON || '[]') })
     case 'set_model': {
       const next = MODELS.find(
         (item) => item.provider === command.provider && item.id === command.modelId
@@ -394,6 +446,12 @@ function handle(command) {
         return response('set_model', undefined, false, 'mock: model switch rejected')
       }
       model = next
+      const levels = levelsFor(model)
+      // Model default when the previous level is not supported.
+      if (!levels.includes(thinkingLevel)) {
+        thinkingLevel = levels.includes('medium') ? 'medium' : levels[0]
+        write({ type: 'thinking_level_changed', level: thinkingLevel })
+      }
       write({ type: 'model_changed', model })
       return response('set_model', undefined)
     }
@@ -402,22 +460,46 @@ function handle(command) {
       write({ type: 'thinking_level_changed', level: thinkingLevel })
       return response('set_thinking_level', undefined)
     case 'prompt': {
+      if (args.includes('--no-session') && String(command.message ?? '').startsWith('You extract a schedule for Pi Desktop.')) {
+        const input = JSON.parse(String(command.message).split('\n\n').at(-1))
+        const output = input.description === '明天提醒我汇总订单' && !input.replies.length
+          ? { question: '明天几点提醒你？' }
+          : input.description === '明天提醒我汇总订单'
+            ? { name: '汇总订单', prompt: '提醒我汇总订单', timezone: input.timezone, cadence: { type: 'after', minutes: 1440 } }
+            : input.description === '昨天九点提醒我'
+              ? { name: '提醒', prompt: '提醒我', timezone: input.timezone, cadence: { type: 'once', local: '2000-01-01T09:00' } }
+              : input.existing
+                ? { name: input.existing.name, prompt: input.existing.prompt, timezone: input.timezone, cadence: { type: 'weekly', weekday: 5, time: '18:00' } }
+                : { name: 'E2E 界面任务', prompt: 'E2E 界面任务', timezone: input.timezone, cadence: { type: 'weekdays', time: '09:00' } }
+        const isolated = ['--no-tools', '--no-extensions', '--no-mcp', '--no-context-files'].every((flag) => args.includes(flag))
+        if (!isolated) throw new Error('Schedule interpreter must not load any tools')
+        setTimeout(() => write({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: JSON.stringify(output) }] } }), 100)
+        return response('prompt', { disposition: 'started' })
+      }
       if (!sessionFile && scenario !== 'auth-error') {
         sessionFile = createSessionFile()
+      }
+      if (sessionFile && process.env.MOCK_LAZY_NEW_SESSION === '1' && !existsSync(sessionFile)) {
+        writeSessionHeader(sessionFile)
       }
       if (scenario === 'auth-error') {
         return response('prompt', undefined, false, '401 Unauthorized: invalid api key')
       }
       const text = String(command.message ?? '')
-      messages.push({ role: 'user', content: [{ type: 'text', text }] })
+      const sentAt = Date.now()
+      messages.push({ role: 'user', timestamp: sentAt, content: [{ type: 'text', text }] })
       if (text === 'local approval test' && process.env.MOCK_BACKGROUND_CONFIRM === '1') {
         setTimeout(() => write({ type: 'extension_ui_request', id: 'fixture-confirm', method: 'confirm', title: `Fixture ${process.pid}`, message: 'Local test only' }), 800)
         return response('prompt', { disposition: 'started' })
       }
-      write({ type: 'message_start', message: { role: 'user', content: command.message } })
-      write({ type: 'message_end', message: { role: 'user', content: command.message } })
       const body = `mock reply ${messages.length}: ${text} ${'— streaming padding '.repeat(30)}`
-      setTimeout(() => stream(body), 30)
+      const startPrompt = () => {
+        write({ type: 'message_start', message: { role: 'user', timestamp: sentAt, content: command.message } })
+        write({ type: 'message_end', message: { role: 'user', timestamp: sentAt, content: command.message } })
+        setTimeout(() => stream(body), Number(process.env.MOCK_FIRST_RESPONSE_DELAY || 30))
+      }
+      if (process.env.MOCK_PROMPT_START_DELAY) setTimeout(startPrompt, Number(process.env.MOCK_PROMPT_START_DELAY))
+      else startPrompt()
       if (process.env.MOCK_PROMPT_DELAY) {
         return setTimeout(() => response('prompt', { disposition: 'started' }), Number(process.env.MOCK_PROMPT_DELAY))
       }
@@ -440,7 +522,7 @@ function handle(command) {
         sessionFile = command.sessionPath
         messages = loadSessionMessages(sessionFile)
       } else {
-        sessionFile = createSessionFile()
+        sessionFile = createSessionFile(process.env.MOCK_LAZY_NEW_SESSION === '1')
         // E2E transcript fixtures seed `messages`; preserve them across the
         // app's initial new_session handshake. Real pi starts empty here.
         if (transcriptSize === 0) messages = []

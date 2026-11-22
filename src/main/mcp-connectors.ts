@@ -125,7 +125,13 @@ export function removeMcpConnector(id: string): void {
 }
 
 export async function testMcpConnector(input: McpConnectorInput, piPath: string, proxy: Record<string, string>): Promise<McpConnectionTest> {
-  const entry = parseInput(input, currentHttp(readConfig().servers, input?.id))
+  const servers = readConfig().servers
+  const saved = input?.id && Object.hasOwn(servers, input.id) ? servers[input.id] : undefined
+  // Local services can only be tested from an existing configuration; never
+  // accept a command supplied by the renderer.
+  const entry = input?.url === '' && record(saved) && typeof saved.command === 'string' && typeof saved.url !== 'string'
+    ? saved
+    : parseInput(input, currentHttp(servers, input?.id))
   const directory = await mkdtemp(join(tmpdir(), 'pi-mcp-test-'))
   try {
     await writeFile(join(directory, 'mcp.json'), JSON.stringify({ mcpServers: { probe: { ...entry, enabled: true, timeout: 5 } } }), { mode: 0o600 })

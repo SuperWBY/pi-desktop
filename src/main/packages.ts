@@ -4,6 +4,7 @@ import { basename, join } from 'node:path'
 import type { PackageEntry, PackageProgress, PackageResources } from '@shared/types'
 import { loadSettings } from './settings'
 import { augmentedPath } from './pi-locate'
+import { directPiSpawn } from './pi-exec'
 import { resolvePiPath } from './pi-runtime'
 import { agentDir, loadPiSettings } from './pi-settings'
 import { parsePiListPaths } from './pi-list-parser'
@@ -69,7 +70,7 @@ function installedPathsAsync(cwd: string): Promise<Map<string, string>> {
 
 function npmPath(source: string): string {
   if (!source.startsWith('npm:')) return ''
-  const name = source.slice(4)
+  const name = source.slice(4).replace(/@[^/]+$/, '')
   return join(agentDir(), 'npm', 'node_modules', name)
 }
 
@@ -143,9 +144,9 @@ export function listPackages(cwd: string): PackageEntry[] {
     ...projectSettingsPackages(cwd).map((source) => ({ source, scope: 'project' as const }))
   ]
   const paths = { current: null as Map<string, string> | null }
-  const resolve = (source: string): string => {
+  const resolve = (source: string, scope: 'user' | 'project'): string => {
     const direct = npmPath(source)
-    if (direct && existsSync(direct)) return direct
+    if (scope === 'user' && direct && existsSync(direct)) return direct
     paths.current ??= installedPaths(cwd)
     return paths.current.get(source) ?? ''
   }
@@ -155,7 +156,7 @@ export function listPackages(cwd: string): PackageEntry[] {
     const key = `${item.scope}:${item.source}`
     if (seen.has(key)) continue
     seen.add(key)
-    result.push(describe(item.source, item.scope, resolve(item.source)))
+    result.push(describe(item.source, item.scope, resolve(item.source, item.scope)))
   }
   return result.sort((a, b) => a.name.localeCompare(b.name))
 }
@@ -175,7 +176,7 @@ export async function listPackagesAsync(cwd: string): Promise<PackageEntry[]> {
     if (seen.has(key)) continue
     seen.add(key)
     const direct = npmPath(item.source)
-    if (direct && existsSync(direct)) result.push(describe(item.source, item.scope, direct))
+    if (item.scope === 'user' && direct && existsSync(direct)) result.push(describe(item.source, item.scope, direct))
     else {
       paths ??= await installedPathsAsync(cwd)
       result.push(describe(item.source, item.scope, paths.get(item.source) ?? ''))
@@ -184,18 +185,27 @@ export async function listPackagesAsync(cwd: string): Promise<PackageEntry[]> {
   return result.sort((a, b) => a.name.localeCompare(b.name))
 }
 
+/** Source strings reach a pi CLI argument; reject flag injection and control characters. */
+export function validPackageSourceArg(source: unknown): source is string {
+  return typeof source === 'string' && source.length > 0 && source.length <= 1000
+    && !source.startsWith('-') && !/[\u0000-\u001f\u007f]/.test(source)
+}
+
 export function runPiPackageCommand(
   args: string[],
   cwd: string,
   onProgress: (progress: PackageProgress) => void
 ): Promise<{ ok: boolean; code: number | null; error?: string }> {
   const pi = resolvePiPath(loadSettings().piPath)
+  const direct = directPiSpawn(pi, args, { background: true })
+  if (!direct) {
+    return Promise.resolve({ ok: false, code: null, error: `找不到 Pi 的 cli.js（"${pi}"），无法在 Windows 上执行包操作。请重新安装 Pi。` })
+  }
   return new Promise((resolve) => {
-    const child = spawn(process.platform === 'win32' ? `"${pi}"` : pi, args, {
+    const child = spawn(direct.executable, direct.args, {
       cwd,
-      env: { ...process.env, PATH: augmentedPath() },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: process.platform === 'win32'
+      env: { ...process.env, PATH: augmentedPath(), ...direct.env },
+      stdio: ['ignore', 'pipe', 'pipe']
     })
     onProgress({ phase: 'start', line: `${basename(pi)} ${args.join(' ')}` })
 
@@ -214,7 +224,11 @@ export function runPiPackageCommand(
     child.on('close', (code) => {
       const ok = code === 0
       onProgress({ phase: ok ? 'done' : 'error', code })
-      resolve({ ok, code, error: ok ? undefined : `pi exited with ${code ?? 'unknown'}` })
+      resolve({
+        ok,
+        code,
+        error: ok ? undefined : `Pi 意外停止了（代码 ${code ?? 'unknown'}）`
+      })
     })
   })
 }

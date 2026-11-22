@@ -1,12 +1,12 @@
 import { useTranslation } from '../i18n'
-import { useEffect, useState, type ReactNode } from 'react'
-import { Archive, PanelLeft, PanelRight } from 'lucide-react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { PanelLeft, PanelRight } from 'lucide-react'
 import clsx from 'clsx'
 import { useApp } from '../store'
-import { projectName, shortenPath, truncate } from '../lib/format'
+import { projectName, shortenPath } from '../lib/format'
 import { isTemporaryWorkspace, looksLikeRawPath } from '@shared/paths'
 import { shortcutKeys, shiftMod } from '../lib/platform'
-import { contentText } from '../lib/tools'
+import { sessionDisplayTitle } from '../lib/session-title'
 
 export function TopBar(): ReactNode {
   const t = useTranslation()
@@ -16,25 +16,33 @@ export function TopBar(): ReactNode {
 
   const temporary = state.scratchWorkspace || isTemporaryWorkspace(state.workspace, state.boot?.scratchPath)
   const place = temporary
-    ? t('临时对话')
-    : projectName(state.settings.workspaceNames, state.workspace) || t('不关联文件夹')
-  const placeLabel = looksLikeRawPath(place) ? t('临时对话') : place
-  const firstUser = state.messages.find((message) => message.role === 'user')
-  const fallbackTitle = firstUser
-    ? truncate(contentText((firstUser as { content?: unknown }).content), 56)
-    : placeLabel
-  const title =
-    state.sessionName ??
-    (state.messages.length > 0
-      ? fallbackTitle
-      : state.workspace || state.scratchWorkspace
-        ? t('New session')
-        : 'Pi Desktop')
-  const percent = state.stats?.contextUsage?.percent ?? 0
+    ? t('新对话')
+    : projectName(state.settings.workspaceNames, state.workspace) || t('新对话')
+  const placeLabel = looksLikeRawPath(place) ? t('新对话') : place
+  const title = sessionDisplayTitle({
+    sessionName: state.sessionName,
+    messages: state.messages,
+    emptyLabel:
+      state.messages.length > 0
+        ? placeLabel
+        : state.workspace || state.scratchWorkspace
+          ? t('New session')
+          : 'Pi Desktop'
+  })
 
   useEffect(() => {
     setEditing(false)
   }, [state.sessionPath])
+
+  const beginEditing = useCallback((): void => {
+    setValue(state.sessionName ?? '')
+    setEditing(true)
+  }, [state.sessionName])
+
+  useEffect(() => {
+    window.addEventListener('pi:rename-current-session', beginEditing)
+    return () => window.removeEventListener('pi:rename-current-session', beginEditing)
+  }, [beginEditing])
 
   const commit = (): void => {
     setEditing(false)
@@ -68,10 +76,7 @@ export function TopBar(): ReactNode {
           ) : (
             <button
               className="title-button"
-              onClick={() => {
-                setValue(state.sessionName ?? '')
-                setEditing(true)
-              }}
+              onClick={beginEditing}
               title={t("Rename session")}
             >
               {title}
@@ -89,15 +94,6 @@ export function TopBar(): ReactNode {
       </div>
 
       <div className="topbar-right">
-        {percent >= 40 && (
-          <button
-            className={clsx('icon-button', percent > 80 && 'warn')}
-            onClick={() => void actions.compact()}
-            title={t('Compact context ({percent}% used)').replace('{percent}', String(Math.round(percent)))}
-          >
-            <Archive size={15} />
-          </button>
-        )}
         <button
           className={clsx('icon-button', state.settings.workPanelOpen && 'work-panel-toggle-active')}
           onClick={actions.toggleWorkPanel}

@@ -6,6 +6,9 @@ import remarkBreaks from 'remark-breaks'
 import rehypeHighlight from 'rehype-highlight'
 import { Check, Copy } from 'lucide-react'
 import { useApp } from '../store'
+import { DiagramPreview } from './DiagramPreview'
+import { isLocalMediaImage } from '../lib/turn-media'
+import { InlineImage } from './ImageLightbox'
 
 function nodeText(node: ReactNode): string {
   if (node === null || node === undefined || typeof node === 'boolean') return ''
@@ -15,6 +18,12 @@ function nodeText(node: ReactNode): string {
     return nodeText((node as { props?: { children?: ReactNode } }).props?.children)
   }
   return ''
+}
+
+function isSvgXml(source: string): boolean {
+  if (source.length > 24_000 || !/<(?:[\w.-]+:)?svg(?:\s|>)/i.test(source)) return false
+  const parsed = new DOMParser().parseFromString(source, 'image/svg+xml')
+  return parsed.documentElement.localName === 'svg' && !parsed.querySelector('parsererror')
 }
 
 export function CopyButton({ text, label }: { text: string; label?: string }): ReactNode {
@@ -37,7 +46,11 @@ export function CopyButton({ text, label }: { text: string; label?: string }): R
   )
 }
 
-export const Markdown = memo(function Markdown({ children }: { children: string }): ReactNode {
+export const Markdown = memo(function Markdown({ children, streaming = false, deferLocalImages = false }: {
+  children: string
+  streaming?: boolean
+  deferLocalImages?: boolean
+}): ReactNode {
   const { state, actions } = useApp()
 
   const components: Components = {
@@ -47,7 +60,7 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
         (first as { props?: { className?: string } } | undefined)?.props?.className ?? ''
       const language = /language-([\w+-]+)/.exec(className)?.[1]
       const text = nodeText(children)
-      return (
+      const code = (
         <div className="code-block">
           <div className="code-head">
             <span>{language ?? 'plain'}</span>
@@ -56,6 +69,10 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
           <pre>{children}</pre>
         </div>
       )
+      const diagramType = language === 'mermaid' ? 'mermaid' : language === 'svg' || (language === 'xml' && isSvgXml(text)) ? 'svg' : null
+      return !streaming && diagramType
+        ? <DiagramPreview source={text} code={code} type={diagramType} />
+        : code
     },
     code: ({ className, children }) => {
       const isBlock = typeof className === 'string' && className.includes('language-')
@@ -89,7 +106,9 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
         <table>{children}</table>
       </div>
     ),
-    img: ({ src, alt }) => <img className="md-image" src={src} alt={alt ?? ''} />
+    img: ({ src, alt }) => typeof src === 'string' && src && (!deferLocalImages || !isLocalMediaImage(src))
+      ? <InlineImage src={src} alt={alt ?? ''} />
+      : null
   }
 
   return (

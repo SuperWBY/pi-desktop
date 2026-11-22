@@ -31,8 +31,9 @@ import { resolvePiPath } from './pi-runtime'
 import { scheduleGuidance } from './schedule-bridge'
 import { loadSettings, settingsFile } from './settings'
 import { prepareComputerUseRuntime } from './computer-use-runtime'
-import { quoteWindowsPiPaths } from './pi-launch'
+import { directPiSpawn } from './pi-exec'
 import { createSandbox, type SandboxLaunch } from './sandbox'
+import { projectReadOnly } from '@shared/paths'
 import { proxyEnv } from './network-env'
 
 const RUN_TIMEOUT_MS = 30 * 60_000
@@ -251,11 +252,16 @@ export class ScheduleScheduler {
   }
 
   preview(cadence: ScheduleCadence, count = 3, timezone?: string): number[] {
-    return nextRuns(cadence, count, Date.now(), timezone)
+    // The renderer controls count; a huge value would busy-loop the main
+    // process on a high-frequency cadence.
+    return nextRuns(cadence, Math.min(Math.max(1, count), 10), Date.now(), timezone)
   }
 
-  create(input: ScheduledTaskInput, announce = false): ScheduledTask {
+  create(input: ScheduledTaskInput, announce = false, requireFuture = false): ScheduledTask {
     const now = Date.now()
+    if (requireFuture && input.cadence.type !== 'event' && nextRun(input.cadence, now, input.timezone) === null) {
+      throw new Error('SCHEDULE_TIME_EXPIRED')
+    }
     const projectPath = input.projectPath || homedir()
     const cadence =
       input.cadence.type === 'event' && !input.cadence.path
@@ -306,9 +312,13 @@ export class ScheduleScheduler {
     return task
   }
 
-  update(id: string, patch: Partial<ScheduledTaskInput>): ScheduledTask | null {
+  update(id: string, patch: Partial<ScheduledTaskInput>, requireFuture = false): ScheduledTask | null {
     const task = this.store.tasks.find((item) => item.id === id)
     if (!task) return null
+    const cadence = patch.cadence ?? task.cadence
+    if (requireFuture && cadence.type !== 'event' && nextRun(cadence, Date.now(), patch.timezone ?? task.timezone) === null) {
+      throw new Error('SCHEDULE_TIME_EXPIRED')
+    }
     if (patch.name !== undefined) task.name = patch.name.trim()
     if (patch.prompt !== undefined) task.prompt = patch.prompt.trim()
     if (patch.projectPath !== undefined) task.projectPath = patch.projectPath
@@ -664,6 +674,8 @@ export class ScheduleScheduler {
 
       const cwd = task.projectPath
       const log = createWriteStream(logPath, { flags: 'a' })
+      // A full disk or removed log file must not crash the main process.
+      log.on('error', () => undefined)
       let tail = ''
       let finished = false
       let timedOut = false
@@ -757,20 +769,42 @@ export class ScheduleScheduler {
           : join(app.getAppPath(), 'extensions', 'computer-use')
         args.unshift('--extension', join(runtime, 'src', 'desktop-access-extension.ts'), '--skill', join(runtime, 'desktop-guidance'))
         const settings = loadSettings()
-        sandbox = settings.sandboxEnabled ? createSandbox(cwd, settings, [sessionDir]) : null
-        if (settings.sandboxEnabled && !sandbox) {
+        sandbox = createSandbox(cwd, settings, [sessionDir])
+        if (!sandbox && (settings.sandboxNetwork === 'off' || projectReadOnly(settings, cwd))) {
           task.enabled = false
-          finish('failed', null, '沙箱已启用，但当前环境无法启动沙箱。任务已暂停。')
+          finish('failed', null, '当前设备无法应用文件和网络保护，任务已暂停。')
           return
         }
-        const executable = sandbox ? sandbox.nodePath : process.platform === 'win32' ? `"${pi}"` : pi
-        const launchArgs = sandbox ? [sandbox.cliPath, '--settings', sandbox.configPath, '/usr/bin/env', '-u', 'ELECTRON_RUN_AS_NODE', pi, ...args] : process.platform === 'win32' ? quoteWindowsPiPaths(args) : args
+        let executable: string
+        let launchArgs: string[]
+        const spawnEnv: Record<string, string> = {}
+        if (sandbox) {
+          executable = sandbox.nodePath
+          launchArgs = [sandbox.cliPath, '--settings', sandbox.configPath, '/usr/bin/env', '-u', 'ELECTRON_RUN_AS_NODE', pi, ...args]
+        } else {
+          const direct = directPiSpawn(pi, args, { background: true })
+          if (!direct) {
+            finish('failed', null, `找不到 Pi 的 cli.js（"${pi}"），无法在 Windows 上运行定时任务。请重新安装 Pi。`)
+            return
+          }
+          executable = direct.executable
+          launchArgs = direct.args
+          Object.assign(spawnEnv, direct.env)
+        }
         child = spawn(executable, launchArgs, {
           cwd,
-          env: { ...process.env, PATH: augmentedPath(), PI_DESKTOP_SETTINGS_FILE: settingsFile(), PI_DESKTOP_TOOL_APPROVAL: settings.toolApprovalMode ?? 'dangerous', ...proxyEnv(settings), ...(sandbox ? { PI_DESKTOP_SANDBOX: '1', SRT_DEBUG: '1' } : {}) },
+          env: {
+            ...process.env,
+            PATH: augmentedPath(),
+            PI_DESKTOP_SETTINGS_FILE: settingsFile(),
+            PI_DESKTOP_TOOL_APPROVAL: settings.toolApprovalMode ?? 'dangerous',
+            PI_DESKTOP_NETWORK: sandbox ? settings.sandboxNetwork ?? 'model' : 'unrestricted',
+            ...proxyEnv(settings),
+            ...spawnEnv,
+            ...(sandbox ? { PI_DESKTOP_SANDBOX: '1', PI_DESKTOP_ALLOW_NETWORK: '1', SRT_DEBUG: '1' } : {})
+          },
           stdio: ['ignore', 'pipe', 'pipe'],
-          detached: process.platform !== 'win32',
-          shell: !sandbox && process.platform === 'win32'
+          detached: process.platform !== 'win32'
         })
       } catch (error) {
         finish('failed', null, error instanceof Error ? error.message : String(error))
@@ -788,7 +822,7 @@ export class ScheduleScheduler {
       child.on('close', (code) => {
         if (timedOut) finish('timeout', code, '运行超过 30 分钟，已终止')
         else if (code === 0) finish('success', code)
-        else finish('failed', code, `pi 退出码 ${code ?? 'unknown'}`)
+        else finish('failed', code, `Pi 意外停止了（代码 ${code ?? 'unknown'}）`)
       })
 
       timeout = setTimeout(() => {
@@ -852,7 +886,12 @@ export class ScheduleScheduler {
       title: ok ? `${task.name} 已完成` : `${task.name} ${status === 'timeout' ? '超时' : '失败'}`,
       body: ok ? '点击打开 Pi Desktop 查看本次运行' : '点击打开 Pi Desktop 查看日志'
     })
-    notification.on('click', () => {
+    ScheduleScheduler.liveNotifications.add(notification)
+    const release = (): void => {
+      ScheduleScheduler.liveNotifications.delete(notification)
+    }
+    notification.once('click', () => {
+      release()
       this.openTask(task.id)
       const window = BrowserWindow.getAllWindows()[0]
       if (!window) return
@@ -860,8 +899,12 @@ export class ScheduleScheduler {
       window.show()
       window.focus()
     })
+    notification.once('close', release)
+    notification.once('failed', release)
     notification.show()
   }
+
+  private static liveNotifications = new Set<Notification>()
 }
 
 export const scheduler = new ScheduleScheduler()

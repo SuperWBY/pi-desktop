@@ -36,9 +36,15 @@ import type {
   SkillEntry
 } from './types'
 
-import type { SessionPermission, SessionSecurity } from './types'
+import type { ConversationNetworkBlock, SessionPermissionChange, SessionSecurity } from './types'
+
+import type { DictationApi } from './dictation'
 
 export interface PiDesktopApi {
+  dictation: DictationApi
+  initialTheme?: 'dark' | 'light'
+  systemTheme(): Promise<'dark' | 'light'>
+  onSystemTheme(callback: (theme: 'dark' | 'light') => void): () => void
   bootstrap(): Promise<Bootstrap>
   installPi(): Promise<{ ok: boolean; piPath?: string; piVersion?: string | null; output?: string; error?: string }>
   recheckPi(): Promise<{ piPath: string; piVersion: string | null }>
@@ -46,8 +52,10 @@ export interface PiDesktopApi {
   checkUpdate(): Promise<import('./types').UpdateInfo>
   listAuthProviders(): Promise<import('./types').AuthProviderStatus[]>
   saveApiKey(provider: string, key: string): Promise<import('./types').AuthProviderStatus[]>
+  validateApiKey(provider: string, key: string): Promise<{ ok: true } | { ok: false; error: string }>
   removeAuthProvider(provider: string): Promise<import('./types').AuthProviderStatus[]>
   listOAuthProviders(): Promise<{ id: string; name: string; oauth: boolean; apiKey: boolean }[]>
+  listRuntimeAuthProviders(): Promise<{ id: string; name: string; oauth: boolean; apiKey: boolean }[]>
   startOAuth(provider: string): Promise<{ ok: boolean; error?: string }>
   respondOAuth(id: string, value: string, cancelled?: boolean): void
   cancelOAuth(): void
@@ -59,7 +67,7 @@ export interface PiDesktopApi {
   getJevStatus(): Promise<import('./types').JevStatus>
   sandboxStatus(): Promise<import('./types').SandboxStatus>
   sandboxAudit(): Promise<string[]>
-  onSandboxDomainDenied(callback: (event: { host: string; port?: number }) => void): () => void
+  onSandboxDomainDenied(callback: (event: ConversationNetworkBlock) => void): () => void
   saveJevSettings(patch: { enabled?: boolean; provider?: 'typesafe' | 'opencode-free'; model?: string; key?: string; sharePageText?: boolean }): Promise<import('./types').JevStatus>
   projectTrustSet(cwd: string, decision: boolean | null, scope?: 'project' | 'parent'): Promise<import('./types').ProjectTrustStatus>
   onPiInstallProgress(callback: (progress: { stage: string; message: string }) => void): () => void
@@ -68,6 +76,7 @@ export interface PiDesktopApi {
   updatePiSettings(patch: PiSettings): Promise<PiSettings>
   pickFolder(): Promise<string | null>
   addProject(input: { cwd: string; name: string; trust?: boolean }): Promise<AddProjectResult>
+  removeProject(cwd: string): Promise<{ removedSessions: number }>
   pickFile(options?: { title?: string; defaultPath?: string }): Promise<string | null>
   getPathForFile(file: File): string
   listSessions(): Promise<SessionSummary[]>
@@ -83,10 +92,13 @@ export interface PiDesktopApi {
   openSession(options: { cwd: string; sessionPath?: string | null; scratch?: boolean }): Promise<OpenSessionResult>
   closeSession(): Promise<void>
   sessionSecurity(sessionPath: string | null): Promise<SessionSecurity | null>
-  setSessionPermission(input: { cwd: string; sessionPath: string | null; permission: SessionPermission }): Promise<SessionSecurity>
+  setSessionPermission(input: SessionPermissionChange): Promise<SessionSecurity>
+  creatorAction(input: import('./creator').CreatorAction, sessionPath: string | null): Promise<import('./creator').CreatorResult & {warning?:string}>
+  listCreatedPlugins(): Promise<import('./creator').CreatedPluginsResult>
   command<T = unknown>(command: Record<string, unknown>, timeoutMs?: number): Promise<PiResponse<T>>
   uiResponse(response: Record<string, unknown>): void
   openExternal(url: string): Promise<void>
+  externalBrowserPreview(sessionId: string, backend: string, doc: string, url: string, generation: string): Promise<{ image: string; at: number } | null>
   browserPreview(doc: string, url: string, candidate?: string): Promise<{ width: number; height: number; image: string; point: { x: number; y: number } | null; at: number } | null>
   revealBrowserPage(doc: string, openPanel?: boolean): Promise<boolean>
   browserCurrent(): Promise<BrowserState>
@@ -117,7 +129,13 @@ export interface PiDesktopApi {
   chromeImport(profileId: string, domains: string[]): Promise<ChromeImportResult>
   showItem(path: string): Promise<void>
   openPath(path: string): Promise<boolean>
-  notify(payload: { title?: string; body?: string }): Promise<boolean>
+  notify(payload: {
+    title?: string
+    body?: string
+    cwd?: string | null
+    sessionPath?: string | null
+  }): Promise<boolean>
+  onNotifyOpen(callback: (payload: { cwd?: string | null; sessionPath?: string | null }) => void): () => void
   pickSavePath(options?: {
     defaultName?: string
     filters?: { name: string; extensions: string[] }[]
@@ -128,12 +146,28 @@ export interface PiDesktopApi {
     path: string,
     maxBytes?: number
   ): Promise<{ ok: boolean; content?: string; truncated?: boolean; size?: number; error?: string }>
+  previewMedia(context: { path: string; workspace: string; sessionPath: string | null }): Promise<{ url: string; path: string } | null>
+  saveMediaFile(url: string): Promise<boolean>
+  copyMediaFile(url: string): Promise<void>
+  saveMediaBytes(name: string, bytes: Uint8Array): Promise<boolean>
+  copyMediaImage(bytes: Uint8Array): Promise<void>
+  copyMediaImageFile(url: string): Promise<void>
+  remoteMedia(url: string, name: string, kind: 'image' | 'video' | 'file', action: 'save' | 'copy'): Promise<boolean>
   platform: string
+  onScrollPhase(callback: (phase: 'begin' | 'end' | 'cancel') => void): () => void
   gitStatus(cwd: string): Promise<GitStatus>
+  gitBranch(cwd: string): Promise<string | null>
   gitDiff(cwd: string, path: string, staged?: boolean): Promise<string>
   gitCommit(cwd: string, message: string, paths: string[]): Promise<{ ok: boolean; output: string; error?: string }>
   listSkills(cwd: string): Promise<SkillEntry[]>
   countSkills(cwd: string): Promise<number>
+  /** PTY terminal: create returns { id } or { error } (caller falls back to the runner). */
+  createTerminal(workspace: string): Promise<{ id: string; buffer?: string } | { error: string }>
+  writeTerminal(id: string, data: string): Promise<void>
+  resizeTerminal(id: string, cols: number, rows: number): Promise<void>
+  killTerminal(id: string): Promise<void>
+  onTerminalData(callback: (payload: { id: string; data: string }) => void): () => void
+  onTerminalExit(callback: (payload: { id: string; exitCode: number }) => void): () => void
   listConnectors(cwd: string): Promise<ConnectorEntry[]>
   listMcpConnectors(): Promise<McpConnector[]>
   saveMcpConnector(input: McpConnectorInput): Promise<McpConnector>
@@ -143,6 +177,9 @@ export interface PiDesktopApi {
   listPackages(cwd: string): Promise<PackageEntry[]>
   inspectPackage(source: string, cwd: string): Promise<import('./types').PackageInspection>
   searchPackageCatalog(query: string): Promise<{ entries: import('./types').PackageCatalogEntry[]; error?: string }>
+  translatePackageContent(input: import('./types').PackageTranslationRequest): Promise<import('./types').PackageTranslationResult>
+  onPackageTranslationProgress(callback: (progress: import('./types').PackageTranslationProgress) => void): () => void
+  getPackageDetails(input: import('./types').PackageDetailsRequest): Promise<import('./types').PackageDetailsResult>
   installPackage(
     source: string,
     options: { cwd: string; local?: boolean }
@@ -160,8 +197,10 @@ export interface PiDesktopApi {
   getSchedule(id: string): Promise<{ task: ScheduledTask; runs: ScheduledRun[] } | null>
   getSessionNotices(sessionPath: string): Promise<SessionNotice[]>
   usageSummary(range: UsageRange): Promise<UsageSummary>
-  createSchedule(input: ScheduledTaskInput): Promise<ScheduledTask>
-  updateSchedule(id: string, patch: Partial<ScheduledTaskInput>): Promise<ScheduledTask | null>
+  interpretSchedule(id: string, input: import('./types').ScheduleInterpretationInput): Promise<import('./types').ScheduleInterpretation>
+  cancelScheduleInterpretation(id: string): Promise<void>
+  createSchedule(input: ScheduledTaskInput, requireFuture?: boolean): Promise<ScheduledTask>
+  updateSchedule(id: string, patch: Partial<ScheduledTaskInput>, requireFuture?: boolean): Promise<ScheduledTask | null>
   deleteSchedule(id: string): Promise<boolean>
   setScheduleEnabled(id: string, enabled: boolean): Promise<ScheduledTask | null>
   runScheduleNow(id: string): Promise<ScheduledRun | null>

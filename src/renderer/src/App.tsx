@@ -11,16 +11,19 @@ import { Composer } from './components/Composer'
 import { Welcome } from './components/Welcome'
 import { SettingsPage } from './components/SettingsPage'
 import { SkillsPage } from './components/SkillsPage'
+import { PluginMarketPage } from './components/PluginMarketPage'
 import { SchedulesPage } from './components/SchedulesPage'
+import { NavigationPage } from './components/NavigationPage'
+import { NavigationGestures } from './components/NavigationGestures'
 import { Diagnostics } from './components/Diagnostics'
 import { WorkPanel } from './components/WorkPanel'
 import { ImageLightbox, openImage } from './components/ImageLightbox'
-import { UiRequestDialog } from './components/UiRequestDialog'
 import { Toasts } from './components/Toasts'
 import { ProjectCommandHelp } from './components/ProjectCommandHelp'
-import { ProjectTrustBanner } from './components/ProjectTrustBanner'
+import { ProjectTrustDialog } from './components/ProjectTrustDialog'
 import { AddProjectDialog } from './components/AddProjectDialog'
 import { formatDuration } from './lib/format'
+import { StartupScreen } from './components/StartupScreen'
 
 function Shell(): ReactNode {
   const t = useTranslation()
@@ -28,7 +31,7 @@ function Shell(): ReactNode {
   const [expandedDocument, setExpandedDocument] = useState<string | null>(null)
   const hasConversation = Boolean(state.workspace || state.scratchWorkspace)
   const showWelcome = !hasConversation
-  const failed = state.status === 'error' && hasConversation
+  const failed = state.status === 'error'
   const newChat = hasConversation && !state.streaming && state.messages.length === 0 &&
     (state.status === 'ready' || (state.status === 'starting' && state.sessionPath === null))
 
@@ -96,7 +99,7 @@ function Shell(): ReactNode {
         actions.openSettings(true)
       } else if (key === 'l' && event.shiftKey) {
         event.preventDefault()
-        void actions.setTheme(state.settings.theme === 'dark' ? 'light' : 'dark')
+        void actions.setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark')
       }
     }
 
@@ -149,14 +152,13 @@ function Shell(): ReactNode {
             <button className="button ghost small" onClick={() => actions.openSettings(true)}>{t("Settings")}</button>
             <button
               className="button ghost small"
-              onClick={() => void actions.openSession(state.workspace ?? '', null, { scratch: state.scratchWorkspace })}
+              onClick={() => { if (state.workspace) void actions.openSession(state.workspace, null, { scratch: state.scratchWorkspace }); else window.location.reload() }}
             >
               Retry
             </button>
           </div>
         )}
 
-        <ProjectTrustBanner />
         <div className="conversation-region">
           {state.status === 'ready' && <ComputerPreview expandedDocument={expandedDocument} key={state.sessionPath ?? state.workspace} />}
           {showWelcome ? <Welcome /> : <ChatView newChat={newChat} />}
@@ -166,15 +168,21 @@ function Shell(): ReactNode {
 
       <WorkPanel onExpandedDocument={setExpandedDocument} />
 
-      {state.skillsOpen && <SkillsPage />}
-      {state.schedulesOpen && <SchedulesPage />}
+      <NavigationPage key={state.skillsSection} open={state.skillsOpen} returnFocus={state.skillsSection === 'plugins' ? '.plugins-page-entry' : '.skills-page-entry'}>
+        {state.skillsSection === 'plugins' ? <PluginMarketPage /> : <SkillsPage />}
+      </NavigationPage>
+      <NavigationPage open={state.schedulesOpen} returnFocus=".schedules-entry">
+        <SchedulesPage />
+      </NavigationPage>
       <SettingsPage />
       {state.addProjectOpen && <AddProjectDialog />}
+      <ProjectTrustDialog />
       <Diagnostics />
       <ImageLightbox />
-      <UiRequestDialog />
+      <StartupScreen booting={state.status === 'booting'} failed={state.status === 'error'} />
       <Toasts />
       <ProjectCommandHelp />
+      <NavigationGestures />
     </div>
   )
 }

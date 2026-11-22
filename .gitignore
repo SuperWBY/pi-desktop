@@ -8,3 +8,18 @@ dist/
 build/pi-seed/
 
 build/srt-cli.cjs
+
+build/dictation.node
+build/scroll-phase.node
+
+# Local credentials and Pi workspace state
+.pi/
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.p12
+*.pfx
+
+# Unrelated artwork kept on this computer
+/ChatGPT 图像 2026年10月29日 09_50_44.png

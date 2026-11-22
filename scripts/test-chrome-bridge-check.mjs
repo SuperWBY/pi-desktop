@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { randomBytes, createHmac } from 'node:crypto'
-import { checkChromeBridge } from '../src/main/chrome-bridge-check.ts'
+import { checkChromeBridge, classifyBridgeVersion } from '../src/main/chrome-bridge-check.ts'
+
+assert.equal(classifyBridgeVersion('0.1.13', '0.1.13'), 'current')
+assert.equal(classifyBridgeVersion('0.1.12', '0.1.13'), 'outdated')
+assert.equal(classifyBridgeVersion('0.1.14', '0.1.13'), 'current')
+assert.equal(classifyBridgeVersion(undefined, '0.1.13'), 'unknown')
+assert.equal(classifyBridgeVersion('not-a-version', '0.1.13'), 'unknown')
+assert.equal(classifyBridgeVersion('0.1.13', undefined), 'unknown')
+
 const key = randomBytes(32).toString('hex')
 const sign = (...parts) => createHmac('sha256',Buffer.from(key,'hex')).update(parts.join('\n')).digest('hex')
 const reserve = createServer()
@@ -30,4 +38,4 @@ const blocker=createServer()
 await new Promise(r=>blocker.listen(port,'127.0.0.1',r))
 assert.equal((await checkChromeBridge({port,timeoutMs:100,key})).busy,true)
 await new Promise(r=>blocker.close(r))
-console.log('PASS connection check requires authenticated matching ping and detects busy')
+console.log('PASS Chrome bridge version classification and authenticated connectivity checks')

@@ -3,8 +3,9 @@ import { KeyRound, ShieldCheck } from 'lucide-react'
 import { useTranslation } from '../i18n'
 import { useApp } from '../store'
 import { Modal } from './ui'
+import { DesktopSelect } from './DesktopSelect'
 
-const PROVIDERS: { id: string; label: string; help: string }[] = [
+export const API_KEY_PROVIDERS: { id: string; label: string; help: string }[] = [
   { id: 'openai', label: 'OpenAI', help: '在 platform.openai.com 的 API keys 页面创建。' },
   { id: 'anthropic', label: 'Anthropic', help: '在 console.anthropic.com 的 API keys 页面创建。' },
   { id: 'google', label: 'Google Gemini', help: '在 aistudio.google.com 的 API key 页面创建。' },
@@ -16,23 +17,27 @@ const PROVIDERS: { id: string; label: string; help: string }[] = [
   { id: 'opencode-go', label: 'OpenCode Go', help: '在 OpenCode 账号的 API keys 页面创建。' }
 ]
 
-export function ProviderAuthDialog({ open, onClose, onSaved }: {
+export function ProviderAuthDialog({ open, onClose, onSaved, initialProvider, runtimeProviders }: {
   open: boolean
   onClose: () => void
-  onSaved: () => void
+  onSaved: (provider: string) => void
+  initialProvider?: string
+  runtimeProviders?: { id: string; name: string; apiKey: boolean }[]
 }): ReactNode {
   const t = useTranslation()
   const { actions } = useApp()
+  const choices = runtimeProviders?.filter((item) => item.apiKey).map((item) => ({ id: item.id, label: item.name, help: API_KEY_PROVIDERS.find((entry) => entry.id === item.id)?.help ?? '到服务商网站的 API keys 页面创建，然后粘贴到这里。' })) ?? API_KEY_PROVIDERS
   const [provider, setProvider] = useState('openai')
   const [key, setKey] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
+    if (open && initialProvider && choices.some((item) => item.id === initialProvider)) setProvider(initialProvider)
     if (!open) {
       setKey('')
       setBusy(false)
     }
-  }, [open])
+  }, [open, initialProvider, runtimeProviders])
 
   const save = async (): Promise<void> => {
     if (busy || !key.trim()) return
@@ -41,7 +46,7 @@ export function ProviderAuthDialog({ open, onClose, onSaved }: {
       await window.pi.saveApiKey(provider, key.trim())
       actions.notify('success', t('API Key 已保存'), t('重新读取模型后即可使用。'))
       setKey('')
-      onSaved()
+      onSaved(provider)
       onClose()
     } catch (error) {
       actions.notify('error', t('保存 API Key 失败'), error instanceof Error ? error.message : String(error))
@@ -69,9 +74,8 @@ export function ProviderAuthDialog({ open, onClose, onSaved }: {
       <div className="provider-auth-dialog">
         <label className="form-field">
           <span>{t('服务商')}</span>
-          <select value={provider} onChange={(event) => setProvider(event.target.value)}>
-            {PROVIDERS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-          </select>
+          <DesktopSelect label={t('服务商')} value={provider} onChange={setProvider} disabled={busy}
+            options={choices.map((item) => ({ value: item.id, label: item.label }))} />
         </label>
         <label className="form-field">
           <span>API Key</span>
@@ -88,7 +92,7 @@ export function ProviderAuthDialog({ open, onClose, onSaved }: {
             />
           </div>
         </label>
-        <p className="provider-auth-help">{t(PROVIDERS.find((item) => item.id === provider)?.help ?? '到服务商网站的 API keys 页面创建，然后粘贴到这里。')}</p>
+        <p className="provider-auth-help">{t(choices.find((item) => item.id === provider)?.help ?? '到服务商网站的 API keys 页面创建，然后粘贴到这里。')}</p>
         <div className="provider-auth-note">
           <ShieldCheck size={15} />
           <span>{t('密钥只保存在这台电脑上，不会上传，界面里也不会再次显示。')}</span>

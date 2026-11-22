@@ -1,11 +1,22 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Minus, Plus, X } from 'lucide-react'
+import { useTranslation } from '../i18n'
+import { MediaActions } from './MediaActions'
 
 let openListener: ((src: string | null) => void) | null = null
 
 /** Any <img> inside the transcript can be opened full size. */
 export function openImage(src: string): void {
   openListener?.(src)
+}
+
+export function InlineImage({ src, alt }: { src: string; alt: string }): ReactNode {
+  const t = useTranslation()
+  return (
+    <button type="button" className="inline-image" aria-label={alt ? `${t('放大图片')} · ${alt}` : t('放大图片')} onClick={() => openImage(src)}>
+      <img className="md-image" src={src} alt={alt} loading="lazy" />
+    </button>
+  )
 }
 
 export function ImageLightbox(): ReactNode {
@@ -41,6 +52,15 @@ export function ImageLightbox(): ReactNode {
   }, [src])
 
   if (!src) return null
+  let imageName = '图片.png'
+  try {
+    const url = new URL(src)
+    if (url.protocol === 'https:') imageName = decodeURIComponent(url.pathname.split('/').pop() || imageName)
+    else if (url.protocol === 'data:' && /^data:image\/(?:jpeg|webp|gif|avif|svg\+xml)/i.test(src)) {
+      const ext = /^data:image\/([^;,]+)/i.exec(src)?.[1]?.replace('jpeg', 'jpg').replace('svg+xml', 'svg')
+      if (ext) imageName = `图片.${ext}`
+    }
+  } catch { /* use the default name */ }
 
   return (
     <div className="lightbox" onMouseDown={() => setSrc(null)} onWheel={(e) => e.stopPropagation()}>
@@ -57,6 +77,7 @@ export function ImageLightbox(): ReactNode {
         }}
       />
       <div className="lightbox-bar" onMouseDown={(event) => event.stopPropagation()}>
+        <MediaActions src={src} name={imageName} kind="image" />
         <button onClick={() => setZoom((value) => Math.min(4, value + 0.25))} aria-label="放大">
           <Plus size={14} />
         </button>

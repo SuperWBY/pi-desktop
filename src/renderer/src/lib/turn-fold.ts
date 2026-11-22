@@ -89,7 +89,9 @@ export function useTurnFolds(
     (turn: Turn): FoldLevel => {
       const entry = map[turn.key]
       if (entry) return entry.level
-      if (Object.keys(turn.stats.tools).some(name => name.startsWith('computer_use_'))) return 1
+      // A live desktop/browser turn stays on the progress line until the reader
+      // opens the steps. Finished turns follow the same fold setting as the rest.
+      if (turn.streaming && Object.keys(turn.stats.tools).some(name => name.startsWith('computer_use_'))) return 1
       if (turn.streaming) return 0
       return settings.autoFold ? settings.defaultLevel : 0
     },

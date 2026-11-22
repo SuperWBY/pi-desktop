@@ -1,5 +1,6 @@
-import { chmodSync, mkdirSync, promises as fs } from 'node:fs'
+import { chmodSync, mkdirSync, realpathSync, promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
+import { randomUUID } from 'node:crypto'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { SessionSearchMatch, SessionSummary } from '@shared/types'
@@ -305,14 +306,23 @@ export interface DeletedSession {
   name: string
 }
 
+function insideRoot(root: string, target: string): boolean {
+  let base = root
+  let file = target
+  try { base = realpathSync(root) } catch { /* The lexical path is the fallback. */ }
+  try { file = realpathSync(target) } catch { /* A missing file still has to stay under the root. */ }
+  const prefix = base.endsWith(sep) ? base : base + sep
+  return file === base || file.startsWith(prefix)
+}
+
 /** Soft delete: move the transcript into `<sessions>/.trash` so it can be undone. */
 export async function deleteSession(file: string): Promise<DeletedSession | null> {
   const root = resolve(sessionsRoot())
   const target = resolve(file)
-  if (!target.startsWith(root + sep)) throw new Error('Session is outside the session directory')
+  if (!insideRoot(root, target)) throw new Error('Session is outside the session directory')
   const trashDir = join(root, '.trash')
   await fs.mkdir(trashDir, { recursive: true })
-  const trashPath = join(trashDir, `${Date.now()}-${basename(target)}`)
+  const trashPath = join(trashDir, `${Date.now()}-${randomUUID()}-${basename(target)}`)
   await fs.rename(target, trashPath)
   cache.delete(target)
   return { path: target, trashPath, name: basename(target, '.jsonl') }

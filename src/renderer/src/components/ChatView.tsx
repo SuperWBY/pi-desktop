@@ -21,6 +21,14 @@ import { TranscriptView } from './TranscriptView'
 import { TurnPreview } from './TurnPreview'
 import { buildTurns, type Turn } from '../lib/turns'
 import { useTurnFolds, type FoldLevel } from '../lib/turn-fold'
+import { toolMeta, toolPhrases } from '../lib/tools'
+
+const SUGGESTIONS: ReadonlyArray<readonly [string, string]> = [
+  ['研究一个问题', '帮我研究这个问题，先确认范围，再整理资料、来源和结论：'],
+  ['整理文件资料', '帮我整理这些文件，先说明发现了什么，再给出整理建议：'],
+  ['规划并执行任务', '我想完成这个目标，请先拆解步骤、说明需要的信息和验收方式：'],
+  ['了解这个项目', '请介绍当前项目的用途、主要内容和建议从哪里开始。']
+]
 
 export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
   const t = useTranslation()
@@ -152,16 +160,17 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
     const node = scrollerRef.current
     if (!node) return
     const distance = node.scrollHeight - node.scrollTop - node.clientHeight
-    stickRef.current = distance < 80
+    // Once the user scrolls away, resume following only when they actually
+    // return to the bottom. A wider threshold makes small upward gestures
+    // re-enable following on the very next scroll event during streaming.
+    stickRef.current = distance <= 1
     setShowJump(distance >= 80 && state.messages.length > 0)
     setRailPreview(null)
   }
 
-  const streamingIndex = state.streaming ? lastAssistantIndex : -1
   const turns = useMemo(
-    () => buildTurns(state.messages, state.toolRuns, results, streamingIndex),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state.messages, state.toolRuns, results, streamingIndex]
+    () => buildTurns(state.messages, state.toolRuns, state.streaming),
+    [state.messages, state.toolRuns, state.streaming]
   )
 
   const folds = useTurnFolds(state.sessionPath, turns, {
@@ -173,6 +182,7 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
   const [transcriptOpen, setTranscriptOpen] = useState(false)
   const [olderOpen, setOlderOpen] = useState(false)
   const [activeTurn, setActiveTurn] = useState<string | null>(null)
+  const [railNear, setRailNear] = useState(false)
   const [railPreview, setRailPreview] = useState<{
     turn: Turn
     index: number
@@ -184,6 +194,24 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
   const railClose = useRef<number | null>(null)
   const railHoverIndex = useRef(-1)
   const railInside = useRef(false)
+  const freshPath = useRef<string | null>(null)
+  const freshCount = useRef<number | null>(null)
+  if (freshPath.current !== (state.sessionPath || '')) {
+    freshPath.current = state.sessionPath || ''
+    freshCount.current = null
+  }
+
+  useEffect(() => {
+    if (state.status !== 'ready' || freshCount.current !== null) return
+    if (state.messages.length > 0) {
+      freshCount.current = state.messages.length
+      return
+    }
+    const timer = window.setTimeout(() => {
+      if (freshCount.current === null) freshCount.current = state.messages.length
+    }, 400)
+    return () => window.clearTimeout(timer)
+  }, [state.status, state.sessionPath, state.messages.length])
 
   const cancelRailClose = useCallback(() => {
     if (railClose.current) {
@@ -388,19 +416,27 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
   const streamingMessage =
     lastAssistantIndex >= 0 ? (state.messages[lastAssistantIndex] as AssistantMessage) : null
   const thinkingLive = Boolean(
-    state.streaming &&
+    state.streaming && state.streamingIndex === lastAssistantIndex &&
       streamingMessage?.content?.some(
         (block) => block.type === 'thinking' && block.thinking.trim().length > 0
       )
   )
   const runningTool = Object.values(state.toolRuns).find((run) => run.status === 'running')
   const activity = state.retry
-    ? `${t('Retrying {attempt}/{max}').replace('{attempt}', String(state.retry.attempt)).replace('{max}', String(state.retry.maxAttempts))}${state.retry.errorMessage ? ` — ${state.retry.errorMessage}` : ''}`
+    ? `${t('Retrying {attempt}/{max}').replace('{attempt}', String(state.retry.attempt)).replace('{max}', String(state.retry.maxAttempts))}${state.retry.errorMessage && !state.networkBlock ? ` — ${state.retry.errorMessage}` : ''}`
     : state.compacting
       ? t('Compacting context…')
       : runningTool
-        ? `${runningTool.name}…`
-        : t('运行中…')
+        ? (() => {
+            const meta = toolMeta(runningTool.name, runningTool.args)
+            const object = meta.subtitle ? (meta.translateSubtitle ? t(meta.subtitle) : meta.subtitle) : ''
+            return [t(toolPhrases(runningTool.name).running), object].filter(Boolean).join(' ')
+          })()
+        : state.awaitingResponse
+          ? t('正在发送…')
+          : state.streamingIndex < 0 || !streamingMessage?.content?.some((block) => block.type === 'text' && block.text.trim())
+            ? t('等待模型响应…')
+            : t('正在回复')
 
   if (state.status === 'starting' && state.messages.length === 0 && !newChat) {
     if (!showStarting) {
@@ -415,7 +451,7 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
         <div className="chat-inner">
           <div className="chat-starting">
             <Spinner size={16} />
-            <span>{state.settings.language === 'en' ? `Starting pi in ${baseName(state.workspace)}…` : `正在 ${baseName(state.workspace)} 里启动 pi…`}</span>
+            <span>{state.settings.language === 'en' ? `Starting in ${baseName(state.workspace)}…` : `正在 ${baseName(state.workspace)} 里启动…`}</span>
           </div>
         </div>
       </div>
@@ -429,15 +465,32 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
           <div className="empty-mark">
             <PiLogo size={32} />
           </div>
-          <h1 className="empty-title">{t('想让 Pi 帮你做什么？')}</h1>
-          <p>{t('例如，比较两个网页、整理一份资料，或安排一件待办。')}</p>
+          <h1 className="empty-title">{t('想做点什么')}</h1>
+          <div className="empty-suggestions">
+            {SUGGESTIONS.map(([label, prompt]) => (
+              <button key={label} type="button" className="empty-suggestion" onClick={() => actions.fillComposer(prompt, true, true)}>
+                {t(label)}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     )
   }
 
+  const freshTurn = freshCount.current !== null && state.messages.length > freshCount.current
+    ? visibleTurns[visibleTurns.length - 1]?.key
+    : null
+
   return (
-    <div className="chat-wrap">
+    <div
+      className={clsx('chat-wrap', railNear && 'rail-near')}
+      onMouseMove={(event) => {
+        const left = event.currentTarget.getBoundingClientRect().left
+        setRailNear(event.clientX - left < 36)
+      }}
+      onMouseLeave={() => setRailNear(false)}
+    >
       {showStarting && <div className="top-progress" />}
       <div
         className="chat-scroll"
@@ -477,11 +530,13 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
               toolRuns={state.toolRuns}
               results={results}
               busy={state.streaming}
+              fresh={turn.key === freshTurn}
+              completed={!state.streaming || turn !== turns.at(-1)}
             />
           ))}
 
-          {state.streaming && !thinkingLive && !Object.keys(turns.at(-1)?.stats.tools ?? {}).some(name => name.startsWith('computer_use_')) && (
-            <div className="activity">
+          {(state.awaitingResponse || state.streaming) && !thinkingLive && !Object.keys(turns.at(-1)?.stats.tools ?? {}).some(name => name.startsWith('computer_use_')) && (
+            <div className="activity" role="status" aria-live="polite">
               <Spinner size={14} />
               <span>{activity}</span>
             </div>
@@ -494,7 +549,7 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
         </div>
       </div>
 
-      {turns.length >= 4 && (
+      {turns.length > 6 && (
         <nav
           className="turn-rail"
           aria-label={t('轮次导航')}
@@ -512,7 +567,7 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
                 }}
                 className={clsx(
                   'turn-rail-tick',
-                  turn.failed && 'has-error',
+                  !turn.streaming && Boolean(turn.finalMessage?.errorMessage) && 'has-error',
                   turn.streaming && 'is-live',
                   activeTurn === turn.key && 'is-active'
                 )}

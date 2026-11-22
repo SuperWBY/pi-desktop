@@ -1,6 +1,7 @@
 /** Commands that can destroy data, escalate privileges, or publish code. */
 const DANGEROUS_PATTERNS: { label: string; pattern: RegExp }[] = [
   { label: '递归删除', pattern: /\brm\s+(-[^\s]*[rf][^\s]*|--recursive|--force)\b/i },
+  { label: '删除文件', pattern: /(?:^|[;&|\n(])\s*(?:command\s+)?rm\s+(?!-\s*(?:h|\?))(?:[^\n]+)/i },
   { label: '权限提升', pattern: /\bsudo\b|\bdoas\b/i },
   { label: '过宽权限', pattern: /\b(chmod|chown)\b[^\n]*\b777\b/i },
   { label: '磁盘写入', pattern: /\b(dd|m[k]fs|diskutil\s+erase|fdisk)\b/i },

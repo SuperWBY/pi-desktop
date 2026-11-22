@@ -1,87 +1,23 @@
 import { useTranslation } from '../i18n'
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowLeft, ChevronDown, Clock, FolderOpen, Play, Plus, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 import type {
   BackgroundSchedulerStatus,
   ScheduleCadence,
+  SchedulePlan,
   ScheduledRun,
   ScheduledRunStatus,
-  ScheduledTask,
-  ScheduledTaskInput
+  ScheduledTask
 } from '@shared/types'
-import { useApp } from '../store'
+import { useApp, type ScheduleDraft } from '../store'
 import { baseName, formatDuration } from '../lib/format'
 import { Modal } from './ui'
-
-type CadenceKind = 'once' | 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'cron' | 'event'
+import { DesktopSelect } from './DesktopSelect'
+import { useNavigationHistory } from '../lib/use-navigation-history'
 
 const DEFAULT_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
-
-function toLocalInput(timestamp: number): string {
-  const date = new Date(timestamp - new Date(timestamp).getTimezoneOffset() * 60_000)
-  return date.toISOString().slice(0, 16)
-}
-
-function zonedParts(timestamp: number, timezone: string): Record<string, number> {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23'
-  }).formatToParts(new Date(timestamp))
-  const value = (type: string): number => Number(parts.find((part) => part.type === type)?.value ?? 0)
-  return {
-    year: value('year'),
-    month: value('month'),
-    day: value('day'),
-    hour: value('hour'),
-    minute: value('minute')
-  }
-}
-
-function toZonedInput(timestamp: number, timezone: string): string {
-  try {
-    const p = zonedParts(timestamp, timezone)
-    return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}T${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}`
-  } catch {
-    return toLocalInput(timestamp)
-  }
-}
-
-function zonedInputToUtc(value: string, timezone: string): number | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value)
-  if (!match) return null
-  const [year, month, day, hour, minute] = match.slice(1).map(Number)
-  const desired = Date.UTC(year, month - 1, day, hour, minute, 0)
-  let guess = desired
-  try {
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const actual = zonedParts(guess, timezone)
-      const actualUnix = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, 0)
-      const delta = desired - actualUnix
-      if (delta === 0) break
-      guess += delta
-    }
-    const final = zonedParts(guess, timezone)
-    if (
-      final.year !== year ||
-      final.month !== month ||
-      final.day !== day ||
-      final.hour !== hour ||
-      final.minute !== minute
-    ) {
-      return null
-    }
-    return guess
-  } catch {
-    return null
-  }
-}
 
 function formatWhen(timestamp: number | null, timezone?: string): string {
   if (!timestamp) return '—'
@@ -151,18 +87,215 @@ function deriveName(prompt: string): string {
   return first.length > 24 ? `${first.slice(0, 24)}…` : first
 }
 
-const TIMEZONES = [
-  'UTC',
-  'Asia/Shanghai',
-  'Asia/Tokyo',
-  'Asia/Singapore',
-  'Europe/London',
-  'Europe/Berlin',
-  'America/New_York',
-  'America/Chicago',
-  'America/Los_Angeles',
-  'Australia/Sydney'
-]
+function ScheduleEditor({ task, draft, onClose, onSaved }: {
+  task?: ScheduledTask
+  draft?: ScheduleDraft
+  onClose: () => void
+  onSaved: (task: ScheduledTask) => void
+}): ReactNode {
+  const t = useTranslation()
+  const { state } = useApp()
+  const [description, setDescription] = useState(draft?.prompt ?? '')
+  const [question, setQuestion] = useState('')
+  const [answer, setAnswer] = useState('')
+  const [replies, setReplies] = useState<{ question: string; answer: string }[]>([])
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const pending = useRef<string | null>(null)
+  const savingRef = useRef(false)
+  const [advanced, setAdvanced] = useState(false)
+  const [catchUp, setCatchUp] = useState(task?.catchUp ?? false)
+  const [notifications, setNotifications] = useState(task?.notifications ?? true)
+  const [runMode, setRunMode] = useState(task?.runMode ?? 'new-session')
+  const [initial] = useState<SchedulePlan | null>(() => {
+    if (task) return {
+      name: task.name, prompt: task.prompt, cadence: task.cadence, timezone: task.timezone ?? DEFAULT_TZ,
+      nextRuns: task.nextRunAt ? [task.nextRunAt] : []
+    }
+    return draft?.cadence ? {
+      name: draft.name || deriveName(draft.prompt), prompt: draft.prompt, cadence: draft.cadence,
+      timezone: DEFAULT_TZ, nextRuns: []
+    } : null
+  })
+  const [plan, setPlan] = useState(initial)
+
+  useEffect(() => {
+    if (!initial) return
+    let active = true
+    void window.pi.previewSchedule(initial.cadence, 3, initial.timezone).then((nextRuns) => {
+      if (active) setPlan((current) => current === initial ? { ...initial, nextRuns } : current)
+    }).catch(() => undefined)
+    return () => { active = false }
+  }, [initial])
+
+  useEffect(() => () => {
+    if (pending.current) void window.pi.cancelScheduleInterpretation(pending.current).catch(() => undefined)
+    pending.current = null
+  }, [])
+
+  const changeDescription = (value: string): void => {
+    if (pending.current) {
+      void window.pi.cancelScheduleInterpretation(pending.current).catch(() => undefined)
+      pending.current = null
+      setBusy(false)
+    }
+    setDescription(value)
+    setQuestion('')
+    setAnswer('')
+    setReplies([])
+    setError('')
+    setPlan(task && !value.trim() ? initial : null)
+  }
+
+  const identify = async (): Promise<void> => {
+    if (!description.trim() || pending.current || (question && !answer.trim())) return
+    const id = crypto.randomUUID()
+    pending.current = id
+    setBusy(true)
+    setError('')
+    const answers = question ? [...replies, { question, answer: answer.trim() }] : replies
+    const model = state.piState?.model
+    try {
+      const result = await window.pi.interpretSchedule(id, {
+        description: description.trim(), replies: answers, taskId: task?.id,
+        model: model ? { provider: model.provider, id: model.id } : undefined
+      })
+      if (pending.current !== id) return
+      if ('plan' in result) {
+        setPlan(result.plan)
+        setQuestion('')
+      } else if ('question' in result) {
+        setReplies(answers)
+        setAnswer('')
+        setQuestion(result.question)
+      } else if (result.error === 'offline') {
+        setError('识别计划需要联网。打开联网后再试。')
+      } else if (result.error === 'expired') {
+        setError('这个时间已经过去了，请换一个时间。')
+      } else {
+        setError(result.error === 'model' ? '暂时无法连接模型，请检查模型连接后重试。' : '没能识别这条计划。请补充要做的事和具体时间，再试一次。')
+      }
+    } catch {
+      if (pending.current === id) setError('暂时无法识别计划，请重试。')
+    } finally {
+      if (pending.current === id) {
+        pending.current = null
+        setBusy(false)
+      }
+    }
+  }
+
+  const save = async (): Promise<void> => {
+    if (!plan || savingRef.current) return
+    savingRef.current = true
+    setSaving(true)
+    setError('')
+    try {
+      const { name, prompt, cadence, timezone } = plan
+      const options = { catchUp, notifications, runMode }
+      const schedule = { name, prompt, cadence, timezone }
+      const result = task
+        ? await window.pi.updateSchedule(task.id, description.trim() ? { ...schedule, ...options } : options, Boolean(description.trim()))
+        : await window.pi.createSchedule({
+          ...schedule, ...options, projectPath: state.workspace ?? '', sourceSessionPath: state.sessionPath ?? undefined
+        }, true)
+      if (!result) throw new Error('Task is no longer available')
+      onSaved(result)
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('SCHEDULE_TIME_EXPIRED')) {
+        setError('这个时间已经过去了，请换一个时间。')
+        setPlan(null)
+      } else {
+        setError('任务未保存，请再试一次。')
+      }
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
+  }
+
+  const frequency = plan && (plan.cadence.type === 'cron'
+    ? describeCron(plan.cadence.expression) || plan.summary || t('自定义时间')
+    : plan.cadence.type === 'weekdays' ? `${t('周一至周五')} ${plan.cadence.time}` : cadenceText(plan.cadence, plan.timezone))
+  return (
+    <Modal open width={550}
+      title={t(task ? '编辑定时任务' : '新建定时任务')}
+      onClose={() => { if (!savingRef.current) onClose() }}
+      footer={
+        <>
+          <button type="button" className="button ghost" disabled={saving} onClick={onClose}>{t('取消')}</button>
+          <button type="button" className="button primary"
+            disabled={busy || saving || (!plan && (!description.trim() || Boolean(question && !answer.trim())))}
+            onClick={() => void (plan ? save() : identify())}>
+            {t(saving ? '保存中…' : busy ? '正在识别…' : plan ? task ? '保存' : '创建任务' : question ? '继续识别' : '识别计划')}
+          </button>
+        </>
+      }>
+      <div className="schedule-form" aria-busy={busy || saving}>
+        <label className="schedule-field">
+          <span>{t(task ? '想怎么修改？' : '什么时候做什么？')}</span>
+          <textarea className="schedule-textarea" autoFocus rows={3} maxLength={5000}
+            disabled={saving} value={description} onChange={(event) => changeDescription(event.target.value)}
+            placeholder={t(task ? '改为每周五下午 6 点' : '例如 每个工作日上午 9 点，汇总昨天的订单')} />
+        </label>
+        {question && (
+          <label key={question} className="schedule-field schedule-question">
+            <span>{question}</span>
+            <input className="rename-input" autoFocus value={answer} maxLength={1000} disabled={busy}
+              onChange={(event) => setAnswer(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                  event.preventDefault()
+                  void identify()
+                }
+              }}
+              placeholder={t('补充一句即可')} />
+          </label>
+        )}
+        {error && <p role="alert" className="schedule-error">{t(error)}</p>}
+        {plan && (
+          <div className="schedule-plan" aria-live="polite">
+            <div className="schedule-plan-title"><Clock size={15} /> <strong>{plan.name}</strong></div>
+            {plan.prompt !== plan.name && <p className="schedule-plan-prompt">{plan.prompt}</p>}
+            <div className="schedule-plan-time">
+              <span>{frequency}</span>
+              {plan.cadence.type !== 'event' && <small>{plan.timezone}</small>}
+            </div>
+            {plan.nextRuns.length > 0 && (
+              <div className="schedule-preview">
+                <span>{t(plan.nextRuns.length === 1 ? '下次运行' : '接下来')}</span>
+                {plan.nextRuns.map((date) => <time dateTime={new Date(date).toISOString()} key={date}>{formatWhen(date, plan.timezone)}</time>)}
+              </div>
+            )}
+          </div>
+        )}
+        <button type="button" className={clsx('schedule-more', advanced && 'open')} aria-expanded={advanced}
+          onClick={() => setAdvanced(!advanced)}><ChevronDown size={13} />{t('更多选项')}</button>
+        {advanced && (
+          <div className="schedule-advanced">
+            <label className="schedule-adv-row">
+              <span>{t('运行方式')}</span>
+              <DesktopSelect label={t('运行方式')} value={runMode} disabled={saving}
+                onChange={(value) => setRunMode(value === 'continue-session' ? 'continue-session' : 'new-session')}
+                options={[{ value: 'new-session', label: t('每次新会话') }, { value: 'continue-session', label: t('继续同一会话') }]} />
+            </label>
+            <div className="schedule-adv-row">
+              <span>{t('完成通知')}</span>
+              <button type="button" className={clsx('switch', notifications && 'on')} role="switch" aria-label={t('完成通知')}
+                aria-checked={notifications} disabled={saving} onClick={() => setNotifications(!notifications)}><span className="switch-knob" /></button>
+            </div>
+            <div className="schedule-adv-row">
+              <span>{t('错过时间后补跑')}</span>
+              <button type="button" className={clsx('switch', catchUp && 'on')} role="switch" aria-label={t('错过时间后补跑')}
+                aria-checked={catchUp} disabled={saving} onClick={() => setCatchUp(!catchUp)}><span className="switch-knob" /></button>
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
+  )
+}
 
 export function SchedulesPage(): ReactNode {
   const t = useTranslation()
@@ -172,29 +305,11 @@ export function SchedulesPage(): ReactNode {
   const [selected, setSelected] = useState<ScheduledTask | null>(null)
   const [runs, setRuns] = useState<ScheduledRun[]>([])
   const [runsLoading, setRunsLoading] = useState(false)
-  const [createOpen, setCreateOpen] = useState(false)
-  const [editing, setEditing] = useState<ScheduledTask | null>(null)
+  const [editor, setEditor] = useState<{ task?: ScheduledTask; draft?: ScheduleDraft } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<ScheduledTask | null>(null)
-  const [saving, setSaving] = useState(false)
   const [background, setBackground] = useState<BackgroundSchedulerStatus | null>(null)
   const [backgroundBusy, setBackgroundBusy] = useState(false)
 
-  const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [prompt, setPrompt] = useState('')
-  const [kind, setKind] = useState<CadenceKind>('daily')
-  const [time, setTime] = useState('09:00')
-  const [onceAt, setOnceAt] = useState(() => toLocalInput(Date.now() + 60 * 60_000))
-  const [weekday, setWeekday] = useState(1)
-  const [minute, setMinute] = useState(0)
-  const [cronExpression, setCronExpression] = useState('0 9 * * *')
-  const [cronError, setCronError] = useState<string | null>(null)
-  const [timezone, setTimezone] = useState(DEFAULT_TZ)
-  const [tzError, setTzError] = useState<string | null>(null)
-  const [runMode, setRunMode] = useState<'new-session' | 'continue-session'>('new-session')
-  const [catchUp, setCatchUp] = useState(false)
-  const [notifications, setNotifications] = useState(true)
-  const [preview, setPreview] = useState<number[]>([])
-  const [noNext, setNoNext] = useState(false)
   const [runningSince, setRunningSince] = useState<Record<string, number>>({})
   const [now, setNow] = useState(Date.now())
 
@@ -220,29 +335,43 @@ export function SchedulesPage(): ReactNode {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
+      if (!state.schedulesOpen) return
       if (event.key !== 'Escape' || event.defaultPrevented) return
-      if (createOpen || deleteTarget) return
+      if (editor || deleteTarget) return
       event.preventDefault()
       if (selected) setSelected(null)
       else actions.openSchedules(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [actions, createOpen, deleteTarget, selected])
+  }, [actions, state.schedulesOpen, editor, deleteTarget, selected])
 
+  const openDetailToken = useRef(0)
   const openDetail = useCallback(async (task: ScheduledTask) => {
+    const token = ++openDetailToken.current
     setSelected(task)
     setRunsLoading(true)
     try {
       const detail = await window.pi.getSchedule(task.id)
+      // A slower response for an earlier click must not overwrite the current one.
+      if (token !== openDetailToken.current) return
       if (detail) {
         setSelected(detail.task)
         setRuns(detail.runs)
       }
     } finally {
-      setRunsLoading(false)
+      if (token === openDetailToken.current) setRunsLoading(false)
     }
   }, [])
+  useNavigationHistory({ value: selected, key: selected?.id ?? 'list', enabled: state.schedulesOpen,
+    isParent: (key) => key === 'list',
+    canRestore: (next) => !next || tasks.some((task) => task.id === next.id),
+    busy: Boolean(editor || deleteTarget), restore: (next) => {
+      const fresh = next && tasks.find((task) => task.id === next.id)
+      if (fresh) void openDetail(fresh)
+      else setSelected(null)
+    },
+    animate: '.navigation-page:not([inert]) .detail-page,.navigation-page:not([inert]) .skills-scroll' })
 
   useEffect(() => {
     return window.pi.onScheduleEvent((event) => {
@@ -290,144 +419,13 @@ export function SchedulesPage(): ReactNode {
     })
   }, [selected?.id])
 
-  const cadence: ScheduleCadence = useMemo(() => {
-    if (kind === 'once') {
-      const at = zonedInputToUtc(onceAt, timezone)
-      return { type: 'once', at: at ?? new Date(onceAt).getTime() }
-    }
-    if (kind === 'event') {
-      const path =
-        editing?.cadence.type === 'event'
-          ? editing.cadence.path
-          : editing?.projectPath || state.workspace || ''
-      return { type: 'event', event: 'file-change', path, debounceMs: 800 }
-    }
-    if (kind === 'cron') return { type: 'cron', expression: cronExpression.trim() }
-    if (kind === 'hourly') return { type: 'hourly', minute }
-    if (kind === 'daily') return { type: 'daily', time }
-    if (kind === 'weekdays') return { type: 'weekdays', time }
-    return { type: 'weekly', weekday, time }
-  }, [cronExpression, editing, kind, minute, onceAt, state.workspace, time, timezone, weekday])
-
+  const openCreate = (): void => setEditor({})
+  const openEdit = (task: ScheduledTask): void => setEditor({ task })
   useEffect(() => {
-    if (!createOpen) return
-    let alive = true
-    try {
-      if (timezone.trim()) new Intl.DateTimeFormat('en-US', { timeZone: timezone.trim() })
-      setTzError(null)
-    } catch {
-      setTzError('无效的时区')
-    }
-    if (kind === 'cron') {
-      void window.pi.validateCron(cronExpression).then((error) => {
-        if (alive) setCronError(error)
-      })
-    } else {
-      setCronError(null)
-    }
-    void window.pi.previewSchedule(cadence, 3, timezone).then((next) => {
-      if (alive) {
-        setPreview(next)
-        setNoNext(kind !== 'event' && next.length === 0)
-      }
-    })
-    return () => {
-      alive = false
-    }
-  }, [cadence, createOpen, cronExpression, kind, timezone])
-
-  const resetForm = (task?: ScheduledTask): void => {
-    setPrompt(task?.prompt ?? '')
-    setTimezone(task?.timezone || DEFAULT_TZ)
-    setRunMode(task?.runMode ?? 'new-session')
-    setCatchUp(task?.catchUp ?? false)
-    setNotifications(task?.notifications ?? true)
-    const value = task?.cadence
-    setAdvancedOpen(value?.type === 'cron' || value?.type === 'event')
-    if (value) {
-      setKind(value.type)
-      if (value.type === 'once') setOnceAt(toZonedInput(value.at, task?.timezone || DEFAULT_TZ))
-      if (value.type === 'hourly') setMinute(value.minute)
-      if (value.type === 'weekly') {
-        setWeekday(value.weekday)
-        setTime(value.time)
-      }
-      if (value.type === 'daily' || value.type === 'weekdays') setTime(value.time)
-      if (value.type === 'cron') setCronExpression(value.expression)
-    } else {
-      setKind('daily')
-      setTime('09:00')
-      setWeekday(1)
-      setMinute(0)
-      setOnceAt(toLocalInput(Date.now() + 60 * 60_000))
-      setCronExpression('0 9 * * *')
-    }
-  }
-
-  const openCreate = (): void => {
-    setEditing(null)
-    resetForm()
-    setCreateOpen(true)
-  }
-
-  const openEdit = (task: ScheduledTask): void => {
-    setEditing(task)
-    resetForm(task)
-    setCreateOpen(true)
-  }
-
-  useEffect(() => {
-    const draft = state.scheduleDraft
-    if (!draft) return
-    setEditing(null)
-    resetForm()
-    setPrompt(draft.prompt)
-    const value = draft.cadence
-    if (value) {
-      setKind(value.type)
-      if (value.type === 'cron') setCronExpression(value.expression)
-      if (value.type === 'once') setOnceAt(toZonedInput(value.at, DEFAULT_TZ))
-      if (value.type === 'hourly') setMinute(value.minute)
-      if (value.type === 'weekly') {
-        setWeekday(value.weekday)
-        setTime(value.time)
-      }
-      if (value.type === 'daily' || value.type === 'weekdays') setTime(value.time)
-    }
-    setCreateOpen(true)
+    if (!state.scheduleDraft) return
+    setEditor({ draft: state.scheduleDraft })
     actions.clearScheduleDraft()
-  }, [actions, state.scheduleDraft, state.workspace])
-
-  const save = async (): Promise<void> => {
-    if (!prompt.trim() || saving || cronError) return
-    setSaving(true)
-    try {
-      const projectPath = editing?.projectPath || state.workspace || ''
-      const input: ScheduledTaskInput = {
-        name: editing?.name ?? deriveName(prompt),
-        prompt: prompt.trim(),
-        projectPath,
-        sourceSessionPath: editing?.sourceSessionPath ?? state.sessionPath ?? undefined,
-        cadence,
-        timezone,
-        runMode,
-        catchUp,
-        notifications,
-        enabled: editing?.enabled ?? true
-      }
-      if (editing?.tools?.length) input.tools = editing.tools
-      if (editing) {
-        const updated = await window.pi.updateSchedule(editing.id, input)
-        if (updated) setSelected(updated)
-      } else {
-        await window.pi.createSchedule(input)
-      }
-      setCreateOpen(false)
-      await load()
-    } finally {
-      setSaving(false)
-    }
-  }
+  }, [actions, state.scheduleDraft])
 
   const toggle = async (task: ScheduledTask): Promise<void> => {
     await window.pi.setScheduleEnabled(task.id, !task.enabled)
@@ -471,12 +469,6 @@ export function SchedulesPage(): ReactNode {
 
   const enabledCount = tasks.filter((task) => task.enabled).length
   const runningCount = tasks.filter((task) => task.lastStatus === 'running').length
-  const timezoneOptions = useMemo(
-    () => Array.from(new Set([DEFAULT_TZ, ...TIMEZONES, timezone])),
-    [timezone]
-  )
-  const canSave = Boolean(prompt.trim() && !cronError && !tzError && !noNext)
-
   return (
     <div className="skills-page" role="dialog" aria-label={t('定时任务')}>
       <div className="skills-drag" />
@@ -660,7 +652,7 @@ export function SchedulesPage(): ReactNode {
                 <Plus size={13} /> {t('新建任务')}
               </button>
               <p className="schedule-empty-hint">
-                {t('也可以直接在对话里说「5 分钟后…」，pi 会创建定时任务')}
+                {t('也可以直接在对话里说「5 分钟后…」，Pi 会创建定时任务')}
               </p>
             </div>
           ) : (
@@ -724,177 +716,18 @@ export function SchedulesPage(): ReactNode {
         </div>
       )}
 
-      <Modal
-        open={createOpen}
-        title={editing ? t('编辑定时任务') : t('新建定时任务')}
-        subtitle={t('到时间后会在后台自动做这件事。')}
-        onClose={() => (saving ? undefined : setCreateOpen(false))}
-        width={680}
-        footer={
-          <>
-            <button className="button ghost" onClick={() => setCreateOpen(false)} disabled={saving}>
-              {t('取消')}
-            </button>
-            <button className="button primary" onClick={() => void save()} disabled={!canSave || saving}>
-              {saving ? t('保存中…') : t('保存')}
-            </button>
-          </>
-        }
-      >
-        <div className="schedule-form">
-          <label className="schedule-field">
-            <span>{t('要做的事情')}</span>
-            <textarea
-              className="schedule-textarea"
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              rows={5}
-              placeholder={t('写下到时候要完成的事，例如：汇总昨天的订单并写成一段摘要')}
-            />
-          </label>
-          <div className="schedule-field">
-            <span>{t('频率')}</span>
-            <div className="schedule-cadence">
-              {(['once', 'daily', 'weekdays', 'weekly', 'hourly'] as CadenceKind[]).map((item) => (
-                <button
-                  key={item}
-                  className={clsx('skills-filter', kind === item && 'active')}
-                  onClick={() => setKind(item)}
-                >
-                  {item === 'once'
-                    ? t('一次性')
-                    : item === 'hourly'
-                      ? t('每小时')
-                      : item === 'daily'
-                        ? t('每天')
-                        : item === 'weekdays'
-                          ? t('工作日')
-                          : t('每周')}
-                </button>
-              ))}
-            </div>
-            <div className="schedule-cadence-row">
-              {kind === 'once' ? (
-                <label>
-                  {t('时间')}
-                  <input type="datetime-local" value={onceAt} onChange={(event) => setOnceAt(event.target.value)} />
-                </label>
-              ) : kind === 'hourly' ? (
-                <label>
-                  {t('分钟')}
-                  <input
-                    type="number"
-                    min={0}
-                    max={59}
-                    value={minute}
-                    onChange={(event) => setMinute(Number(event.target.value))}
-                  />
-                </label>
-              ) : kind === 'cron' || kind === 'event' ? null : (
-                <>
-                  <label>
-                    {t('时间')}
-                    <input type="time" value={time} onChange={(event) => setTime(event.target.value)} />
-                  </label>
-                  {kind === 'weekly' && (
-                    <label>
-                      {t('星期')}
-                      <select value={weekday} onChange={(event) => setWeekday(Number(event.target.value))}>
-                        {WEEKDAYS.map((label, index) => (
-                          <option key={label} value={index}>{label}</option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                </>
-              )}
-            </div>
-            <p className="schedule-hint">
-              {t('将按这个时间运行：')}{cadence ? cadenceText(cadence, timezone) : '—'}
-              {preview[0] ? ` · ${t('下次')} ${formatWhen(preview[0], timezone)}` : ''}
-            </p>
-            {noNext && !cronError && (
-              <p className="schedule-hint missing">{t('未来 8 年没有匹配的运行时间')}</p>
-            )}
-          </div>
-          <button
-            className={clsx('schedule-more', advancedOpen && 'open')}
-            onClick={() => setAdvancedOpen((open) => !open)}
-          >
-            <ChevronDown size={13} /> {t('更多选项')}
-          </button>
-          {advancedOpen && (
-            <div className="schedule-advanced">
-              <div className="schedule-adv-row">
-                <span>{t('自定义时间')}</span>
-                <button type="button" className={clsx('skills-filter', kind === 'cron' && 'active')} onClick={() => setKind('cron')}>{t('使用 cron 表达式')}</button>
-              </div>
-              {kind === 'cron' && (
-                <label className="schedule-cron">
-                  {t('表达式')}
-                  <input
-                    className="rename-input"
-                    value={cronExpression}
-                    onChange={(event) => setCronExpression(event.target.value)}
-                    placeholder="0 9 * * 1-5"
-                  />
-                  <p className={clsx('schedule-hint', cronError && 'missing')}>
-                    {cronError || describeCron(cronExpression) || t('例如 0 9 * * 1-5 表示每个工作日 09:00。下面会显示接下来的运行时间。')}
-                  </p>
-                </label>
-              )}
-              <div className="schedule-adv-row">
-                <span>{t('文件有变化时')}</span>
-                <button type="button" className={clsx('skills-filter', kind === 'event' && 'active')} onClick={() => setKind('event')}>{kind === 'event' ? t('已选择') : t('改用这个')}</button>
-              </div>
-              {kind === 'event' && <p className="schedule-hint">{t('当前文件夹里的文件有变化后触发，短时间内的多次变化会合并成一次。')}</p>}
-              <label className="schedule-adv-row">
-                <span>{t('时区')}</span>
-                <select value={timezone} onChange={(event) => setTimezone(event.target.value)}>
-                  {timezoneOptions.map((zone) => (
-                    <option key={zone} value={zone}>{zone}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="schedule-adv-row">
-                <span>{t('运行方式')}</span>
-                <select
-                  value={runMode}
-                  onChange={(event) => setRunMode(event.target.value as 'new-session' | 'continue-session')}
-                >
-                  <option value="new-session">{t('每次新会话')}</option>
-                  <option value="continue-session">{t('继续同一会话')}</option>
-                </select>
-              </label>
-              <div className="schedule-adv-row">
-                <span>{t('完成通知')}</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={notifications}
-                  className={clsx('switch', notifications && 'on')}
-                  onClick={() => setNotifications((value) => !value)}
-                >
-                  <span className="switch-knob" />
-                </button>
-              </div>
-            </div>
-          )}
-          <div className="schedule-adv-row">
-            <span>{t('错过时间后补跑')}<small className="schedule-catchup-note">{t('只补跑尚未开始的任务；运行中断后会暂停并等待核对。')}</small></span>
-            <button type="button" role="switch" aria-label={t('错过时间后补跑')} aria-checked={catchUp} className={clsx('switch', catchUp && 'on')} onClick={() => setCatchUp((value) => !value)}><span className="switch-knob" /></button>
-          </div>
-          <div className="schedule-preview">
-            <span>{t('接下来')}</span>
-            {preview.length === 0 ? <span>—</span> : preview.map((timestamp) => (
-              <span key={timestamp}>{formatWhen(timestamp, timezone)}</span>
-            ))}
-          </div>
-          <p className="install-warning">
-            {t('到点后会自动执行，请只填写你信任的任务。')}
-          </p>
-        </div>
-      </Modal>
+      {editor && (
+        <ScheduleEditor
+          task={editor.task}
+          draft={editor.draft}
+          onClose={() => setEditor(null)}
+          onSaved={(task) => {
+            if (editor.task) setSelected(task)
+            setEditor(null)
+            void load()
+          }}
+        />
+      )}
 
       <Modal
         open={Boolean(deleteTarget)}

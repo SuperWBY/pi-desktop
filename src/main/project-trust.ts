@@ -54,7 +54,7 @@ function findNearest(data: Record<string, boolean | null>, cwd: string): { path:
 }
 
 /** Mirrors pi's trust gate: only project-local resources need a decision. */
-export function trustRequiringResources(cwd: string): string[] {
+function trustRequiringResources(cwd: string): string[] {
   const root = canonical(cwd)
   const found = TRUST_KEYS.map((key) => join(root, '.pi', key)).filter(existsSync)
   let current = root
@@ -65,10 +65,6 @@ export function trustRequiringResources(cwd: string): string[] {
     if (parent === current) return found
     current = parent
   }
-}
-
-export function hasTrustRequiringResources(cwd: string): boolean {
-  return trustRequiringResources(cwd).length > 0
 }
 
 export function projectTrustStatus(cwd: string): ProjectTrustStatus {

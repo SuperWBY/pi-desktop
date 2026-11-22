@@ -1,3 +1,4 @@
+import { browserInteractionCode } from '../extensions/computer-use/src/browser-interaction.ts'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { mkdtemp, readFile, rm, mkdir, unlink } from 'node:fs/promises'
@@ -29,7 +30,7 @@ const site = createServer((req, res) => {
     setTimeout(() => res.end('<title>Slow page</title><button>Delayed document</button>'), 1100)
     return
   }
-  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end('<title>Router test</title><p>上传成功</p><div hidden>hidden-secret</div><button onclick="this.textContent=\'clicked\'">Go</button><textarea autocomplete="one-time-code">otp-secret</textarea>')
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end('<title>Router test</title><p>上传成功</p><div hidden>hidden-secret</div><button onclick="this.textContent=\'clicked\'">Go</button><textarea hidden autocomplete="one-time-code">otp-secret</textarea>')
 })
 const reserve = createServer()
 let browser
@@ -46,12 +47,12 @@ try {
     addEventListener(type, callback) { this.listeners[type] = callback }
     close() { this.readyState = 3 }
   }
-  const failedCdp = runInNewContext(`${stripTypeScriptTypes(cdpSource)}\n({ cdpConnect, socketState: () => cdpSocket?.readyState ?? null })`, { browserChallengeCode, browserTargetGuardCode, browserFileSnapshotCode, homedir: () => temp, join, spawn, mkdir, unlink, fetch: async () => ({ ok: true, json: async () => [{ type:'page', webSocketDebuggerUrl:'ws://127.0.0.1/' }] }), WebSocket: FailedSocket, AbortSignal, setTimeout, clearTimeout, process: { env: {} } })
+  const failedCdp = runInNewContext(`${stripTypeScriptTypes(cdpSource)}\n({ cdpConnect, socketState: () => cdpSocket?.readyState ?? null })`, { browserChallengeCode, browserTargetGuardCode, browserInteractionCode, browserFileSnapshotCode, homedir: () => temp, join, spawn, mkdir, unlink, fetch: async () => ({ ok: true, json: async () => [{ type:'page', webSocketDebuggerUrl:'ws://127.0.0.1/' }] }), WebSocket: FailedSocket, AbortSignal, setTimeout, clearTimeout, process: { env: {} } })
   await assert.rejects(failedCdp.cdpConnect(temp), /connection failed/i)
   assert.equal(failedCdp.socketState(), null, 'failed CDP handshake must release the socket so reconnect can start')
-  const hangingCdp = runInNewContext(`${stripTypeScriptTypes(cdpSource)}\n({ cdpConnect })`, { browserChallengeCode, browserTargetGuardCode, browserFileSnapshotCode, homedir: () => temp, join, spawn, mkdir, unlink, fetch: (_url, options) => new Promise((_resolve, reject) => options?.signal?.addEventListener('abort', () => reject(new Error('aborted')))), WebSocket: FailedSocket, AbortSignal, setTimeout, clearTimeout, process: { env: {} } })
+  const hangingCdp = runInNewContext(`${stripTypeScriptTypes(cdpSource)}\n({ cdpConnect })`, { browserChallengeCode, browserTargetGuardCode, browserInteractionCode, browserFileSnapshotCode, homedir: () => temp, join, spawn, mkdir, unlink, fetch: (_url, options) => new Promise((_resolve, reject) => options?.signal?.addEventListener('abort', () => reject(new Error('aborted')))), WebSocket: FailedSocket, AbortSignal, setTimeout, clearTimeout, process: { env: {} } })
   await assert.rejects(Promise.race([hangingCdp.cdpConnect(temp, 250), new Promise((_resolve, reject) => setTimeout(() => reject(new Error('test deadline exceeded')), 1200))]), /CDP.*timed out/i, 'a stalled discovery endpoint must respect the connection deadline')
-  const cdp = runInNewContext(`${stripTypeScriptTypes(cdpSource)}\n({ ensureCdpPage, releaseCdpSocket, cdpSend, cdpEval, cdpAction, closeCdp, cdpObserveCode, wrapEval: (wrap) => { cdpEval = wrap(cdpEval) }, socketState: () => cdpSocket?.readyState ?? null })`, { browserChallengeCode, browserTargetGuardCode, browserFileSnapshotCode, homedir: () => temp, join, spawn, mkdir, unlink, fetch, WebSocket, AbortSignal, setTimeout, clearTimeout, process: { env: { PI_CDP_PORT: String(cdpPort) } } })
+  const cdp = runInNewContext(`${stripTypeScriptTypes(cdpSource)}\n({ ensureCdpPage, releaseCdpSocket, cdpSend, cdpEval, cdpAction, closeCdp, cdpObserveCode, wrapEval: (wrap) => { cdpEval = wrap(cdpEval) }, socketState: () => cdpSocket?.readyState ?? null })`, { browserChallengeCode, browserTargetGuardCode, browserInteractionCode, browserFileSnapshotCode, homedir: () => temp, join, spawn, mkdir, unlink, fetch, WebSocket, AbortSignal, setTimeout, clearTimeout, process: { env: { PI_CDP_PORT: String(cdpPort) } } })
   for (const action of [{ candidateId: 'bad', type: 'click' }, { candidateId: 'c1', type: 'type', text: '' }, { candidateId: 'c1', type: 'unknown' }]) {
     await assert.rejects(cdp.cdpAction(action))
     assert.equal(cdp.socketState(), null, 'invalid actions must not leave the CDP connection open')
@@ -73,12 +74,15 @@ try {
   const registration = stripTypeScriptTypes(source.slice(start, end).replace('export default function', 'function') + '\n}')
   const definitions = new Map()
   const Type = new Proxy({}, { get: () => (...args) => ({ args }) })
-  const factory = runInNewContext(`${registration}\ncomputerUse`, { ...cdp, BrowserRouter, browserChallengeCode, browserTargetGuardCode, browserPageTextCode, judgeWithJev, Type, createBrowserActionJournal: () => undefined, approvalMode: 'always', audit: async () => {}, process: { env: {} }, randomUUID, URL, setTimeout })
+  const previewFrames = []
+  const factory = runInNewContext(`${registration}\ncomputerUse`, { ...cdp, cdpTargetSocket: undefined, BrowserRouter, browserChallengeCode, browserInteractionCode, browserTargetGuardCode, browserPageTextCode, judgeWithJev, Type, createBrowserActionJournal: () => undefined, approvalMode: 'always', manualBrowserApproval: false, allowRoutineActions: false, audit: async () => {}, bridgeRequest: async (path, value) => { if (path === '/external-preview') previewFrames.push(value); return {ok:true,generation:'test-generation'} }, process: { env: { PI_DESKTOP_BROWSER_BRIDGE_FILE:'fixture' } }, randomUUID, URL, setTimeout, setInterval, clearInterval })
   factory({ registerTool: (definition) => definitions.set(definition.name, definition), on: () => {} })
   const invoke = async (name, params = {}) => definitions.get(name).execute('test', params, undefined, undefined, { ui: { confirm: async () => true } })
   await invoke('computer_use_session_open', { backend: 'cdp' })
   const slow = JSON.parse((await invoke('computer_use_session_observe', { url: `http://127.0.0.1:${site.address().port}/slow` })).content[0].text)
   assert.ok(slow.candidates.some(candidate => candidate.name === 'Delayed document'), 'navigation must wait for the target document, even when headers arrive before the body')
+  assert.ok(previewFrames.some(frame => frame.backend === 'cdp' && frame.documentId && /^data:image\/jpeg;base64,/.test(frame.image ?? '')), 'a real CDP page must publish its screenshot to the local preview channel')
+  assert.ok(!JSON.stringify(slow).includes('data:image'), 'preview bytes must not enter the model observation')
   const sameDocument = JSON.parse((await invoke('computer_use_session_observe', { url: `http://127.0.0.1:${site.address().port}/slow#section` })).content[0].text)
   assert.ok(sameDocument.url.endsWith('/slow#section') && sameDocument.candidates.some(candidate => candidate.name === 'Delayed document'), 'same-document navigation must preserve the correct page')
   const redirected = JSON.parse((await invoke('computer_use_session_observe', { url: `http://127.0.0.1:${site.address().port}/redirect` })).content[0].text)

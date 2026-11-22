@@ -1,0 +1,1 @@
+{"name":"pi-desktop-creator","version":"0.1.0","type":"module","description":"Build reusable Pi modes, context extensions and sub-agent packages.","pi":{"extensions":["./index.ts"]},"peerDependencies":{"@earendil-works/pi-coding-agent":"*","typebox":"*"}}

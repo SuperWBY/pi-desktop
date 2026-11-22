@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Cable, ChevronRight, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
+import { userFacingError } from '@shared/errors'
 import type { ConnectorEntry, McpConnectionTest, McpConnector, McpConnectorInput } from '@shared/types'
 import { useTranslation } from '../i18n'
 import { Modal } from './ui'
@@ -14,16 +15,8 @@ export function appConnectionName(command: string): string {
 type Editor = { connector?: McpConnector }
 type Header = McpConnectorInput['headers'][number] & { key: number }
 
-function testLabel(result: McpConnectionTest | undefined): string {
-  if (!result) return '未测试'
-  if (result.status === 'connected') return '测试通过'
-  if (result.status === 'unauthorized') return '需要授权'
-  if (result.status === 'unsupported') return '当前 Pi 版本无法测试'
-  return '连接失败'
-}
-
 function errorText(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': Error: /, '')
+  return userFacingError(error)
 }
 
 function ConnectionEditor({ connector, onClose, onSaved }: {
@@ -140,14 +133,20 @@ export function ConnectionsPanel({ cli, refreshCli, onOpenCli, onDialogChange }:
   const [remove, setRemove] = useState<McpConnector | null>(null)
   const [removeError, setRemoveError] = useState('')
   const [removing, setRemoving] = useState(false)
-  const [tests, setTests] = useState<Record<string, McpConnectionTest | undefined>>({})
-  const [testing, setTesting] = useState<string | null>(null)
+  const generation = useRef(0)
   const [notice, setNotice] = useState('')
   const load = useCallback(async () => {
-    try { setMcp(await window.pi.listMcpConnectors()); setLoadError('') }
-    catch (error) { setLoadError(errorText(error)) }
+    const run = ++generation.current
+    try {
+      const items = await window.pi.listMcpConnectors()
+      if (generation.current !== run) return
+      setMcp(items)
+      setLoadError('')
+    } catch (error) {
+      if (generation.current === run) setLoadError(errorText(error))
+    }
   }, [])
-  useEffect(() => { void load() }, [load])
+  useEffect(() => { void load(); return () => { generation.current += 1 } }, [load])
   useEffect(() => {
     onDialogChange(!!editor || !!remove)
     return () => onDialogChange(false)
@@ -159,23 +158,6 @@ export function ConnectionsPanel({ cli, refreshCli, onOpenCli, onDialogChange }:
   const local = cli.filter((item) => appConnectionName(item.name) === item.name && matches(item.name))
   const services = mcp.filter((item) => matches(item.name, item.id, item.url ?? ''))
 
-  async function testSaved(item: McpConnector): Promise<void> {
-    if (!item.url || testing) return
-    setTesting(item.id)
-    try {
-      const result = await window.pi.testMcpConnector({
-        id: item.id, name: item.name, url: item.url,
-        headers: item.headerNames.map((name) => ({ name, value: '', keep: true }))
-      })
-      setTests((current) => ({ ...current, [item.id]: result }))
-    } catch (error) {
-      setTests((current) => ({ ...current, [item.id]: { status: 'unreachable' } }))
-      setLoadError(t(errorText(error)))
-    } finally {
-      setTesting(null)
-    }
-  }
-
   return (
     <>
       <div className="skills-toolbar">
@@ -183,7 +165,7 @@ export function ConnectionsPanel({ cli, refreshCli, onOpenCli, onDialogChange }:
           <Search size={13} />
           <input aria-label={t('搜索应用连接')} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('搜索应用连接')} />
         </div>
-        <button className="icon-button" title={t('刷新')} aria-label={t('刷新')} onClick={() => { setTests({}); void load(); refreshCli() }}><RefreshCw size={14} /></button>
+        <button className="icon-button" title={t('刷新')} aria-label={t('刷新')} onClick={() => { void load(); refreshCli() }}><RefreshCw size={14} /></button>
         <button className="button primary small" onClick={() => setEditor({})}><Plus size={14} /> {t('手动添加')}</button>
       </div>
       <div className="skills-scroll connections-scroll">
@@ -212,12 +194,9 @@ export function ConnectionsPanel({ cli, refreshCli, onOpenCli, onDialogChange }:
                   <span className="package-name">{item.name}</span>
                   <span className="package-desc">{t(item.transport === 'http' ? 'MCP 服务' : '本机 MCP 服务')}</span>
                 </span>
-                <span className={clsx('connector-status', { ok: item.enabled && tests[item.id]?.status === 'connected' })}>
-                  {t(testing === item.id ? '正在测试…' : item.enabled ? testLabel(tests[item.id]) : '已停用')}
-                </span>
+                <span className="connector-status">{t(item.enabled ? '已安装' : '已停用')}</span>
                 {item.transport === 'http' && (
                   <>
-                    {item.enabled && <button className="button ghost small" aria-label={`${t('测试连接')} ${item.name}`} disabled={!!testing} onClick={() => void testSaved(item)}>{t('测试连接')}</button>}
                     <button className="button ghost small" aria-label={`${t('编辑')} ${item.name}`} onClick={() => setEditor({ connector: item })}>{t('编辑')}</button>
                     <button className="icon-button" title={t('移除')} aria-label={`${t('移除')} ${item.name}`} onClick={() => { setRemoveError(''); setRemove(item) }}><Trash2 size={14} /></button>
                   </>
@@ -241,9 +220,8 @@ export function ConnectionsPanel({ cli, refreshCli, onOpenCli, onDialogChange }:
           </details>
         )}
       </div>
-      {editor && <ConnectionEditor connector={editor.connector} onClose={() => setEditor(null)} onSaved={(item, result) => {
-        setMcp((items) => [...items.filter(({ id }) => id !== item.id), item].sort((a, b) => a.name.localeCompare(b.name)))
-        setTests((current) => ({ ...current, [item.id]: result }))
+      {editor && <ConnectionEditor connector={editor.connector} onClose={() => setEditor(null)} onSaved={() => {
+        void load()
         setNotice(t('连接已保存。'))
         setEditor(null)
       }} />}
@@ -255,7 +233,7 @@ export function ConnectionsPanel({ cli, refreshCli, onOpenCli, onDialogChange }:
               setRemoving(true)
               try {
                 await window.pi.removeMcpConnector(remove.id)
-                setMcp((items) => items.filter(({ id }) => id !== remove.id))
+                void load()
                 setNotice(t('连接已移除。'))
                 setRemove(null)
                       } catch (error) { setRemoveError(errorText(error)) }

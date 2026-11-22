@@ -1,0 +1,200 @@
+.dictation-button {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  transition: background var(--motion-1) var(--ease-out), transform var(--motion-1) var(--ease-out);
+}
+
+.dictation-button:active:not(:disabled),
+.dictation-bar button:active:not([aria-disabled="true"]) { transform: scale(.94); }
+
+.dictation-button:focus-visible, .dictation-bar button:focus-visible, .dictation-status button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.composer-editor-slot {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows var(--motion-2) var(--ease-out), opacity var(--motion-1) ease;
+}
+
+.composer-editor-slot > div { min-height: 0; }
+
+.composer-editor-slot[inert] { grid-template-rows: 0fr; opacity: 0; }
+.composer-editor-slot[inert] > div { overflow: clip; }
+
+.composer-toolbar-stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.composer-toolbar-stack > * {
+  grid-area: 1 / 1;
+  opacity: 1;
+  transition: opacity var(--motion-1) ease, transform var(--motion-1) var(--ease-out),
+    display var(--motion-1) allow-discrete;
+}
+
+.composer-toolbar-stack > [hidden] {
+  display: none;
+  opacity: 0;
+  transform: translateY(3px);
+  pointer-events: none;
+}
+
+@starting-style {
+  .composer-toolbar-stack > :not([hidden]) { opacity: 0; transform: translateY(3px); }
+}
+
+.dictation-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+
+.dictation-bar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  border: 0;
+  border-radius: var(--r-md);
+  transition: background var(--motion-1) ease, transform var(--motion-1) var(--ease-out);
+}
+
+.dictation-cancel { color: var(--text-dim); background: transparent; }
+.dictation-cancel:hover { color: var(--text); background: var(--hover); }
+
+.dictation-finish {
+  padding: 0 12px;
+  color: var(--red);
+  background: var(--red-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dictation-finish:hover:not([aria-disabled="true"]) {
+  background: color-mix(in srgb, var(--red) 19%, transparent);
+}
+
+.dictation-finish[aria-disabled="true"] {
+  color: var(--text-dim);
+  background: var(--hover);
+  cursor: default;
+}
+
+.dictation-track {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 10px;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.dictation-track-label {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.dictation-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--red);
+}
+
+.dictation-announcement {
+  position: absolute;
+  clip-path: inset(50%);
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.dictation-waveform {
+  display: block;
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  height: 28px;
+  color: var(--text-dim);
+}
+
+.dictation-bar[data-state="recording"] .dictation-waveform { color: var(--red); }
+
+.dictation-status {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+  transition: grid-template-rows var(--motion-2) var(--ease-out),
+    opacity var(--motion-1) var(--ease-out), transform var(--motion-1) var(--ease-out);
+}
+
+.dictation-status[data-visible="false"] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.dictation-status-content {
+  min-height: 0;
+  overflow: clip;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  column-gap: 8px;
+  padding-inline: 3px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.dictation-message {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  min-height: 26px;
+}
+
+.dictation-label { animation: dictation-in var(--motion-1) var(--ease-out) both; }
+
+.dictation-status button {
+  border: 0;
+  background: transparent;
+  min-height: 44px;
+  padding: 0 8px;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dictation-status button:hover { color: var(--text); text-decoration: underline; }
+.dictation-status button:active { opacity: .7; }
+
+@keyframes dictation-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-editor-slot, .composer-toolbar-stack > *, .dictation-status, .dictation-button, .dictation-bar button {
+    transition: none;
+    transform: none !important;
+  }
+  .dictation-status *, .dictation-bar * { animation: none !important; }
+}

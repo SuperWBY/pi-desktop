@@ -310,6 +310,10 @@ export interface Settings {
   theme: 'dark' | 'light' | 'system'
   workspaces: string[]
   workspaceNames?: Record<string, string>
+  /** Session paths explicitly pinned in the sidebar, newest pin first. */
+  pinnedSessionPaths?: string[]
+  /** Sessions hidden from active lists without changing their files. */
+  archivedSessionPaths?: string[]
   workspaceReadOnly?: Record<string, boolean>
   lastWorkspace?: string
   lastSessionPath?: string
@@ -663,7 +667,7 @@ export interface McpConnectorInput {
 
 export type McpConnectionTest =
   | { status: 'connected'; toolCount: number }
-  | { status: 'unauthorized' | 'unreachable' | 'unsupported' }
+  | { status: 'unauthorized' | 'unreachable' | 'unsupported' | 'unknown' }
 
 export interface PackageCatalogEntry {
   name: string

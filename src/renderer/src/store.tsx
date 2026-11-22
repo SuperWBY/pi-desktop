@@ -113,7 +113,7 @@ export interface AppState {
   scheduleFocusId: string | null
   sidebarOpen: boolean
   statusText: string | null
-  editorText: { value: string; nonce: number; append?: boolean; suggestion?: boolean } | null
+  editorText: { value: string; nonce: number; append?: boolean; suggestion?: boolean; prepend?: boolean } | null
   sendMode: SendMode
   stderr: string
   diagnosticsOpen: boolean
@@ -333,7 +333,7 @@ function reduceRecord(state: AppState, record: Record<string, unknown>): AppStat
   switch (type) {
     case 'desktop_session_security':
       return record.sessionPath === state.sessionPath
-        ? { ...state, sessionSecurity: record.security as SessionSecurity }
+        ? { ...state, sessionSecurity: record.security as SessionSecurity, networkBlock: (record.security as SessionSecurity)?.network === 'model' ? null : state.networkBlock }
         : state
     case 'desktop_interrupted_ui':
       return { ...state, interruptedUi: Array.isArray(record.entries) ? record.entries as AppState['interruptedUi'] : state.interruptedUi }
@@ -667,7 +667,7 @@ export type Action =
   | { type: 'BASH_CLEAR' }
   | { type: 'SET_DELETED_SESSION'; deleted: { path: string; trashPath: string; name: string } | null }
   | { type: 'SET_THEME'; theme: Settings['theme'] }
-  | { type: 'FILL_COMPOSER'; value: string; append?: boolean; suggestion?: boolean }
+  | { type: 'FILL_COMPOSER'; value: string; append?: boolean; suggestion?: boolean; prepend?: boolean }
   | { type: 'CONSUME_EDITOR_TEXT'; nonce: number }
 
 export function reducer(state: AppState, action: Action): AppState {
@@ -1001,7 +1001,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, scheduleFocusId: action.id }
 
     case 'FILL_COMPOSER':
-      return { ...state, editorText: { value: action.value, nonce: Date.now(), append: action.append, suggestion: action.suggestion } }
+      return { ...state, editorText: { value: action.value, nonce: Date.now(), append: action.append, suggestion: action.suggestion, prepend: action.prepend } }
 
     case 'CONSUME_EDITOR_TEXT':
       return state.editorText?.nonce === action.nonce ? { ...state, editorText: null } : state
@@ -1077,7 +1077,7 @@ interface AppActions {
   refreshMeta: () => Promise<{ piState: PiState | null; levels: ThinkingLevel[] | undefined } | null>
   restartSession: () => Promise<void>
   changeSessionPermission: (change: Omit<SessionPermissionChange, 'cwd' | 'sessionPath'>) => Promise<void>
-  dismissNetworkBlock: () => void
+  dismissNetworkBlock: (expected?: ConversationNetworkBlock) => void
   cloneSession: () => Promise<void>
   forkMessages: () => Promise<{ entryId: string; text: string }[]>
   sessionTree: () => Promise<SessionTreeData | null>
@@ -1088,7 +1088,7 @@ interface AppActions {
   stopBash: () => Promise<void>
   clearBash: () => void
   compact: () => Promise<void>
-  fillComposer: (text: string, append?: boolean, suggestion?: boolean) => void
+  fillComposer: (text: string, append?: boolean, suggestion?: boolean, prepend?: boolean) => void
   consumeEditorText: (nonce: number) => void
   openExternal: (url: string) => void
   openBrowser: (url: string) => void
@@ -1128,6 +1128,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   const compactPending = useRef(new Set<string>())
   const metaVersion = useRef(0)
   const sessionOpenVersion = useRef(0)
+  const openedArchivedSession = useRef<string | null>(null)
 
   // Panel open state is optimistic: a pending intent wins over any settings
   // response that was already in flight when the user toggled it.
@@ -1180,10 +1181,9 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       options: { scratch?: boolean; reload?: boolean; draftKey?: string } = {}
     ): Promise<boolean> => {
       const current = stateRef.current
+      if (sessionPath !== openedArchivedSession.current) openedArchivedSession.current = sessionPath && current.settings.archivedSessionPaths?.includes(sessionPath) ? sessionPath : null
       dispatch({ type: 'CLOSE_NAVIGATION' })
-      const isScratchCwd = Boolean(
-        cwd && stateRef.current.boot?.scratchPath && cwd === stateRef.current.boot.scratchPath
-      )
+      const isScratchCwd = isTemporaryWorkspace(cwd, stateRef.current.boot?.scratchPath)
       const scratch = options.scratch === true || isScratchCwd
       const workspace = scratch ? current.boot?.scratchPath ?? cwd : cwd
       // Clicking the conversation that is already open (including the two
@@ -1378,7 +1378,9 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     dispatch({ type: 'SESSION_SECURITY', sessionPath, security })
   }, [])
 
-  const dismissNetworkBlock = useCallback(() => dispatch({ type: 'NETWORK_BLOCK', block: null }), [])
+  const dismissNetworkBlock = useCallback((expected?: ConversationNetworkBlock) => {
+    if (!expected || stateRef.current.networkBlock === expected) dispatch({ type: 'NETWORK_BLOCK', block: null })
+  }, [])
   const adoptBranchedSession = useCallback(async (): Promise<{ ok: boolean; text?: string; error?: string }> => {
     const current = stateRef.current
     const response = await safeCommand<{ sessionFile?: string | null }>({ type: 'get_state' }, 15_000)
@@ -1819,10 +1821,12 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   useEffect(() => {
     const workspace = state.workspace
     if (!workspace || state.scratchWorkspace || state.status !== 'ready') return
+    if (state.sessionPath && state.settings.archivedSessionPaths?.includes(state.sessionPath)) openedArchivedSession.current = state.sessionPath
+    if (state.sessionPath && openedArchivedSession.current === state.sessionPath) return
     if (isTemporaryWorkspace(workspace, state.boot?.scratchPath)) return
     if (state.settings.workspaces.includes(workspace)) return
     void updateSettings({ workspaces: [...state.settings.workspaces, workspace] })
-  }, [state.boot?.scratchPath, state.scratchWorkspace, state.settings.workspaces, state.status, state.workspace, updateSettings])
+  }, [state.boot?.scratchPath, state.scratchWorkspace, state.sessionPath, state.settings.archivedSessionPaths, state.settings.workspaces, state.status, state.workspace, updateSettings])
 
   const updatePiSettings = useCallback(async (patch: PiSettings) => {
     const piSettings = await window.pi.updatePiSettings(patch)
@@ -1923,8 +1927,8 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     }
   }, [notify, refreshMeta])
 
-  const fillComposer = useCallback((text: string, append = false, suggestion = false) => {
-    dispatch({ type: 'FILL_COMPOSER', value: text, append, suggestion })
+  const fillComposer = useCallback((text: string, append = false, suggestion = false, prepend = false) => {
+    dispatch({ type: 'FILL_COMPOSER', value: text, append, suggestion, prepend })
   }, [])
   const consumeEditorText = useCallback((nonce: number) => dispatch({ type: 'CONSUME_EDITOR_TEXT', nonce }), [])
 
@@ -1958,7 +1962,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         // A temporary chat can be the last conversation while lastWorkspace
         // still points to the most recently opened project.
         const last = sessions.find((session) => session.path === boot.settings.lastSessionPath)
-        if (last && await openSession(last.cwd, last.path, { scratch: last.cwd === boot.scratchPath })) return
+        if (last && await openSession(last.cwd, last.path, { scratch: isTemporaryWorkspace(last.cwd, boot.scratchPath) })) return
         if (cancelled) return
         const workspace = boot.settings.lastWorkspace
         if (workspace) {

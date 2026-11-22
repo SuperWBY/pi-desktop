@@ -81,8 +81,43 @@ async function main() {
       const piSettings = { defaultProvider: 'mock', defaultModel: 'test' }
       window.sentCommands = []
       const noop = () => () => {}
+      const emitPty = (chunk) => window.__ptyDataCb?.({ id: 'pty-mock', data: chunk })
       window.pi = {
         platform,
+        // PTY terminal mock: echoes keystrokes and answers canned commands so
+        // xterm screenshots show a realistic session without a real shell.
+        createTerminal: async () => {
+          window.ptyBuffer = ''
+          // Real shells print the prompt asynchronously; emitting after the
+          // renderer's data subscription avoids the startup race.
+          setTimeout(() => emitPty('\x1b[32m$\x1b[0m '), 60)
+          return { id: 'pty-mock' }
+        },
+        writeTerminal: (id, data) => {
+          const emit = emitPty
+          for (const ch of data) {
+            if (ch === '\r') {
+              const cmd = window.ptyBuffer
+              window.ptyBuffer = ''
+              let out = ''
+              if (/npm run build/.test(cmd)) out = '\x1b[36m> vite build\x1b[0m\n\ndist/index.html                  1.2 kB\nassets/index.js         2,546.6 kB\n\x1b[32m✓ built in 579ms\x1b[0m'
+              else if (/git push/.test(cmd)) out = '\x1b[31mfatal: unable to access remote: authentication failed\x1b[0m'
+              else if (/npm test/.test(cmd)) out = '\x1b[32mMock suite passed\x1b[0m\n  42 tests ✓'
+              else out = `(mock) ${cmd}`
+              emit(`\r\n${out}\r\n\x1b[32m$\x1b[0m `)
+            } else if (ch === '\u007f') {
+              window.ptyBuffer = window.ptyBuffer.slice(0, -1)
+              emit('\b \b')
+            } else {
+              window.ptyBuffer += ch
+              emit(ch)
+            }
+          }
+        },
+        resizeTerminal: async () => {},
+        killTerminal: async () => {},
+        onTerminalData: (callback) => { window.__ptyDataCb = callback; return () => {} },
+        onTerminalExit: () => () => {},
         initialTheme: settings.theme === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : settings.theme,
         systemTheme: async () => matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
         onSystemTheme: (callback) => { const media = matchMedia('(prefers-color-scheme: dark)'); const change = () => callback(media.matches ? 'dark' : 'light'); media.addEventListener('change', change); return () => media.removeEventListener('change', change) },
@@ -264,48 +299,48 @@ async function main() {
     if (process.env.HEADLESS_UI_ONLY === 'terminal-shots') {
       const shots = path.resolve(__dirname, '../output/terminal')
       fs.mkdirSync(shots, { recursive: true })
+      const host = () => page.locator('.terminal-pty-host')
       const openTerminal = async () => {
         await page.locator('.work-tab-button').filter({ hasText: '终端' }).click()
-        await page.locator('.terminal-input input').waitFor()
+        await host().waitFor()
+        await host().click()
+        await page.waitForFunction(() => document.querySelector('.terminal-pty-host')?.innerText.includes('$')).catch(async () => {
+          const dump = await page.evaluate(() => ({
+            hostSize: (h => h ? `${h.offsetWidth}x${h.offsetHeight}` : null)(document.querySelector('.terminal-pty-host')),
+            text: (document.querySelector('.terminal-pty-host')?.innerText || '').slice(0, 200),
+            xterm: Boolean(document.querySelector('.terminal-pty-host .xterm')),
+            dataCb: typeof window.__ptyDataCb,
+            buffer: window.ptyBuffer,
+            pageErrors: window.__pageErrors || []
+          }))
+          throw Error(`terminal prompt never appeared: ${JSON.stringify(dump)}`)
+        })
       }
       const runCommand = async (text) => {
-        await page.locator('.terminal-input input').fill(text)
+        await host().click()
+        await page.keyboard.type(text, { delay: 15 })
         await page.keyboard.press('Enter')
       }
       await openTerminal()
       await runCommand('npm run build')
-      await page.getByText('✓ built in 579ms').waitFor()
+      // The panel is narrow: match a prefix that cannot wrap mid-word.
+      await page.waitForFunction(() => document.querySelector('.terminal-pty-host')?.innerText.includes('built in 57'))
       await runCommand('git push')
-      await page.getByText('authentication failed').waitFor()
-      await runCommand('npm test')
-      await page.locator('.terminal-run-dot').waitFor()
-      await page.screenshot({ path: path.join(shots, 'dark-running.png'), animations: 'disabled' })
-      await page.getByText('Mock suite passed').waitFor()
-      const terminalInput = page.locator('.terminal-input input')
-      await terminalInput.fill('echo not submitted')
-      await terminalInput.press('ArrowUp')
-      if (await terminalInput.inputValue() !== 'npm test') throw Error('Up must recall the latest command')
-      await terminalInput.press('ArrowUp')
-      if (await terminalInput.inputValue() !== 'git push') throw Error('Up must recall the preceding command')
-      await terminalInput.press('ArrowDown')
-      await terminalInput.press('ArrowDown')
-      if (await terminalInput.inputValue() !== 'echo not submitted') throw Error('Down must restore the unsubmitted command')
+      await page.waitForFunction(() => document.querySelector('.terminal-pty-host')?.innerText.includes('fatal:'))
       await page.screenshot({ path: path.join(shots, 'dark.png'), animations: 'disabled' })
       await page.getByRole('button', { name: '清空', exact: true }).click()
-      if (await page.locator('.terminal-echo').count()) throw Error('Clear must remove completed scrollback')
-      if ((await page.locator('.terminal-output').innerText()).includes('Mock suite passed')) throw Error('Clear must remove completed output')
-      await terminalInput.press('ArrowUp')
-      if (await terminalInput.inputValue() !== 'npm test') throw Error('Clearing scrollback must preserve command recall')
+      await page.waitForFunction(() => !(document.querySelector('.terminal-pty-host')?.innerText.includes('authentication failed')))
+      if (!(await host().innerText()).includes('$')) throw Error('Clear must keep the prompt')
       await page.evaluate(() => sessionStorage.setItem('mock-settings', JSON.stringify({ ...JSON.parse(sessionStorage.getItem('mock-settings')), theme: 'light' })))
       await page.reload()
       await page.waitForSelector('.turn')
       await openTerminal()
       await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
       await runCommand('npm run build')
-      await page.getByText('✓ built in 579ms').waitFor()
+      await page.waitForFunction(() => document.querySelector('.terminal-pty-host')?.innerText.includes('built in 57'))
       await page.screenshot({ path: path.join(shots, 'light.png'), animations: 'disabled' })
       if (errors.length) throw Error(`页面异常: ${errors.join('; ')}`)
-      console.log('terminal-shots: dark-running / dark / light 已保存到 output/terminal/')
+      console.log('terminal-shots: dark / light 已保存到 output/terminal/')
       return
     }
     if (process.env.HEADLESS_UI_ONLY === 'settings-shots') {

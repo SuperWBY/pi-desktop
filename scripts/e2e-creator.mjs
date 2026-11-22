@@ -24,6 +24,7 @@ export async function caseCreator({ freshDirs, launch, check }) {
   check('菜单说明允许开放创作，内部控制命令隐藏', (await option.innerText()).includes('把想法变成插件') && await page.getByRole('option', { name: /pi-desktop-creator/ }).count() === 0)
   await option.click()
   await page.locator('.creator-mode-bar[data-open="true"]').waitFor()
+  check('创意模式成功启用后显示持续状态', await page.getByText('创意模式 · 已开启', { exact: true }).isVisible())
   check('进入创意模式只切换对话，旧工坊和自动侧栏均已移除', await page.locator('.creator-panel').count() === 0 && await page.getByRole('tab', { name: '创意工坊', exact: true }).count() === 0 && await page.locator('.work-panel').isVisible().catch(() => false) === false)
   check('切换不发送模型消息', await input.inputValue() === '' && await page.locator('.message.user').count() === 0)
   await page.getByRole('button', { name: '我的插件', exact: true }).click()

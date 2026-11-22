@@ -160,7 +160,10 @@ export function ChatView({ newChat }: { newChat: boolean }): ReactNode {
     const node = scrollerRef.current
     if (!node) return
     const distance = node.scrollHeight - node.scrollTop - node.clientHeight
-    stickRef.current = distance < 80
+    // Once the user scrolls away, resume following only when they actually
+    // return to the bottom. A wider threshold makes small upward gestures
+    // re-enable following on the very next scroll event during streaming.
+    stickRef.current = distance <= 1
     setShowJump(distance >= 80 && state.messages.length > 0)
     setRailPreview(null)
   }

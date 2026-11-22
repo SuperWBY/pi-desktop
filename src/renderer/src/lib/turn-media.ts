@@ -9,7 +9,7 @@ import type { FileChange } from './session-changes'
 export interface TurnMediaItem {
   key: string
   name: string
-  kind: 'image' | 'video' | 'html' | 'website'
+  kind: 'image' | 'video' | 'file' | 'html' | 'website'
   source: string
   remote: boolean
 }
@@ -40,7 +40,7 @@ function mediaSource(source: string, fromMarkdown: boolean): Omit<TurnMediaItem,
   }
   const mime = mediaMimeType(path)
   if (!mime) return undefined
-  const kind = mime.startsWith('video/') ? 'video' : mime === 'text/html' ? 'html' : 'image'
+  const kind = mime.startsWith('video/') ? 'video' : mime === 'text/html' ? 'html' : mime.startsWith('image/') ? 'image' : 'file'
   return { kind, name: baseName(path), source: remote ? source : path, remote }
 }
 
@@ -66,8 +66,8 @@ export function collectTurnMedia(text: string, changes: FileChange[], workspace:
   }
   const add = (source: string, fromMarkdown: boolean): void => {
     const item = mediaSource(source, fromMarkdown)
-    // Remote images and pages stay ordinary links.
-    if (!item || (item.remote && item.kind !== 'video')) return
+    // Remote images remain inline; remote HTML pages stay ordinary links.
+    if (!item || (item.remote && (item.kind === 'image' || item.kind === 'html'))) return
     if (!item.remote && !workspace) return
     const key = item.remote ? item.source : canonicalWorkspacePath(
       item.source.startsWith('/') || /^[A-Za-z]:[\\/]/.test(item.source) ? item.source : `${workspace}/${item.source.replace(/^\.\//, '')}`
@@ -75,7 +75,7 @@ export function collectTurnMedia(text: string, changes: FileChange[], workspace:
     if (!items.has(key)) items.set(key, { ...item, key })
   }
 
-  if (text && /pi:website|\.(?:png|jpe?g|gif|webp|avif|svg|mp4|m4v|webm|mov|html?)\b/i.test(text)) {
+  if (text && /pi:website|\.(?:png|jpe?g|gif|webp|avif|svg|mp4|m4v|webm|mov|html?|pdf|docx|xlsx|pptx|zip|mp3|wav|m4a)\b/i.test(text)) {
     const root = markdown.parse(text)
     const definitions = new Map<string, Definition>()
     walk(root, (node) => { if (node.type === 'definition') definitions.set(node.identifier, node) })

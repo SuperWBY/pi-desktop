@@ -8,6 +8,7 @@ import { Check, Copy } from 'lucide-react'
 import { useApp } from '../store'
 import { DiagramPreview } from './DiagramPreview'
 import { isLocalMediaImage } from '../lib/turn-media'
+import { InlineImage } from './ImageLightbox'
 
 function nodeText(node: ReactNode): string {
   if (node === null || node === undefined || typeof node === 'boolean') return ''
@@ -17,6 +18,12 @@ function nodeText(node: ReactNode): string {
     return nodeText((node as { props?: { children?: ReactNode } }).props?.children)
   }
   return ''
+}
+
+function isSvgXml(source: string): boolean {
+  if (source.length > 24_000 || !/<(?:[\w.-]+:)?svg(?:\s|>)/i.test(source)) return false
+  const parsed = new DOMParser().parseFromString(source, 'image/svg+xml')
+  return parsed.documentElement.localName === 'svg' && !parsed.querySelector('parsererror')
 }
 
 export function CopyButton({ text, label }: { text: string; label?: string }): ReactNode {
@@ -62,8 +69,9 @@ export const Markdown = memo(function Markdown({ children, streaming = false, de
           <pre>{children}</pre>
         </div>
       )
-      return !streaming && (language === 'mermaid' || language === 'svg')
-        ? <DiagramPreview source={text} code={code} type={language} />
+      const diagramType = language === 'mermaid' ? 'mermaid' : language === 'svg' || (language === 'xml' && isSvgXml(text)) ? 'svg' : null
+      return !streaming && diagramType
+        ? <DiagramPreview source={text} code={code} type={diagramType} />
         : code
     },
     code: ({ className, children }) => {
@@ -99,7 +107,7 @@ export const Markdown = memo(function Markdown({ children, streaming = false, de
       </div>
     ),
     img: ({ src, alt }) => typeof src === 'string' && src && (!deferLocalImages || !isLocalMediaImage(src))
-      ? <img className="md-image" src={src} alt={alt ?? ''} />
+      ? <InlineImage src={src} alt={alt ?? ''} />
       : null
   }
 

@@ -197,7 +197,7 @@ export function runPiPackageCommand(
   onProgress: (progress: PackageProgress) => void
 ): Promise<{ ok: boolean; code: number | null; error?: string }> {
   const pi = resolvePiPath(loadSettings().piPath)
-  const direct = directPiSpawn(pi, args)
+  const direct = directPiSpawn(pi, args, { background: true })
   if (!direct) {
     return Promise.resolve({ ok: false, code: null, error: `找不到 Pi 的 cli.js（"${pi}"），无法在 Windows 上执行包操作。请重新安装 Pi。` })
   }

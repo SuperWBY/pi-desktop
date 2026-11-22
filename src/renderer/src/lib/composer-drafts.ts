@@ -1,13 +1,14 @@
 import { useSyncExternalStore } from 'react'
 import type { Attachment } from '../store'
 
-export type ComposerDraft = { text: string; attachments: Attachment[] }
+export type ComposerDraft = { text: string; attachments: Attachment[]; commandDisplay?: { name: string; label: string } }
 type DraftLocation = { key: string; workspace: string; scratch: boolean; draftOnly: boolean; updatedAt: number }
 
 const drafts = new Map<string, ComposerDraft>()
 const listeners = new Set<() => void>()
 const indexKey = 'pi.composer.draftLocations'
 const textKey = (key: string): string => `pi.composer.draft.${key}`
+const commandKey = (key: string): string => `pi.composer.commandDisplay.${key}`
 
 let locations: DraftLocation[] = []
 try {
@@ -32,7 +33,14 @@ try {
 export function readDraft(key: string): ComposerDraft {
   const cached = drafts.get(key)
   if (cached) return cached
-  try { return { text: localStorage.getItem(textKey(key)) ?? '', attachments: [] } }
+  try {
+    const text = localStorage.getItem(textKey(key)) ?? ''
+    const value: unknown = JSON.parse(localStorage.getItem(commandKey(key)) ?? 'null')
+    const display = value && typeof value === 'object' ? value as Record<string, unknown> : null
+    const commandDisplay = display && typeof display.name === 'string' && typeof display.label === 'string' && text.startsWith(`/${display.name} `)
+      ? { name: display.name, label: display.label } : undefined
+    return { text, attachments: [], commandDisplay }
+  }
   catch { return { text: '', attachments: [] } }
 }
 
@@ -44,6 +52,8 @@ export function saveDraft(key: string, draft: ComposerDraft, location?: Pick<Dra
   try {
     if (draft.text.trim()) localStorage.setItem(textKey(key), draft.text)
     else localStorage.removeItem(textKey(key))
+    if (draft.text.trim() && draft.commandDisplay && draft.text.startsWith(`/${draft.commandDisplay.name} `)) localStorage.setItem(commandKey(key), JSON.stringify(draft.commandDisplay))
+    else localStorage.removeItem(commandKey(key))
   } catch { /* The in-memory draft still works when storage is unavailable. */ }
 
   if (hasDraft && location?.workspace) {

@@ -1,10 +1,11 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { ChevronDown, ExternalLink, Film, Globe, Image, PanelTop, ZoomIn } from 'lucide-react'
+import { ChevronDown, ExternalLink, FileText, Film, Globe, Image, PanelTop, ZoomIn } from 'lucide-react'
 import { useTranslation } from '../i18n'
 import { openImage } from './ImageLightbox'
 import type { TurnMediaItem } from '../lib/turn-media'
 import { useApp } from '../store'
 import { Popover } from './ui'
+import { MediaActions } from './MediaActions'
 
 interface MediaContext {
   workspace: string
@@ -38,11 +39,16 @@ export function TurnMedia({ items, workspace, sessionPath }: MediaContext & { it
   if (!resolved.length) return null
   const images = resolved.filter((item) => item.kind === 'image')
   const videos = resolved.filter((item) => item.kind === 'video')
+  const files = resolved.filter((item) => item.kind === 'file')
   const pages = resolved.filter((item) => item.kind === 'html' || item.kind === 'website')
   return (
     <div className="turn-media">
       {images.length > 0 && <ImageResults key={images[0].key} images={images} />}
       {videos.map((video) => <VideoResult key={video.key} video={video} />)}
+      {files.map((file) => <div className="turn-file-result" key={file.key}>
+        <FileText size={17} aria-hidden="true" /><span title={file.name}>{file.name}</span>
+        {file.url ? <MediaActions src={file.url} name={file.name} kind="file" /> : <small>{t('文件不可用。')}</small>}
+      </div>)}
       {pages[0] && <PageResult key={pages[0].key} page={pages[0]} />}
       {pages.length > 1 && (
         <details className="turn-other-pages">
@@ -133,7 +139,7 @@ function ImageResults({ images }: { images: ResolvedMedia[] }): ReactNode {
                 <span className="turn-image-zoom"><ZoomIn size={16} /></span>
               </button>
             )}
-            <figcaption className="turn-media-caption">{active.name}</figcaption>
+            <figcaption className="turn-media-caption"><span title={active.name}>{active.name}</span><MediaActions src={active.url} name={active.name} kind="image" /></figcaption>
           </div>
           {available.length > 1 && (
             <div className="turn-image-thumbnails" aria-label={t('切换预览图片')}>
@@ -167,6 +173,7 @@ function VideoResult({ video }: { video: ResolvedMedia }): ReactNode {
       )}
       <figcaption className="turn-media-caption">
         <span title={video.name}>{video.name}</span>
+        {video.url && <MediaActions src={video.url} name={video.name} kind="video" />}
         {video.remote ? (
           <button type="button" className="work-icon" title={t('在浏览器打开')}
             aria-label={t('在浏览器打开')} onClick={() => void window.pi.openExternal(video.source)}><ExternalLink size={14} /></button>

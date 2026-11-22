@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { agentDir } from './pi-settings'
+import { backgroundNodeExecutable } from './pi-exec'
 import { locatePi } from './pi-locate'
 import { seedRoot } from './pi-runtime'
 
@@ -126,7 +127,7 @@ function collect(provider: ChildProcessWithoutNullStreams, onLine: (value: Recor
   })
 }
 
-export async function listOAuthProviders(): Promise<OAuthProvider[]> {
+export async function listRuntimeAuthProviders(): Promise<OAuthProvider[]> {
   return new Promise((resolve, reject) => {
     let env: NodeJS.ProcessEnv
     try {
@@ -135,7 +136,7 @@ export async function listOAuthProviders(): Promise<OAuthProvider[]> {
       reject(error instanceof Error ? error : new Error(OAUTH_UNAVAILABLE))
       return
     }
-    const child = spawn(process.execPath, [helperPath(), '--list'], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(backgroundNodeExecutable(), [helperPath(), '--list'], { env, stdio: ['ignore', 'pipe', 'pipe'] })
     let output = ''
     child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString() })
     child.stderr.on('data', () => undefined)
@@ -147,12 +148,16 @@ export async function listOAuthProviders(): Promise<OAuthProvider[]> {
         const line = output.trim().split(/\r?\n/).pop() ?? ''
         const parsed = JSON.parse(line) as { type?: string; providers?: OAuthProvider[] }
         if (parsed.type !== 'providers' || !Array.isArray(parsed.providers)) throw new Error('服务商列表格式无效。')
-        resolve(parsed.providers.filter((provider) => provider.oauth))
+        resolve(parsed.providers.filter((provider) => typeof provider.id === 'string' && typeof provider.name === 'string' && (provider.oauth || provider.apiKey)))
       } catch (error) {
         reject(new Error(code === 0 ? (error instanceof Error ? error.message : String(error)) : '无法读取账号登录服务商列表。'))
       }
     })
   })
+}
+
+export async function listOAuthProviders(): Promise<OAuthProvider[]> {
+  return (await listRuntimeAuthProviders()).filter((provider) => provider.oauth)
 }
 
 let active: { child: ChildProcessWithoutNullStreams; sender: WebContents; timer: NodeJS.Timeout } | null = null
@@ -175,7 +180,7 @@ export async function startOAuth(provider: string, sender: WebContents): Promise
   }
   let child: ChildProcessWithoutNullStreams
   try {
-    child = spawn(process.execPath, [helperPath(), provider], { env: helperEnv(), stdio: ['pipe', 'pipe', 'pipe'] })
+    child = spawn(backgroundNodeExecutable(), [helperPath(), provider], { env: helperEnv(), stdio: ['pipe', 'pipe', 'pipe'] })
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }

@@ -16,7 +16,7 @@ try {
   let onTool
   const guardSource = await readFile(new URL('../extensions/computer-use/src/desktop-access-extension.ts', import.meta.url), 'utf8')
   const guardCode = stripTypeScriptTypes(guardSource.replace(/^import .*$/gm, '').replace('export default function', 'function').replaceAll('import.meta.url', "'file:///tmp/desktop-access-extension.ts'"))
-  const desktopAccessExtension = runInNewContext(`${guardCode}\ndesktopAccessExtension`, {desktopToolBlockReason,computerUse:()=>{}})
+  const desktopAccessExtension = runInNewContext(`${guardCode}\ndesktopAccessExtension`, {desktopToolBlockReason,computerUse:()=>{},registerContextReport:()=>{},process})
   desktopAccessExtension({registerCommand:()=>{},on:(name, handler) => { if (name === 'tool_call') onTool = handler }})
   assert.equal((await onTool({toolName:'computer_use_observe'})).block, true, 'old extensions are blocked by the desktop hook')
   assert.equal(await onTool({toolName:'computer_use_session_observe'}), undefined, 'browser tools are independent')

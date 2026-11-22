@@ -14,7 +14,7 @@ if (!existsSync(appPath)) {
 }
 
 copyFileSync('build/icon.icns', join(resources, 'icon.icns'))
-if (existsSync('build/scroll-phase.node')) copyFileSync('build/scroll-phase.node', join(resources, 'scroll-phase.node'))
+copyFileSync('build/scroll-phase.node', join(resources, 'scroll-phase.node'))
 copyFileSync('build/dictation.node', join(resources, 'dictation.node'))
 const dictationPrivacy = {
   NSMicrophoneUsageDescription: 'Pi Desktop uses the microphone when you dictate a message.',

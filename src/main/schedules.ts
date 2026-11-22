@@ -782,7 +782,7 @@ export class ScheduleScheduler {
           executable = sandbox.nodePath
           launchArgs = [sandbox.cliPath, '--settings', sandbox.configPath, '/usr/bin/env', '-u', 'ELECTRON_RUN_AS_NODE', pi, ...args]
         } else {
-          const direct = directPiSpawn(pi, args)
+          const direct = directPiSpawn(pi, args, { background: true })
           if (!direct) {
             finish('failed', null, `找不到 Pi 的 cli.js（"${pi}"），无法在 Windows 上运行定时任务。请重新安装 Pi。`)
             return
@@ -801,7 +801,7 @@ export class ScheduleScheduler {
             PI_DESKTOP_NETWORK: sandbox ? settings.sandboxNetwork ?? 'model' : 'unrestricted',
             ...proxyEnv(settings),
             ...spawnEnv,
-            ...(sandbox ? { PI_DESKTOP_SANDBOX: '1', SRT_DEBUG: '1' } : {})
+            ...(sandbox ? { PI_DESKTOP_SANDBOX: '1', PI_DESKTOP_ALLOW_NETWORK: '1', SRT_DEBUG: '1' } : {})
           },
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: process.platform !== 'win32'

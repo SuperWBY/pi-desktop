@@ -75,7 +75,21 @@ try {
   await writeFile(join(agent, 'settings.json'), JSON.stringify({ defaultProvider: 'local', defaultModel: 'fixture' }))
   await writeFile(join(agent, 'models.json'), JSON.stringify({ providers: { local: { baseUrl: `${origin}/v1`, api: 'openai-completions', apiKey: 'fixture', models: [{ id: 'fixture' }] } } }))
   const configFile = join(agent, 'mcp.json')
-  await writeFile(configFile, JSON.stringify({ autoEnableCodemode: false, mcpServers: { other: preserved } }))
+  const localServer = join(temp, 'local-mcp.cjs')
+  const localStarts = join(temp, 'local-starts')
+  await writeFile(localServer, `require('node:fs').appendFileSync(${JSON.stringify(localStarts)}, 'start\\n');
+const readline = require('node:readline');
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const msg = JSON.parse(line);
+  if (msg.id === undefined) return;
+  const result = msg.method === 'initialize'
+    ? { protocolVersion: msg.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'local-fixture', version: '1' } }
+    : msg.method === 'tools/list' ? { tools: [] } : {};
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\\n');
+});`)
+  const local = { command: process.execPath, args: [localServer], exposure: 'direct' }
+  const broken = { command: process.execPath, args: ['-e', 'process.exit(1)'], exposure: 'direct' }
+  await writeFile(configFile, JSON.stringify({ autoEnableCodemode: false, mcpServers: { other: preserved, local, broken } }))
   const executablePath = process.env.PI_CONNECTORS_APP
   app = await electron.launch({
     cwd: root, executablePath,
@@ -93,6 +107,18 @@ try {
   await page.getByRole('button', { name: '应用连接', exact: true }).click()
   await page.getByText('飞书', { exact: true }).waitFor()
   await page.getByText('本机依赖', { exact: false }).waitFor()
+  const localRow = page.locator('.connection-row').filter({ has: page.getByText('local', { exact: true }) })
+  await localRow.getByText('已安装', { exact: true }).waitFor({ timeout: 30000 })
+  const brokenRow = page.locator('.connection-row').filter({ has: page.getByText('broken', { exact: true }) })
+  await brokenRow.getByText('已安装', { exact: true }).waitFor({ timeout: 30000 })
+  await page.locator('.connection-row').filter({ has: page.getByText('other', { exact: true }) }).getByText('已停用', { exact: true }).waitFor()
+  assert.equal(await localRow.getByRole('button', { name: '测试连接 local' }).count(), 0)
+  await page.getByRole('button', { name: '刷新', exact: true }).click()
+  await localRow.getByText('已安装', { exact: true }).waitFor({ timeout: 30000 })
+  if (process.env.PI_CONNECTORS_SCREENSHOT) await page.screenshot({ path: process.env.PI_CONNECTORS_SCREENSHOT })
+  if (process.env.PI_MCP_LOCAL_ONLY === '1') {
+    console.log('PASS configured MCP installation and disabled states')
+  } else {
   assert.equal(await page.getByRole('button', { name: /^git\b/ }).isVisible(), false)
   await page.getByRole('button', { name: '手动添加', exact: true }).click()
   await page.getByLabel('连接名称').fill('Demo BI')
@@ -107,10 +133,12 @@ try {
   if (process.env.PI_CONNECTORS_SCREENSHOT) await page.screenshot({ path: process.env.PI_CONNECTORS_SCREENSHOT })
   await page.getByRole('button', { name: '保存', exact: true }).click()
   await page.getByText('Demo BI', { exact: true }).waitFor()
-  await page.getByText('测试通过', { exact: true }).waitFor()
+  await page.locator('.connection-row').filter({ has: page.getByText('Demo BI', { exact: true }) }).getByText('已安装', { exact: true }).waitFor({ timeout: 30000 })
   const config = JSON.parse(await readFile(configFile, 'utf8'))
   assert.equal(config.autoEnableCodemode, false)
   assert.deepEqual(config.mcpServers.other, preserved)
+  assert.deepEqual(config.mcpServers.local, local)
+  assert.deepEqual(config.mcpServers.broken, broken)
   assert.equal(config.mcpServers['demo-bi'].headers.Authorization, sampleToken)
   if (process.platform !== 'win32') assert.equal((await stat(configFile)).mode & 0o777, 0o600)
   const saved = await page.evaluate(() => window.pi.listMcpConnectors())
@@ -121,8 +149,7 @@ try {
   await page.getByLabel('连接名称').fill('Demo BI 经营数据')
   await page.getByRole('button', { name: '保存', exact: true }).click()
   await page.getByText('Demo BI 经营数据', { exact: true }).waitFor()
-  await page.getByRole('button', { name: '测试连接 Demo BI 经营数据', exact: true }).click()
-  await page.getByText('测试通过', { exact: true }).waitFor()
+  await page.locator('.connection-row').filter({ has: page.getByText('Demo BI 经营数据', { exact: true }) }).getByText('已安装', { exact: true }).waitFor({ timeout: 30000 })
 
   await page.getByRole('button', { name: '返回', exact: true }).click()
   await page.locator('.new-session').click()
@@ -138,8 +165,9 @@ try {
   await page.getByRole('button', { name: '移除 Demo BI 经营数据', exact: true }).click()
   await page.getByRole('button', { name: '移除', exact: true }).click()
   await page.getByText('连接已移除。 新建或重启会话后生效。', { exact: true }).waitFor()
-  assert.deepEqual(JSON.parse(await readFile(configFile, 'utf8')).mcpServers, { other: preserved })
+  assert.deepEqual(JSON.parse(await readFile(configFile, 'utf8')).mcpServers, { other: preserved, local, broken })
   console.log('PASS classification, authenticated connector validation, native Pi MCP tool call, credential masking, edit, and removal')
+  }
 } finally {
   await app?.close()
   server.closeAllConnections()

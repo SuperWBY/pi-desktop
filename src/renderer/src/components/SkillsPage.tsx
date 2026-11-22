@@ -21,6 +21,7 @@ import { runPackageWrite } from '../lib/package-operations'
 import { appConnectionName, ConnectionsPanel } from './ConnectionsPanel'
 import { Markdown } from './Markdown'
 import { Modal } from './ui'
+import { DesktopSelect } from './DesktopSelect'
 
 type Tab = 'skills' | 'plugins' | 'connectors'
 type Scope = 'all' | 'user' | 'project' | 'plugin'
@@ -220,10 +221,15 @@ export function SkillsPage({ pluginsOnly = false }: { pluginsOnly?: boolean }): 
 
   const useSkill = useCallback(
     (skill: SkillEntry) => {
-      actions.fillComposer(`/${skill.name} `)
+      const command = `skill:${skill.name}`
+      if (!state.commands.some((item) => item.source === 'skill' && item.name === command)) {
+        actions.notify('warning', t('当前会话未加载此技能'), t('请重新加载或新建对话后再试。'))
+        return
+      }
+      actions.fillComposer(`/${command} `, false, false, true)
       actions.openSkills(false)
     },
-    [actions]
+    [actions, state.commands, t]
   )
   useNavigationHistory({ value: { selected, selectedPackage, selectedConnector, tab },
     isParent: (key) => key.startsWith('list:'),
@@ -698,12 +704,8 @@ export function SkillsPage({ pluginsOnly = false }: { pluginsOnly?: boolean }): 
                 {tab === 'skills' && (
                   <label className="skills-source">
                     <span>{t('来源')}</span>
-                    <select aria-label={t('来源')} value={scope} onChange={(event) => setScope(event.target.value as Scope)}>
-                      <option value="all">{t('全部')}</option>
-                      <option value="user">{t('个人')}</option>
-                      <option value="project">{t('项目')}</option>
-                      <option value="plugin">{t('插件')}</option>
-                    </select>
+                    <DesktopSelect label={t('来源')} value={scope} onChange={(value) => setScope(value as Scope)}
+                      options={[{ value: 'all', label: t('全部') }, { value: 'user', label: t('个人') }, { value: 'project', label: t('项目') }, { value: 'plugin', label: t('插件') }]} />
                   </label>
                 )}
                 <button className="icon-button" onClick={() => void load()} title={t('刷新')} aria-label={t('刷新')}>

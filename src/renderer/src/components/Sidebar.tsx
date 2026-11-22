@@ -1,12 +1,16 @@
 import { useTranslation } from '../i18n'
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
+  Archive,
+  ArchiveRestore,
   Clock,
   ChevronRight,
   FolderOpen,
   Lock,
   MoreHorizontal,
   Package,
+  Pin,
+  PinOff,
   Plus,
   Search,
   Settings,
@@ -29,24 +33,36 @@ import { ContextMenu, Modal, Popover, Spinner } from './ui'
 function SessionMenu({
   session,
   close,
+  pinned,
+  onTogglePin,
+  archived,
+  onToggleArchive,
   onRename,
   onDelete,
   onClone,
-  onFork,
   onTree
 }: {
   session: SessionSummary
   close: () => void
+  pinned: boolean
+  onTogglePin: () => void
+  archived: boolean
+  onToggleArchive: () => void
   onRename: (value: string) => void
   onDelete: () => void
   onClone: () => void
-  onFork: () => void
   onTree: () => void
 }): ReactNode {
   const t = useTranslation()
   const { actions, state } = useApp()
   return (
     <div className="menu">
+      {!archived && <button className="menu-item" onClick={() => { close(); onTogglePin() }}>
+        {pinned ? <PinOff size={13} /> : <Pin size={13} />}{t(pinned ? '取消置顶' : '置顶对话')}
+      </button>}
+      <button className="menu-item" onClick={() => { close(); onToggleArchive() }}>
+        {archived ? <ArchiveRestore size={13} /> : <Archive size={13} />}{t(archived ? '取消归档' : '归档对话')}
+      </button>
       {session.path === state.sessionPath && <button
         className="menu-item"
         onClick={() => {
@@ -73,34 +89,9 @@ function SessionMenu({
         className="menu-item"
         onClick={() => {
           close()
-          onFork()
-        }}
-      >{t("从历史提示分支…")}</button>
-      <button
-        className="menu-item"
-        onClick={() => {
-          close()
           onTree()
         }}
       >{t("查看分支树")}</button>
-      <button
-        className="menu-item"
-        onClick={() => {
-          close()
-          void actions.exportMarkdown()
-        }}
-      >
-        导出 Markdown
-      </button>
-      <button
-        className="menu-item"
-        onClick={() => {
-          close()
-          void actions.exportHtml()
-        }}
-      >
-        导出 HTML
-      </button>
       </>}
       <div className="menu-separator" />
       <button
@@ -152,11 +143,44 @@ export function Sidebar(): ReactNode {
   const { state, actions } = useApp()
   const draftLocations = useDraftLocations()
   const [query, setQuery] = useState('')
+  const [pinBusy, setPinBusy] = useState(false)
+  const pinPending = useRef(false)
+  const pinnedPaths = state.settings.pinnedSessionPaths ?? []
+  const archivedPaths = state.settings.archivedSessionPaths ?? []
+  const archivePending = useRef(false)
+  const toggleArchive = useCallback(async (session: SessionSummary) => {
+    if (archivePending.current) return
+    const archived = archivedPaths.includes(session.path)
+    if (!archived && (state.runningSessionPaths.includes(session.path) || state.backgroundUiPending.some(item => item.path === session.path) || (state.sessionPath === session.path && (state.streaming || state.awaitingResponse || state.uiRequests.length > 0)))) {
+      actions.notify('warning', t('暂时无法归档'), t('该对话正在执行或等待确认，请先处理完当前任务。'))
+      return
+    }
+    archivePending.current = true
+    try {
+      if (!archived && state.sessionPath === session.path && !await actions.newScratchSession()) return
+      await actions.updateSettings({
+        archivedSessionPaths: archived ? archivedPaths.filter(path => path !== session.path) : [session.path, ...archivedPaths],
+        ...(archived ? {} : { pinnedSessionPaths: pinnedPaths.filter(path => path !== session.path) })
+      })
+      actions.notify('success', t(archived ? '对话已恢复' : '对话已归档'), t(archived ? '已回到原来的对话列表。' : '可以在侧栏的已归档中找到。'))
+    } catch { actions.notify('error', t('无法保存归档状态')) }
+    finally { archivePending.current = false }
+  }, [actions, archivedPaths, pinnedPaths, state.runningSessionPaths, state.backgroundUiPending, state.sessionPath, state.streaming, state.awaitingResponse, state.uiRequests, t])
+  const togglePin = useCallback(async (path: string) => {
+    if (pinPending.current) return
+    pinPending.current = true
+    setPinBusy(true)
+    const next = pinnedPaths.includes(path) ? pinnedPaths.filter(item => item !== path) : [path, ...pinnedPaths]
+    try { await actions.updateSettings({ pinnedSessionPaths: next }) }
+    catch { actions.notify('error', t('无法保存置顶状态')) }
+    finally { pinPending.current = false; setPinBusy(false) }
+  }, [actions, pinnedPaths, t])
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
   const [pendingProjectRemoval, setPendingProjectRemoval] = useState<string | null>(null)
   const [removingProject, setRemovingProject] = useState(false)
+  const projectRemovalBusy = Boolean(pendingProjectRemoval && (state.runningSessionPaths.some(path => state.sessions.some(session => session.path === path && pathsEqual(session.cwd, pendingProjectRemoval))) || state.backgroundUiPending.some(item => pathsEqual(item.cwd, pendingProjectRemoval)) || (pathsEqual(pendingProjectRemoval, state.workspace) && (state.streaming || state.awaitingResponse || state.uiRequests.length > 0))))
   const [forkTarget, setForkTarget] = useState<SessionSummary | null>(null)
   const [forkList, setForkList] = useState<{ entryId: string; text: string }[] | null>(null)
   const [forkBusy, setForkBusy] = useState(false)
@@ -257,7 +281,8 @@ export function Sidebar(): ReactNode {
     // A scratch or OS temp path may have been persisted by an older build.
     // Never render it as a project, and never remove a real project just
     // because a temporary chat is active. /var and /private/var are one folder.
-    if (workspace && !isScratchWorkspace && !isTemporaryWorkspace(workspace, scratchPath)) set.add(workspace)
+    const knownSession = state.sessionPath && state.sessions.some(session => session.path === state.sessionPath)
+    if (workspace && !knownSession && !isScratchWorkspace && !isTemporaryWorkspace(workspace, scratchPath)) set.add(workspace)
     const unique: string[] = []
     for (const path of set) {
       if (isTemporaryWorkspace(path, scratchPath)) continue
@@ -265,19 +290,19 @@ export function Sidebar(): ReactNode {
       unique.push(path)
     }
     return unique
-  }, [isScratchWorkspace, scratchPath, state.settings.workspaces, workspace])
+  }, [isScratchWorkspace, scratchPath, state.settings.workspaces, state.sessionPath, state.sessions, workspace])
 
   const matching = useMemo(
     () =>
       state.sessions
         .filter(
           (session) =>
-            !queryText ||
-            `${session.name} ${session.preview} ${session.cwd}`.toLowerCase().includes(queryText)
+            !archivedPaths.includes(session.path) && (!queryText ||
+            `${session.name} ${session.preview} ${session.cwd}`.toLowerCase().includes(queryText))
         )
         .slice()
         .sort((a, b) => b.updatedAt - a.updatedAt),
-    [state.sessions, queryText]
+    [state.sessions, queryText, archivedPaths]
   )
 
   // A session that belongs to a project lives only under that project; the
@@ -287,6 +312,7 @@ export function Sidebar(): ReactNode {
     const activeText = `${state.sessionName ?? ''} ${workspace ?? ''}`.toLowerCase()
     if (
       state.sessionPath &&
+      !archivedPaths.includes(state.sessionPath) &&
       isTemporaryWorkspace(workspace, scratchPath) &&
       !draftLocations.some((item) => item.key === `session:${state.sessionPath}`) &&
       (!queryText || activeText.includes(queryText)) &&
@@ -310,11 +336,14 @@ export function Sidebar(): ReactNode {
       })
     }
     return listed
-  }, [draftLocations, matching, queryText, scratchPath, state.messages, state.sessionName, state.sessionPath, t, workspace, workspaces])
+  }, [archivedPaths, draftLocations, matching, queryText, scratchPath, state.messages, state.sessionName, state.sessionPath, t, workspace, workspaces])
   const projectLabels = useMemo(
     () => disambiguateProjectNames(workspaces, state.settings.workspaceNames),
     [workspaces, state.settings.workspaceNames]
   )
+  const archivedSessions = state.sessions.filter(session => archivedPaths.includes(session.path) && (!queryText || `${session.name} ${session.preview} ${session.cwd}`.toLowerCase().includes(queryText))).sort((a, b) => archivedPaths.indexOf(a.path) - archivedPaths.indexOf(b.path))
+  const searchResults = [...(messageResults ?? []), ...archivedSessions.filter(session => queryText && !(messageResults ?? []).some(result => result.session.path === session.path)).map(session => ({ session, matches: [] }))]
+  const pinnedSessions = pinnedPaths.map(path => matching.find(session => session.path === path)).filter((session): session is SessionSummary => Boolean(session))
 
   const renderSession = (session: SessionSummary, showProject: boolean): ReactNode => {
     const active = state.sessionPath === session.path
@@ -384,9 +413,19 @@ export function Sidebar(): ReactNode {
           )}
           <span className="session-title">{truncate(label, 52)}</span>
           {showProject && (
-            <span className="session-meta">{relativeTime(session.updatedAt, language)}</span>
+            <span className="session-meta">{archivedPaths.includes(session.path) ? `${projectLabels.get(session.cwd) || projectName(state.settings.workspaceNames, session.cwd)} · ` : ''}{relativeTime(session.updatedAt, language)}</span>
           )}
         </button>
+
+        {!archivedPaths.includes(session.path) && <button
+          type="button"
+          className={clsx('icon-button session-pin-button', pinnedPaths.includes(session.path) && 'is-pinned')}
+          aria-label={t(pinnedPaths.includes(session.path) ? '取消置顶' : '置顶对话')}
+          title={t(pinnedPaths.includes(session.path) ? '取消置顶' : '置顶对话')}
+          aria-pressed={pinnedPaths.includes(session.path)}
+          disabled={pinBusy}
+          onClick={() => void togglePin(session.path)}
+        ><Pin size={14} /></button>}
 
         <Popover
           width={190}
@@ -408,6 +447,10 @@ export function Sidebar(): ReactNode {
           {(close) => (
             <SessionMenu
               session={session}
+              pinned={pinnedPaths.includes(session.path)}
+              archived={archivedPaths.includes(session.path)}
+              onToggleArchive={() => void toggleArchive(session)}
+              onTogglePin={() => void togglePin(session.path)}
               close={close}
               onRename={(value) => {
                 setRenaming(session.path)
@@ -415,7 +458,6 @@ export function Sidebar(): ReactNode {
               }}
               onDelete={() => setPendingDelete(session)}
               onClone={() => void actions.cloneSession()}
-              onFork={() => void openFork(session)}
               onTree={() => void openTree()}
             />
           )}
@@ -582,28 +624,32 @@ export function Sidebar(): ReactNode {
             </button>
           )
         })}
-        {queryText && messageResults && messageResults.length > 0 && (
+        {queryText && searchResults.length > 0 && (
           <div className="session-search-results">
             <div className="recent-label">{t('消息结果')}</div>
-            {messageResults.map((result) => (
+            {searchResults.map((result) => (
               <button
                 key={result.session.path}
                 className="session-search-hit"
                 onClick={() => void actions.openSession(result.session.cwd, result.session.path)}
                 title={result.session.name}
               >
-                <span className="session-search-name">{result.session.name}</span>
+                <span className="session-search-name">{result.session.name}{archivedPaths.includes(result.session.path) && ` · ${t('已归档')}`}</span>
                 {result.matches[0] && <span className="session-search-snippet">{result.matches[0].text}</span>}
               </button>
             ))}
           </div>
         )}
+        {pinnedSessions.length > 0 && <div className="pinned-sessions">
+          <div className="project-shortcuts-header recent-header"><span className="project-shortcuts-label">{t('置顶')}</span></div>
+          {pinnedSessions.map(session => renderSession(session, false))}
+        </div>}
         <div className="project-shortcuts-header">
           <span className="project-shortcuts-label">{t('Projects')}</span>
           <button className="icon-button project-add" onClick={() => actions.openAddProject(true)}
             title={t('添加项目')} aria-label={t('添加项目')}><Plus size={14} /></button>
         </div>
-        {Boolean(queryText) && matching.length === 0 && (
+        {Boolean(queryText) && matching.length === 0 && archivedSessions.length === 0 && (
           <div className="session-empty">{t('没有匹配的会话。')}</div>
         )}
         {workspaces.map((path) => {
@@ -613,6 +659,7 @@ export function Sidebar(): ReactNode {
           const activeText = `${state.sessionName ?? ''} ${workspace ?? ''}`.toLowerCase()
           if (
             state.sessionPath &&
+            !archivedPaths.includes(state.sessionPath) &&
             workspace &&
             pathsEqual(workspace, path) &&
             !isTemporaryWorkspace(workspace, scratchPath) &&
@@ -685,7 +732,7 @@ export function Sidebar(): ReactNode {
                         .catch(() => actions.notify('error', t('无法保存项目设置')))
                     }}><Lock size={14} />{t(readOnly ? '允许修改项目文件' : '设为项目只读')}</button>
                     <button className="menu-item" onClick={() => { close(); setPendingProjectRemoval(path) }}>
-                      <Trash2 size={14} />{t('从列表移除')}
+                      <Trash2 size={14} />{t('删除项目')}
                     </button>
                   </div>}
                 </Popover>
@@ -712,6 +759,7 @@ export function Sidebar(): ReactNode {
             {recent.map((session) => renderSession(session, true))}
           </div>
         )}
+
       </div>
 
       <div className="sidebar-footer">
@@ -761,6 +809,10 @@ export function Sidebar(): ReactNode {
         {contextMenu && (
           <SessionMenu
             session={contextMenu.session}
+            pinned={pinnedPaths.includes(contextMenu.session.path)}
+            archived={archivedPaths.includes(contextMenu.session.path)}
+            onToggleArchive={() => void toggleArchive(contextMenu.session)}
+            onTogglePin={() => void togglePin(contextMenu.session.path)}
             close={() => setContextMenu(null)}
             onRename={(value) => {
               setRenaming(contextMenu.session.path)
@@ -768,7 +820,6 @@ export function Sidebar(): ReactNode {
             }}
             onDelete={() => setPendingDelete(contextMenu.session)}
             onClone={() => void actions.cloneSession()}
-            onFork={() => void openFork(contextMenu.session)}
             onTree={() => void openTree()}
           />
         )}
@@ -776,31 +827,31 @@ export function Sidebar(): ReactNode {
 
       <Modal
         open={Boolean(pendingProjectRemoval)}
-        title={language === 'en' ? 'Remove project from list?' : '从项目列表移除？'}
+        title={t('删除项目？')}
         subtitle={pendingProjectRemoval ?? undefined}
         onClose={() => { if (!removingProject) setPendingProjectRemoval(null) }}
         footer={<>
           <button className="button ghost" disabled={removingProject} onClick={() => setPendingProjectRemoval(null)}>{t('取消')}</button>
-          <button className="button primary" disabled={removingProject || (pendingProjectRemoval === workspace && state.streaming)} onClick={() => {
+          <button className="button danger" disabled={removingProject || projectRemovalBusy} onClick={() => {
             const path = pendingProjectRemoval
             if (!path) return
             setRemovingProject(true)
             void (async () => {
               try {
-                if (path === workspace && !await actions.newScratchSession()) return
-                await actions.updateSettings({ workspaces: state.settings.workspaces.filter((item) => item !== path) })
+                if (pathsEqual(path, workspace) && !await actions.newScratchSession()) return
+                const result = await window.pi.removeProject(path)
+                await actions.refreshSessions()
                 setPendingProjectRemoval(null)
+                actions.notify('success', t('项目已删除'), `${result.removedSessions} ${t('个对话已移到回收站。')}`)
               } catch (error) {
-                actions.notify('error', language === 'en' ? 'Could not remove project' : '无法移除项目', String(error))
-              } finally {
-                setRemovingProject(false)
-              }
+                actions.notify('error', t('无法删除项目'), error instanceof Error ? error.message : String(error))
+              } finally { setRemovingProject(false) }
             })()
-          }}>{language === 'en' ? 'Remove from list' : '从列表移除'}</button>
+          }}>{removingProject ? t('正在删除…') : t('删除项目')}</button>
         </>}
       >
-        <p className="modal-text">{language === 'en' ? 'The folder and its files remain on your computer. Conversations remain in Recent conversations; opening the folder again will add it back to Projects.' : '文件夹和里面的文件仍保留在电脑上；历史对话会显示在「最近对话」。再次打开文件夹时，项目会重新出现在列表中。'}</p>
-        {pendingProjectRemoval === workspace && state.streaming && <p className="modal-text">{language === 'en' ? 'Wait for the current task to finish or stop it before removing this project.' : '当前项目有任务正在执行，请等待完成或停止任务后再移除。'}</p>}
+        <p className="modal-text">{t('项目会从列表中移除，该项目的所有对话（包括置顶和已归档对话）会移到回收站。电脑上的项目文件夹和文件不会删除。')}</p>
+        {projectRemovalBusy && <p className="modal-text">{t('该项目有对话正在执行或等待确认，请先处理完当前任务。')}</p>}
       </Modal>
 
       <Modal

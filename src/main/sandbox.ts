@@ -109,7 +109,7 @@ export function validNetworkHost(value: string): boolean {
   return !value.includes('*') && !value.includes(':') && validDomain(value)
 }
 
-function allowedDomains(settings: Settings): string[] {
+export function allowedDomains(settings: Settings): string[] {
   if (settings.sandboxNetwork === 'off') return []
   const custom = Array.isArray(settings.sandboxAllowedDomains)
     ? settings.sandboxAllowedDomains.map((value) => value.trim()).filter(validDomain)
@@ -120,7 +120,13 @@ function allowedDomains(settings: Settings): string[] {
 export function createSandbox(cwd: string, settings: Settings, additionalRuntimeWrites: string[] = []): SandboxLaunch | null {
   if (!sandboxAvailable()) return null
   const workspace = resolve(cwd || homedir())
-  const runtimeWrites = [agentDir(), sessionsRoot(), join(app.getPath('userData'), 'computer-use-sessions'), tmpdir(), ...additionalRuntimeWrites]
+  // Keep existing operation journals (including unresolved actions) in place.
+  // Only their SQLite files and audit log need writes, not the Chrome profile
+  // and the rest of the user's computer-use directory.
+  const journalDir = join(homedir(), '.pi', 'computer-use')
+  mkdirSync(journalDir, { recursive: true, mode: 0o700 })
+  const journalFiles = ['browser-actions.sqlite', 'desktop-actions.sqlite'].flatMap((name) => ['', '-wal', '-shm', '-journal'].map((suffix) => join(journalDir, `${name}${suffix}`)))
+  const runtimeWrites = [agentDir(), sessionsRoot(), join(app.getPath('userData'), 'computer-use-sessions'), join(journalDir, 'audit.jsonl'), ...journalFiles, tmpdir(), ...additionalRuntimeWrites]
   const readOnly = projectReadOnly(settings, cwd)
   const writes = readOnly ? runtimeWrites : [workspace, ...runtimeWrites]
   const insideRuntimeWrite = runtimeWrites.some((path) => {
@@ -137,7 +143,7 @@ export function createSandbox(cwd: string, settings: Settings, additionalRuntime
     },
     network: {
       allowedDomains: allowedDomains(settings),
-      deniedDomains: [],
+      deniedDomains: settings.sandboxNetwork === 'off' ? ['*'] : [],
       allowLocalBinding: true
     }
   }

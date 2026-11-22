@@ -28,7 +28,11 @@ export function pathsEqual(a: string | null | undefined, b: string | null | unde
  */
 export function isTemporaryWorkspace(path: string | null | undefined, scratchPath?: string | null): boolean {
   if (!path || !scratchPath) return false
-  return pathsEqual(path, scratchPath)
+  const candidate = canonicalWorkspacePath(path)
+  const root = canonicalWorkspacePath(scratchPath)
+  if (candidate === root) return true
+  const relative = candidate.startsWith(`${root}/conversations/`) ? candidate.slice(root.length + '/conversations/'.length) : ''
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(relative)
 }
 
 export function looksLikeRawPath(value: string): boolean {

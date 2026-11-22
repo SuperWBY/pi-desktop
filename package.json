@@ -18,9 +18,9 @@
     "e2e": "node scripts/e2e.mjs",
     "prepare:pi-seed": "node scripts/prepare-pi-seed.mjs",
     "prepare:sandbox": "node scripts/prepare-sandbox.mjs",
-    "pack": "export ELECTRON_MIRROR=${ELECTRON_MIRROR:-https://npmmirror.com/mirrors/electron/}; npm run build && npm run prepare:sandbox && npx electron-packager . \"Pi Desktop\" --out=release --overwrite --icon=build/icon.icns --app-bundle-id=dev.pi.desktop --app-version=$(node -p \"require('./package.json').version\") --darwin-dark-mode-support --ignore=\"^/(src|scripts|output|release|build/dictation[.]node|build/pi-seed|build/srt-cli.cjs)\" && node scripts/prepare-pi-seed.mjs --embed=\"release/Pi Desktop-darwin-arm64/Pi Desktop.app\" && node scripts/prepare-sandbox.mjs --embed=\"release/Pi Desktop-darwin-arm64/Pi Desktop.app\" && node scripts/prepare-auth-helper.mjs --app=\"release/Pi Desktop-darwin-arm64/Pi Desktop.app\" && node scripts/check-pack-auth.mjs --app=\"release/Pi Desktop-darwin-arm64/Pi Desktop.app\" && node scripts/fix-icon.mjs",
-    "pack:win": "npm run build && npm run prepare:sandbox && npx electron-packager . \"Pi Desktop\" --platform=win32 --arch=x64 --out=release --overwrite --icon=build/icon.ico --app-version=$(node -p \"require('./package.json').version\") --ignore=\"^/(src|scripts|output|release|build/dictation[.]node|build/pi-seed)\" && node scripts/prepare-pi-seed.mjs --embed=\"release/Pi Desktop-win32-x64\" && node scripts/prepare-sandbox.mjs --embed=\"release/Pi Desktop-win32-x64\" && node scripts/prepare-auth-helper.mjs --app=\"release/Pi Desktop-win32-x64\" && node scripts/check-pack-auth.mjs --app=\"release/Pi Desktop-win32-x64\"",
-    "pack:linux": "npm run build && npm run prepare:sandbox && npx electron-packager . \"Pi Desktop\" --platform=linux --arch=x64 --out=release --overwrite --app-version=$(node -p \"require('./package.json').version\") --ignore=\"^/(src|scripts|output|release|build/dictation[.]node|build/pi-seed|build/srt-cli.cjs)\" && node scripts/prepare-pi-seed.mjs --embed=\"release/Pi Desktop-linux-x64\" && node scripts/prepare-sandbox.mjs --embed=\"release/Pi Desktop-linux-x64\" && node scripts/prepare-auth-helper.mjs --app=\"release/Pi Desktop-linux-x64\" && node scripts/check-pack-auth.mjs --app=\"release/Pi Desktop-linux-x64\"",
+    "pack": "export ELECTRON_MIRROR=${ELECTRON_MIRROR:-https://npmmirror.com/mirrors/electron/}; npm run build && npm run prepare:sandbox && npx electron-packager . \"Pi Desktop\" --out=release --overwrite --icon=build/icon.icns --app-bundle-id=dev.pi.desktop --app-version=$(node -p \"require('./package.json').version\") --darwin-dark-mode-support --ignore=\"^/(src|scripts|output|release|build/dictation[.]node|build/pi-seed|build/srt-cli.cjs)\" && node scripts/prepare-pi-seed.mjs --embed=\"release/Pi Desktop-darwin-arm64/Pi Desktop.app\" && node scripts/prepare-sandbox.mjs --embed=\"release/Pi Desktop-darwin-arm64/Pi Desktop.app\" && node scripts/prepare-auth-helper.mjs --app=\"release/Pi Desktop-darwin-arm64/Pi Desktop.app\" && node scripts/fix-node-pty.mjs --app=\"release/Pi Desktop-darwin-arm64/Pi Desktop.app\" && node scripts/check-pack-auth.mjs --app=\"release/Pi Desktop-darwin-arm64/Pi Desktop.app\" && node scripts/fix-icon.mjs",
+    "pack:win": "npm run build && npm run prepare:sandbox && npx electron-packager . \"Pi Desktop\" --platform=win32 --arch=x64 --out=release --overwrite --icon=build/icon.ico --app-version=$(node -p \"require('./package.json').version\") --ignore=\"^/(src|scripts|output|release|build/dictation[.]node|build/pi-seed)\" && node scripts/prepare-pi-seed.mjs --embed=\"release/Pi Desktop-win32-x64\" && node scripts/prepare-sandbox.mjs --embed=\"release/Pi Desktop-win32-x64\" && node scripts/prepare-auth-helper.mjs --app=\"release/Pi Desktop-win32-x64\" && node scripts/fix-node-pty.mjs --app=\"release/Pi Desktop-win32-x64\" && node scripts/check-pack-auth.mjs --app=\"release/Pi Desktop-win32-x64\"",
+    "pack:linux": "npm run build && npm run prepare:sandbox && npx electron-packager . \"Pi Desktop\" --platform=linux --arch=x64 --out=release --overwrite --app-version=$(node -p \"require('./package.json').version\") --ignore=\"^/(src|scripts|output|release|build/dictation[.]node|build/pi-seed|build/srt-cli.cjs)\" && node scripts/prepare-pi-seed.mjs --embed=\"release/Pi Desktop-linux-x64\" && node scripts/prepare-sandbox.mjs --embed=\"release/Pi Desktop-linux-x64\" && node scripts/prepare-auth-helper.mjs --app=\"release/Pi Desktop-linux-x64\" && node scripts/fix-node-pty.mjs --app=\"release/Pi Desktop-linux-x64\" && node scripts/check-pack-auth.mjs --app=\"release/Pi Desktop-linux-x64\"",
     "dmg": "npm run pack && node scripts/make-dmg.mjs",
     "release:mac": "bash scripts/release-mac.sh",
     "package:chrome": "node scripts/package-chrome-extension.mjs",
@@ -58,6 +58,12 @@
   "author": "Pi Desktop",
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.81",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "node-pty": "^1.1.0",
     "remark-breaks": "^4.0.0"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
   }
 }

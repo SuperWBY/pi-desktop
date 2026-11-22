@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { Check, FolderOpen, LoaderCircle, Package, Play, RefreshCw, Sparkles } from 'lucide-react'
 import { CREATOR_COMMAND, type CreatedPlugin, type CreatedPluginsResult, type CreatorAction } from '@shared/creator'
-import { pathsEqual, projectReadOnly } from '@shared/paths'
+import { isTemporaryWorkspace, pathsEqual, projectReadOnly } from '@shared/paths'
 import { useApp } from '../store'
 import { useTranslation } from '../i18n'
 import { runPackageWrite, usePackageOperations } from '../lib/package-operations'
@@ -64,7 +64,7 @@ export function MyPlugins({ onInstalled }: { onInstalled: () => Promise<void> })
       : <div className="my-plugins-list">{result.plugins.map(plugin => {
         const current = pathsEqual(plugin.workspace, state.workspace ?? '')
         const active = pending?.path === plugin.path
-        const project = state.settings.workspaceNames?.[plugin.workspace] || (pathsEqual(plugin.workspace, state.boot?.scratchPath ?? '') ? t('临时工作区') : baseName(plugin.workspace))
+        const project = state.settings.workspaceNames?.[plugin.workspace] || (isTemporaryWorkspace(plugin.workspace, state.boot?.scratchPath) ? t('临时工作区') : baseName(plugin.workspace))
         return <article className="my-plugin" key={plugin.path} aria-label={plugin.name} aria-busy={active}>
           <Package className="my-plugin-icon" size={25} />
           <div className="my-plugin-body"><div className="my-plugin-title"><h3>{plugin.name}</h3><span key={plugin.status} className="my-plugin-status" role="status">{plugin.status === 'installed' && <Check size={13} />}{t(labels[plugin.status])}</span></div>

@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from '@earendil-wo
 import { desktopToolBlockReason } from './desktop-access-policy.ts'
 import { dangerousCommand } from './tool-guard.ts'
 import computerUse from '../index.ts'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerContextReport } from './context-report.ts'
@@ -46,7 +46,11 @@ export default function desktopAccessExtension(pi: ExtensionAPI): void {
     reportHelper(false)
   })
   pi.on('tool_call', async (event: ToolCallEvent, ctx: ExtensionContext) => {
-    if (process.env.PI_DESKTOP_NETWORK === 'off' && event.toolName.startsWith('computer_use_')) {
+    let network = process.env.PI_DESKTOP_NETWORK
+    if (process.env.PI_DESKTOP_NETWORK_STATE_FILE) {
+      try { network = JSON.parse(readFileSync(process.env.PI_DESKTOP_NETWORK_STATE_FILE, 'utf8')).network } catch { network = 'off' }
+    }
+    if (network === 'off' && event.toolName.startsWith('computer_use_')) {
       return { block: true, reason: 'Networking is off for this conversation. Enable networking to use browser and computer tools.' }
     }
     const mode = process.env.PI_DESKTOP_TOOL_APPROVAL ?? 'dangerous'

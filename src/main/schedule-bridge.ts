@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
+import { backgroundNodeExecutable } from './pi-exec'
 
 const CLI_SCRIPT = String.raw`#!/usr/bin/env node
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -151,7 +152,7 @@ export function ensureScheduleCli(): void {
   mkdirSync(bin, { recursive: true })
   const script = join(bin, 'pi-desktop-schedule.mjs')
   writeFileSync(script, CLI_SCRIPT, { mode: 0o755 })
-  const exec = process.execPath.replaceAll('"', '\\"')
+  const exec = backgroundNodeExecutable().replaceAll('"', '\\"')
   const quotedScript = script.replaceAll('"', '\\"')
   if (process.platform === 'win32') {
     writeFileSync(

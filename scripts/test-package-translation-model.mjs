@@ -34,6 +34,7 @@ try {
  assert.deepEqual(await worker.translatePackageTexts(['one','two','three','four'],'zh-CN','/tmp'),['译 one','译 two','译 three','译 four'])
  assert.deepEqual(f.prompts.map(x=>x.length),[4,2,2])
  assert.ok(f.starts.every(x=>x.additionalArgs.includes('--no-session')&&x.additionalArgs.includes('--no-tools')&&x.additionalArgs.includes('--no-context-files')))
+ assert.ok(f.starts.every(x=>x.background === true), 'translation workers must use the background runtime, including model retries')
  assert.ok(f.starts.filter(x=>x.additionalArgs.includes('--model')).every(x=>x.additionalArgs.includes('connected')&&x.additionalArgs.includes('haiku')&&!x.additionalArgs.includes('other')))
  assert.equal(f.stops,f.starts.length)
  f=reset('always')

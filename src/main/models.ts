@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import type {
   CustomModelEntry,
@@ -78,7 +79,13 @@ function writeRaw(raw: RawConfig): ModelsConfig {
   const file = modelsConfigFile()
   if (!existsSync(dirname(file))) mkdirSync(dirname(file), { recursive: true })
   const next: RawConfig = { $schema: 'https://pi.dev/schemas/models.schema.json', ...raw }
-  writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+  const temporary = `${file}.${randomUUID()}.tmp`
+  try {
+    writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+    renameSync(temporary, file)
+  } finally {
+    try { unlinkSync(temporary) } catch { /* renamed or not created */ }
+  }
   return readModelsConfig()
 }
 

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ExternalLink, FolderSearch, Pencil, Save, X } from 'lucide-react'
+import { diffLines } from 'diff'
+import { Markdown } from '../Markdown'
 import { useTranslation } from '../../i18n'
 import { useApp } from '../../store'
 
@@ -10,12 +12,15 @@ export function FilePreview({ path, focus }: { path: string; focus?: { line?: nu
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [saving, setSaving] = useState(false)
+  const [view, setView] = useState<'content' | 'preview' | 'changes'>('content')
+  const markdown = /\.(md|markdown|mdown)$/i.test(path)
   const target = useRef<HTMLElement>(null)
 
   useEffect(() => {
     if (editing) return
     let cancelled = false
     setResult(null)
+    setView(markdown && !focus?.line ? 'preview' : 'content')
     void window.pi.readText(path, 200_000).then((value) => {
       if (cancelled) return
       if (!value.ok || typeof value.content !== 'string') setResult({ error: value.error ?? t('无法预览这个文件') })
@@ -28,7 +33,7 @@ export function FilePreview({ path, focus }: { path: string; focus?: { line?: nu
       if (!cancelled) setResult({ error: error instanceof Error ? error.message : t('无法预览这个文件') })
     })
     return () => { cancelled = true }
-  }, [path, t, focus, editing])
+  }, [path, t, focus, editing, markdown])
 
   useEffect(() => {
     const line = target.current
@@ -43,6 +48,11 @@ export function FilePreview({ path, focus }: { path: string; focus?: { line?: nu
     if (saving || result?.text === undefined) return
     setSaving(true)
     try {
+      const current = await window.pi.readText(path, 200_000)
+      if (!current.ok || current.truncated || current.content !== result.text) {
+        actions.notify('error', t('文件已被更改，请重新打开后再保存'), path)
+        return
+      }
       const ok = await window.pi.writeTextFile(path, draft)
       if (!ok) {
         actions.notify('error', t('保存失败'), path)
@@ -77,13 +87,22 @@ export function FilePreview({ path, focus }: { path: string; focus?: { line?: nu
               <button className="work-icon" onClick={cancel} disabled={saving} aria-label={t('取消')} title={t('取消')}><X size={12} /></button>
             </>
           ) : (
-            <button className="work-icon" onClick={() => setEditing(true)} disabled={!result?.text || result.truncated} aria-label={t('编辑')} title={result?.truncated ? t('文件过大，暂不支持编辑') : t('编辑')}><Pencil size={12} /></button>
+            <button className="work-icon" onClick={() => { setView('content'); setEditing(true) }} disabled={result?.text === undefined || result.truncated} aria-label={t('编辑')} title={result?.truncated ? t('文件过大，暂不支持编辑') : t('编辑')}><Pencil size={12} /></button>
           )}
           <button className="work-icon" onClick={() => void window.pi.openPath(path)} aria-label={t('打开')} title={t('打开')}><ExternalLink size={12} /></button>
           <button className="work-icon" onClick={() => window.pi.showItem(path)} aria-label={t('在 Finder 中显示')} title={t('在 Finder 中显示')}><FolderSearch size={12} /></button>
         </div>
       </div>
-      {!result ? <div className="work-empty">{t('读取中…')}</div> : result.error ? <div className="work-empty">{result.error}</div> : editing ? (
+      {result?.text !== undefined && (markdown || editing) && <div className="file-preview-modes" role="group" aria-label={t('文件视图')}>
+        <button type="button" aria-pressed={view === 'content'} onClick={() => setView('content')}>{t(editing ? '编辑' : '源文件')}</button>
+        {markdown && <button type="button" aria-pressed={view === 'preview'} onClick={() => setView('preview')}>{t('预览')}</button>}
+        {editing && <button type="button" aria-pressed={view === 'changes'} onClick={() => setView('changes')}>{t('查看修改')}</button>}
+      </div>}
+      {!result ? <div className="work-empty">{t('读取中…')}</div> : result.error ? <div className="work-empty">{result.error}</div> : view === 'preview' && markdown ? (
+        <div className="file-preview-document"><Markdown deferLocalImages>{editing ? draft : result.text ?? ''}</Markdown></div>
+      ) : view === 'changes' && editing ? (
+        <pre className="file-preview-body file-preview-diff">{dirty ? diffLines(result.text ?? '', draft).map((part, index) => <span key={index} className={part.added ? 'added' : part.removed ? 'removed' : undefined}>{part.value}</span>) : t('还没有修改')}</pre>
+      ) : editing ? (
         <textarea
           className="file-preview-editor"
           value={draft}

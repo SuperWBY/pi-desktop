@@ -230,8 +230,8 @@ export function ConnectModelPanel({ onClose }: { onClose: () => void }): ReactNo
     <div className="connect-model" role="dialog" aria-label={t('连接模型')}>
       <button type="button" className="connect-close" aria-label={t('关闭')} onClick={onClose}><X size={14} /></button>
       <div className="connect-tabs" role="tablist">
-        <button type="button" role="tab" aria-selected={tab === 'key'} className={clsx(tab === 'key' && 'active')} onClick={() => setTab('key')}>API Key</button>
-        <button type="button" role="tab" aria-selected={tab === 'account'} className={clsx(tab === 'account' && 'active')} onClick={() => setTab('account')}>{t('用账号登录')}</button>
+        <button type="button" role="tab" aria-selected={tab === 'key'} className={clsx(tab === 'key' && 'active')} onClick={() => setTab('key')}>{t('通过 API Key 连接')}</button>
+        <button type="button" role="tab" aria-selected={tab === 'account'} className={clsx(tab === 'account' && 'active')} onClick={() => setTab('account')}>{t('通过账号连接')}</button>
       </div>
 
       {tab === 'key' ? (

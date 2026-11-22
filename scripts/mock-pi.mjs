@@ -19,11 +19,19 @@ if (process.argv.includes('--version')) {
 
 const scenario = process.env.MOCK_SCENARIO ?? 'default'
 const args = process.argv.slice(2)
+if (process.env.MOCK_RPC_EXEC_PATH_FILE && args.includes('rpc')) writeFileSync(process.env.MOCK_RPC_EXEC_PATH_FILE, process.execPath)
+if (process.env.MOCK_RPC_PID_FILE && args.includes('rpc')) writeFileSync(process.env.MOCK_RPC_PID_FILE, String(process.pid))
+if (process.env.MOCK_EXEC_PATH_FILE && (args.includes('--list-models') || (args[0] === 'update' && args.includes('--models')))) {
+  writeFileSync(process.env.MOCK_EXEC_PATH_FILE, process.execPath)
+  if (args.includes('--list-models')) console.log(process.env.MOCK_MODEL_TABLE || 'provider  model  context  max-out  thinking  images\nmock  test  1M  32K  yes  yes')
+  else console.log('updated')
+  process.exit(0)
+}
 const sessionFlag = args.indexOf('--session')
 let sessionFile = sessionFlag !== -1 ? args[sessionFlag + 1] : null
 const cwd = process.cwd()
 
-if (args.includes('rpc') && basename(cwd) === 'scratch' && process.env.MOCK_SCRATCH_START_DELAY) {
+if (args.includes('rpc') && (basename(cwd) === 'scratch' || (basename(dirname(cwd)) === 'conversations' && basename(dirname(dirname(cwd))) === 'scratch')) && process.env.MOCK_SCRATCH_START_DELAY) {
   await new Promise((resolve) => setTimeout(resolve, Number(process.env.MOCK_SCRATCH_START_DELAY)))
 }
 

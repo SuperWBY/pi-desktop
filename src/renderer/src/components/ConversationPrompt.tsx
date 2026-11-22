@@ -18,14 +18,15 @@ export function ConversationPrompt(): ReactNode {
 
   const retry = async (): Promise<void> => {
     const block = state.networkBlock
-    if (!block || !state.sessionSecurity || retrying || state.streaming) return
+    if (!block || !state.sessionSecurity || retrying) return
     setRetrying(true)
     try {
       await actions.changeSessionPermission({
         permission: state.sessionSecurity.permission,
         ...(block.offline ? { network: 'model' } : { allowHost: block.host })
       })
-      await actions.sendMessage(t('请从上次中断的地方继续，先核对已经执行的操作，避免重复执行。'), [])
+      actions.dismissNetworkBlock(block)
+      actions.notify('success', t('已允许访问'), t('新的联网请求将使用更新后的权限。之前失败的请求需要重新发起。'))
     } catch (error) {
       actions.notify('error', t('无法恢复联网'), userFacingError(error))
     } finally { setRetrying(false) }
@@ -35,14 +36,15 @@ export function ConversationPrompt(): ReactNode {
     <div className="conversation-prompt" hidden={!current} inert={!current} aria-live="polite">
       {view?.kind === 'request' ? <UiRequestDialog key={view.request.id} request={view.request} count={view.count} />
         : view?.kind === 'network' ? <section className="conversation-prompt-content conversation-network-block" role="region" aria-label={t(view.block.offline ? '本次对话已关闭联网' : '联网请求被拦截')}>
-          <div className="conversation-prompt-head">
-            <div><span className="conversation-prompt-kind"><Globe size={14} /> {t('需要处理')}</span><h2>{t(view.block.offline ? '本次对话已关闭联网' : '联网请求被拦截')}</h2></div>
-            <button type="button" className="icon-button" aria-label={t('关闭')} onClick={actions.dismissNetworkBlock}><X size={15} /></button>
+          <Globe size={16} aria-hidden="true" />
+          <div className="conversation-network-copy">
+            <strong>{t(view.block.offline ? '本次对话已关闭联网' : 'Pi 请求访问网站')}</strong>
+            <span>{view.block.host}</span>
           </div>
-          <p className="conversation-prompt-description">{t('Pi 无法连接 {host}。').replace('{host}', view.block.host)}</p>
-          <div className="confirm-actions"><button type="button" className="button primary" disabled={retrying || state.streaming || !state.sessionSecurity} onClick={() => void retry()}>
-            {t(retrying ? '正在重试…' : view.block.offline ? '开启本次联网并重试' : '允许此网站并重试')}
-          </button></div>
+          <button type="button" className="button primary small" disabled={retrying || !state.sessionSecurity} onClick={() => void retry()}>
+            {t(retrying ? '正在更新…' : view.block.offline ? '开启本次联网' : '允许访问')}
+          </button>
+          <button type="button" className="icon-button" aria-label={t('关闭')} onClick={() => actions.dismissNetworkBlock()}><X size={15} /></button>
         </section> : null}
     </div>
   )

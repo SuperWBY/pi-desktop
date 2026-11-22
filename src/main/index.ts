@@ -1,17 +1,20 @@
 import { sendCreatorControl } from './creator-control'
 import { validCreatorAction, isCreatorState, decodeCreatorRecord, type CreatorState } from '@shared/creator'
 import { installCreatorDraft, listCreatedPlugins } from './creator'
-import { resolvePiCliJs } from './pi-exec'
+import { backgroundNodeExecutable, resolvePiCliJs } from './pi-exec'
 import { chromePairingPath, prepareChromePairing } from '../../extensions/computer-use/src/chrome-bridge-pairing'
+import { renderSvgPreview } from '../../extensions/computer-use/src/artifact-preview'
 import {
   app,
   BrowserWindow,
   clipboard,
+  ClipboardItem,
   dialog,
   ipcMain,
   Menu,
   nativeImage,
   nativeTheme,
+  net,
   Notification,
   powerMonitor,
   screen,
@@ -36,6 +39,13 @@ import {
   statSync,
   writeFileSync
 } from 'node:fs'
+import { constants as fsConstants, createWriteStream } from 'node:fs'
+import { mkdtemp, open as openFileHandle, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { pipeline } from 'node:stream/promises'
+import { pathToFileURL } from 'node:url'
+import { lookup } from 'node:dns/promises'
+import { BlockList, isIP } from 'node:net'
+import { Readable, Transform } from 'node:stream'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import type {
@@ -72,11 +82,11 @@ import { resolvePiPath } from './pi-runtime'
 import { projectTrustStatus, setProjectTrust } from './project-trust'
 import { checkForUpdate, downloadUpdate, openReleasePage } from './update'
 import { listAuthProviders, removeAuthProvider, saveApiKey, validateApiKey } from './auth-store'
-import { cancelOAuth, listOAuthProviders, respondOAuth, startOAuth } from './pi-auth'
+import { cancelOAuth, listOAuthProviders, listRuntimeAuthProviders, respondOAuth, startOAuth } from './pi-auth'
 import { deleteSession, listSessions, restoreSession, searchSessions, sessionExists, sessionsRoot } from './sessions'
 import { listWorkspaceFiles } from './workspace-files'
 import { inspectPackage } from './package-inspect'
-import { createSandbox, sandboxStatus, validNetworkHost } from './sandbox'
+import { allowedDomains, createSandbox, sandboxStatus, validNetworkHost } from './sandbox'
 import { proxyEnv } from './network-env'
 import { appendSandboxAudit, readSandboxAudit } from './sandbox-audit'
 import { searchPackageCatalog } from './package-catalog'
@@ -112,15 +122,27 @@ import { interpretSchedule } from './schedule-interpret'
 import { listSessionNotices } from './session-notices'
 import { rememberActiveSession } from './active-sessions'
 import { usageSummary } from './usage'
+import {
+  initPtyTerminal,
+  createPtyTerminal,
+  writePtyTerminal,
+  resizePtyTerminal,
+  killPtyTerminal,
+  stopAllPtyTerminals
+} from './pty-terminal'
 
 // The bundled Pi seed uses Electron's embedded Node; child processes inherit
 // this so the launcher can find the exact app executable.
-process.env.PI_DESKTOP_ELECTRON ||= process.execPath
+if (!process.env.PI_DESKTOP_ELECTRON || process.env.PI_DESKTOP_ELECTRON === process.execPath) process.env.PI_DESKTOP_ELECTRON = backgroundNodeExecutable()
 
 let mainWindow: BrowserWindow | null = null
 let proc: PiProcess | null = null
 registerMediaScheme()
 const mediaPreview = new MediaPreview()
+const MEDIA_IMAGE_LIMIT_BYTES = 32 * 1024 * 1024
+const MEDIA_FILE_LIMIT_BYTES = 512 * 1024 * 1024
+const MEDIA_TIMEOUT_MS = 120_000
+const MEDIA_MAX_REDIRECTS = 4
 let changingSessionPermission = false
 const processes = new Map<string, PiProcess>()
 const runningProcesses = new Set<PiProcess>()
@@ -522,7 +544,7 @@ function addProject(input: { cwd: string; name: string; trust?: boolean }): AddP
   try {
     if (typeof input?.cwd !== 'string' || !input.cwd) throw new Error()
     cwd = realpathSync(input.cwd)
-    if (!statSync(cwd).isDirectory() || cwd === scratchWorkspace()) throw new Error()
+    if (!statSync(cwd).isDirectory() || isTemporaryWorkspace(cwd, scratchWorkspace())) throw new Error()
   } catch {
     throw new Error(english ? 'Choose an existing project folder.' : '请选择一个仍然存在的项目文件夹。')
   }
@@ -567,10 +589,27 @@ async function doOpenSession(options: {
     return { ok: false, error: english ? 'Please choose an existing folder.' : '请选择一个存在的文件夹。' }
   }
   const scratchRoot = scratchWorkspace()
-  const cwd = options.scratch ? scratchRoot : realpathSync(requested)
-  const scratch = options.scratch === true || cwd === scratchRoot
+  let cwd: string
+  if (options.scratch) {
+    const requestedScratch = requested && existsSync(requested) ? realpathSync(requested) : ''
+    if (options.sessionPath && (!requestedScratch || !isTemporaryWorkspace(requestedScratch, scratchRoot))) {
+      return { ok: false, error: english ? 'This conversation’s temporary folder is unavailable.' : '这个对话的临时文件夹不可用。' }
+    }
+    if (requestedScratch && isTemporaryWorkspace(requestedScratch, scratchRoot) && (options.sessionPath || !pathsEqual(requestedScratch, scratchRoot))) {
+      cwd = requestedScratch
+    } else {
+      const parent = join(scratchRoot, 'conversations')
+      mkdirSync(parent, { recursive: true, mode: 0o700 })
+      if (!pathsEqual(realpathSync(parent), parent)) return { ok: false, error: english ? 'The temporary conversation directory is invalid.' : '临时对话目录不可用。' }
+      const folder = join(parent, randomUUID())
+      mkdirSync(folder, { mode: 0o700 })
+      cwd = realpathSync(folder)
+    }
+  } else cwd = realpathSync(requested)
+  const scratch = options.scratch === true || isTemporaryWorkspace(cwd, scratchRoot)
 
   const targetKey = options.sessionPath ? sessionKey(options.sessionPath) : null
+  const openingArchived = Boolean(options.sessionPath && loadSettings().archivedSessionPaths?.includes(options.sessionPath))
   if (targetKey && !options.replace) {
     const existing = processes.get(targetKey)
     if (existing?.alive) {
@@ -583,9 +622,9 @@ async function doOpenSession(options: {
           20_000
         )
         const existingPath = stateResponse.data?.sessionFile ?? options.sessionPath ?? null
-        const existingScratch = existing.cwd === scratchRoot
+        const existingScratch = isTemporaryWorkspace(existing.cwd, scratchRoot)
         if (existingPath) rememberActiveSession(existing.cwd, existingPath)
-        if (!existingScratch && !isTemporaryWorkspace(existing.cwd, scratchRoot)) {
+        if (!existingScratch && !openingArchived && !isTemporaryWorkspace(existing.cwd, scratchRoot)) {
           saveSettings({
             lastWorkspace: existing.cwd,
             workspaces: [...loadSettings().workspaces, existing.cwd]
@@ -640,6 +679,7 @@ async function doOpenSession(options: {
       '--extension', join(creatorRuntime, 'index.ts'),
       '--skill', join(runtime, 'desktop-guidance')
     ]
+    if (globalThis.process.platform === 'darwin') additionalArgs.push('--extension', join(runtime, 'src', 'artifact-preview-extension.ts'))
     const sandbox = wantsSandbox ? createSandbox(cwd, sandboxSettings) : null
     if (wantsSandbox && !sandbox && (network === 'off' || readOnly)) {
       throw new Error(english ? 'File and network protection is unavailable on this device.' : '当前设备无法应用文件和网络保护。请检查连接与诊断设置。')
@@ -669,7 +709,7 @@ async function doOpenSession(options: {
       },
       extraEnv: { ...jevEnv(), ...proxyEnv(settings), PI_DESKTOP_NETWORK: wantsSandbox ? network : 'unrestricted', PI_DESKTOP_CREATOR_CLI: creatorCli ?? '', PI_DESKTOP_CREATOR_FILES: readOnly ? 'read-only' : 'workspace-write' },
       sandbox: sandbox ?? undefined,
-      appendSystemPrompt: `${scheduleGuidance()}\n\nWhen your final answer delivers a working website or a specific web page the user needs to return to, link to it as [Page title](https://example.com "pi:website"). Use the actual URL, including an HTTP localhost URL for a running local preview. Use ordinary links for citations and pages visited only for research.`
+      appendSystemPrompt: `${scheduleGuidance()}\n\n${globalThis.process.platform === 'darwin' ? 'For a local SVG, use preview_svg to inspect the rendered image when visual verification is useful. It uses a private temporary file and leaves the original unchanged. If rendering reports invalid SVG or unsupported external resources, address that specific error; do not repeatedly try unrelated browsers or install packages just to preview it.' : ''}\n\n${sandbox ? 'This conversation runs with workspace file protection. Network access follows the user’s networking setting. If a request fails, report the actual error; do not bypass restrictions.' : ''}\n\nFor task-generated previews, use unique temporary paths; do not delete or overwrite an existing user file just to retry. If a tool or approach fails repeatedly for the same reason, stop repeating it, report the limitation, and use an available alternative only when appropriate.\n\nWhen your final answer delivers a working website or a specific web page the user needs to return to, link to it as [Page title](https://example.com "pi:website"). Use the actual URL, including an HTTP localhost URL for a running local preview. Use ordinary links for citations and pages visited only for research.`
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -703,7 +743,7 @@ async function doOpenSession(options: {
     if (sessionFile) rememberActiveSession(cwd, sessionFile)
 
     saveSettings(
-      scratch || isTemporaryWorkspace(cwd, scratchRoot)
+      scratch || openingArchived || isTemporaryWorkspace(cwd, scratchRoot)
         ? {}
         : {
             lastWorkspace: cwd,
@@ -743,6 +783,17 @@ async function setSessionPermission(input: SessionPermissionChange): Promise<Ses
     : current.security.network === 'model' ? 'model' : settings.sandboxNetwork)
   if (current.security.permission === input.permission && !input.allowHost &&
     (!input.network || current.security.network === network)) return current.security
+
+  if (current.sandboxed && current.security.permission === input.permission && (input.allowHost || input.network)) {
+    const hosts = input.allowHost ? [...new Set([...current.allowedNetworkHosts, input.allowHost])] : current.allowedNetworkHosts
+    await current.updateNetworkDomains(allowedDomains({ ...settings, sandboxNetwork: network, sandboxAllowedDomains: [...(settings.sandboxAllowedDomains ?? []), ...hosts] }), network === 'off')
+    current.setNetworkState(network ?? 'model')
+    if (proc !== current || !current.alive) throw new Error(english ? 'The active conversation changed. Try again.' : '当前会话已切换，请重试。')
+    current.allowedNetworkHosts = hosts
+    if (current.blockedNetworkHost === input.allowHost) current.blockedNetworkHost = undefined
+    current.security = { ...current.security, network }
+    return current.security
+  }
 
   const busy = english ? 'Wait for the current operation to finish before switching permissions.' : '请等待当前操作结束后再切换权限。'
   if (creatorOperations.has(current) || current.hasPendingWork || sessionUiRequests.pendingOwners().includes(current)) throw new Error(busy)
@@ -866,6 +917,47 @@ function registerIpc(): void {
   ipcMain.handle('pi:install', () => installPiRuntime())
   ipcMain.handle('project:trust-status', (_event, cwd: string) => projectTrustStatus(cwd))
   ipcMain.handle('project:add', (_event, input: Parameters<typeof addProject>[0]) => addProject(input))
+  ipcMain.handle('project:remove', (event, input: unknown) => {
+    if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame || typeof input !== 'string' || !input.trim()) throw new Error('Invalid project removal request.')
+    return enqueue(async () => {
+      const settings = loadSettings()
+      const folder = settings.workspaces.find(path => pathsEqual(path, input))
+      if (!folder) throw new Error('项目不在项目列表中，请刷新后重试。')
+      const owners = [...new Set(processes.values())].filter(owner => pathsEqual(owner.cwd, folder))
+      if (owners.some(owner => runningProcesses.has(owner) || owner.hasPendingWork || creatorOperations.has(owner) || sessionUiRequests.pendingOwners().includes(owner))) throw new Error('该项目有对话正在执行或等待确认，请先处理完当前任务。')
+      if (proc && pathsEqual(proc.cwd, folder)) throw new Error('请先切换到其他对话，再删除此项目。')
+      const sessions = (await listSessions()).filter(session => pathsEqual(session.cwd, folder))
+      const moved: NonNullable<Awaited<ReturnType<typeof deleteSession>>>[] = []
+      try {
+        for (const session of sessions) {
+          const result = await deleteSession(session.path)
+          if (!result) throw new Error('无法移动对话记录。')
+          moved.push(result)
+        }
+        const removedPaths = new Set(sessions.map(session => session.path))
+        const next = saveSettings({
+          workspaces: settings.workspaces.filter(path => !pathsEqual(path, folder)),
+          pinnedSessionPaths: (settings.pinnedSessionPaths ?? []).filter(path => !removedPaths.has(path)),
+          archivedSessionPaths: (settings.archivedSessionPaths ?? []).filter(path => !removedPaths.has(path)),
+          ...(settings.lastWorkspace && pathsEqual(settings.lastWorkspace, folder) ? { lastWorkspace: undefined } : {}),
+          ...(settings.lastSessionPath && removedPaths.has(settings.lastSessionPath) ? { lastSessionPath: undefined } : {})
+        })
+        for (const owner of owners) stopProcess(owner)
+        send('app:settings', next)
+        return { removedSessions: moved.length }
+      } catch (error) {
+        const failures: string[] = []
+        for (const item of moved.reverse()) {
+          try {
+            if (await sessionExists(item.path)) throw new Error('Session was recreated')
+            await restoreSession(item.trashPath, item.path)
+          } catch { failures.push(item.name) }
+        }
+        if (failures.length) throw new Error(`删除未完成，部分对话仍在回收站：${failures.join('、')}。请保留回收站并检查。`)
+        throw error
+      }
+    })
+  })
   ipcMain.handle('app:check-update', () => checkForUpdate())
   ipcMain.handle('jev:status', () => jevStatus())
   ipcMain.handle('sandbox:status', () => sandboxStatus())
@@ -877,6 +969,10 @@ function registerIpc(): void {
   ipcMain.handle('auth:validate-api-key', (_event, provider: string, key: string) => validateApiKey(provider, key))
   ipcMain.handle('auth:remove', (_event, provider: string) => removeAuthProvider(provider))
   ipcMain.handle('auth:oauth-providers', () => listOAuthProviders())
+  ipcMain.handle('auth:runtime-providers', (event) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error('not allowed')
+    return listRuntimeAuthProviders()
+  })
   ipcMain.handle('auth:oauth-start', (event, provider: string) => startOAuth(provider, event.sender))
   ipcMain.on('auth:oauth-respond', (_event, id: string, value: string, cancelled?: boolean) => respondOAuth(id, value, cancelled === true))
   ipcMain.on('auth:oauth-cancel', () => cancelOAuth())
@@ -932,7 +1028,40 @@ function registerIpc(): void {
     }
   )
 
-  ipcMain.handle('app:update-settings', (_event, patch: Partial<Settings>): Settings => {
+  ipcMain.handle('app:update-settings', (event, patch: Partial<Settings>): Promise<Settings> => enqueue(async () => {
+    if ((patch?.pinnedSessionPaths !== undefined || patch?.archivedSessionPaths !== undefined) && (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame)) throw new Error('Invalid pinned session request.')
+    if (patch?.sandboxNetwork !== undefined) {
+      if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame || !['model', 'off'].includes(patch.sandboxNetwork)) throw new Error('Invalid network settings request.')
+      const previous = loadSettings()
+      const targets = [...new Set(processes.values())].filter((item) => item.alive && item.sandboxed)
+      const updated: Array<{ item: PiProcess; network: 'model' | 'off' }> = []
+      try {
+        for (const item of targets) {
+          const oldNetwork = item.security.network === 'off' ? 'off' : 'model'
+          const nextNetwork = patch.sandboxNetwork
+          if (oldNetwork === nextNetwork) continue
+          if (nextNetwork === 'off') item.setNetworkState('off')
+          try {
+            await item.updateNetworkDomains(allowedDomains({ ...previous, sandboxNetwork: nextNetwork }), nextNetwork === 'off')
+            updated.push({ item, network: oldNetwork })
+            item.setNetworkState(nextNetwork)
+          } catch (error) {
+            if (!updated.some((entry) => entry.item === item)) item.setNetworkState(oldNetwork)
+            throw error
+          }
+        }
+      } catch (error) {
+        for (const { item, network } of updated.reverse()) {
+          try { await item.updateNetworkDomains(allowedDomains({ ...previous, sandboxNetwork: network }), network === 'off'); item.setNetworkState(network) } catch { /* preserve the failure for the caller */ }
+        }
+        throw error
+      }
+      for (const { item } of updated) {
+        item.security = { ...item.security, network: patch.sandboxNetwork }
+        if (patch.sandboxNetwork === 'model') item.blockedNetworkHost = undefined
+        send('pi:record', { type: 'desktop_session_security', sessionPath: item.sessionPath, security: item.security })
+      }
+    }
     const settings = saveSettings(patch)
     if (patch.language !== undefined) buildMenu()
     if (patch.launchAtLogin !== undefined && app.isPackaged) {
@@ -942,7 +1071,7 @@ function registerIpc(): void {
       })
     }
     return settings
-  })
+  }))
 
   ipcMain.handle('dialog:pick-folder', async (): Promise<string | null> => {
     const settings = loadSettings()
@@ -1017,7 +1146,17 @@ function registerIpc(): void {
   ipcMain.handle('creator:list', async (event) => {
     if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error('Invalid creator request.')
     const settings = loadSettings()
-    return listCreatedPlugins([...settings.workspaces, ...(proc ? [proc.cwd] : []), scratchWorkspace()])
+    const scratch = scratchWorkspace()
+    const directory = join(scratch, 'conversations')
+    let temporary: string[] = []
+    try {
+      if (existsSync(directory) && pathsEqual(realpathSync(directory), directory)) {
+        temporary = readdirSync(directory, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory() && isTemporaryWorkspace(join(directory, entry.name), scratch))
+          .map((entry) => join(directory, entry.name))
+      }
+    } catch { /* A missing or inaccessible scratch library must not hide project plugins. */ }
+    return listCreatedPlugins([...settings.workspaces, ...(proc ? [proc.cwd] : []), scratch, ...temporary])
   })
   ipcMain.handle('creator:action', async (event, input: unknown, sessionPath: unknown) => {
     const process = proc
@@ -1061,6 +1200,14 @@ function registerIpc(): void {
 
   ipcMain.handle('skills:list', (_event, cwd: string) => listSkills(cwd))
   ipcMain.handle('skills:count', (_event, cwd: string) => countSkills(cwd))
+  ipcMain.handle('terminal:create', (event, workspace: string) => {
+    if (event.sender !== mainWindow?.webContents) return { error: 'not allowed' }
+    if (typeof workspace !== 'string') workspace = ''
+    return createPtyTerminal(workspace)
+  })
+  ipcMain.handle('terminal:write', (_event, id: string, data: string) => writePtyTerminal(id, data))
+  ipcMain.handle('terminal:resize', (_event, id: string, cols: number, rows: number) => resizePtyTerminal(id, cols, rows))
+  ipcMain.handle('terminal:kill', (_event, id: string) => killPtyTerminal(id))
   ipcMain.handle('connectors:list', (_event, cwd: string) => listConnectors(cwd))
   ipcMain.handle('mcp-connectors:list', () => listMcpConnectors())
   ipcMain.handle('mcp-connectors:save', (_event, input: McpConnectorInput) => saveMcpConnector(input))
@@ -1165,10 +1312,16 @@ function registerIpc(): void {
 
   ipcMain.handle(
     'models:save-provider',
-    (_event, id: string, entry: CustomProviderEntry): ModelsConfig => saveProvider(id, entry)
+    (event, id: string, entry: CustomProviderEntry): ModelsConfig => {
+      if (event.sender !== mainWindow?.webContents || typeof id !== 'string' || !entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('Invalid provider request')
+      return saveProvider(id, entry)
+    }
   )
 
-  ipcMain.handle('models:remove-provider', (_event, id: string): ModelsConfig => removeProvider(id))
+  ipcMain.handle('models:remove-provider', (event, id: string): ModelsConfig => {
+    if (event.sender !== mainWindow?.webContents || typeof id !== 'string') throw new Error('Invalid provider request')
+    return removeProvider(id)
+  })
 
   ipcMain.handle('models:list', (): Promise<{ models: PiModelRow[]; error?: string }> =>
     listPiModels(resolvePiPath(loadSettings().piPath))
@@ -1233,6 +1386,149 @@ function registerIpc(): void {
         typeof context?.workspace !== 'string' || !pathsEqual(context.workspace, owner.cwd) || context.sessionPath !== owner.sessionPath) return null
     const url = await mediaPreview.issue(owner, owner.cwd, context.path)
     return proc === owner ? url : null
+  })
+
+  const mediaSender = (event: Electron.IpcMainInvokeEvent): PiProcess => {
+    if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame || !proc?.alive) throw new Error('当前会话不可用。')
+    return proc
+  }
+  const mediaSavePath = async (name: string): Promise<string | null> => {
+    const safeName = basename(name.replace(/[\\/\x00-\x1f]/g, '_')).slice(0, 180) || 'image.png'
+    const testDir = process.env.PI_DESKTOP_EXPORT_DIR?.trim()
+    if (testDir) return join(testDir, safeName)
+    const result = await dialog.showSaveDialog(mainWindow!, { defaultPath: safeName })
+    return result.canceled ? null : result.filePath ?? null
+  }
+  const validMediaBytes = (value: unknown): Buffer => {
+    if (!(value instanceof Uint8Array) || !value.byteLength || value.byteLength > MEDIA_IMAGE_LIMIT_BYTES) throw new Error('图片数据不可用或超过 32 MB。')
+    return Buffer.from(value)
+  }
+  ipcMain.handle('media:copy-image', async (event, value: unknown) => {
+    mediaSender(event)
+    const image = nativeImage.createFromBuffer(validMediaBytes(value))
+    if (image.isEmpty()) throw new Error('无法复制此图片。')
+    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(image.toPNG())], { type: 'image/png' }) })])
+  })
+  ipcMain.handle('media:copy-image-file', async (event, value: unknown) => {
+    const owner = mediaSender(event)
+    if (typeof value !== 'string') throw new Error('图片不可用。')
+    const source = await mediaPreview.resolve(owner, value)
+    if (!source || proc !== owner || !source.mime.startsWith('image/')) throw new Error('图片不可用或不属于当前会话。')
+    const image = source.mime === 'image/svg+xml' && process.platform === 'darwin'
+      ? nativeImage.createFromBuffer(await renderSvgPreview(source.path, owner.cwd))
+      : nativeImage.createFromPath(source.path)
+    if (image.isEmpty()) throw new Error('无法复制此格式的图片。')
+    if (proc !== owner || !(await mediaPreview.resolve(owner, value))) throw new Error('会话或图片已变更，请重试。')
+    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(image.toPNG())], { type: 'image/png' }) })])
+  })
+  ipcMain.handle('media:save-bytes', async (event, name: unknown, value: unknown) => {
+    const owner = mediaSender(event)
+    if (typeof name !== 'string') throw new Error('文件名无效。')
+    const bytes = validMediaBytes(value)
+    const destination = await mediaSavePath(name)
+    if (!destination) return false
+    if (proc !== owner) throw new Error('会话已切换，请重试。')
+    const temporary = await mkdtemp(join(dirname(destination), '.pi-save-'))
+    try { const file = join(temporary, 'media'); await writeFile(file, bytes, { flag: 'wx' }); await rename(file, destination) }
+    finally { await rm(temporary, { recursive: true, force: true }) }
+    return true
+  })
+  ipcMain.handle('media:save-file', async (event, value: unknown) => {
+    const owner = mediaSender(event)
+    if (typeof value !== 'string') throw new Error('文件不可用。')
+    const source = await mediaPreview.resolve(owner, value)
+    if (!source || source.mime === 'text/html') throw new Error('文件不可用或不属于当前会话。')
+    const destination = await mediaSavePath(basename(source.path))
+    if (!destination) return false
+    if (proc !== owner || !(await mediaPreview.resolve(owner, value))) throw new Error('会话或文件已变更，请重试。')
+    if (resolve(destination) === source.path) return true
+    const file = await openFileHandle(source.path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
+    let temporary: string | undefined
+    try {
+      const info = await file.stat()
+      const current = await realpath(source.path)
+      const currentInfo = await stat(current)
+      if (!info.isFile() || current !== source.path || currentInfo.ino !== info.ino || currentInfo.dev !== info.dev || !(await mediaPreview.resolve(owner, value))) throw new Error('文件已变更，请重试。')
+      temporary = await mkdtemp(join(dirname(destination), '.pi-save-'))
+      const output = join(temporary, 'media')
+      await pipeline(file.createReadStream({ autoClose: false }), createWriteStream(output, { flags: 'wx' }))
+      if (proc !== owner) throw new Error('会话已切换，请重试。')
+      await rename(output, destination)
+    } finally { await file.close(); if (temporary) await rm(temporary, { recursive: true, force: true }) }
+    return true
+  })
+  ipcMain.handle('media:copy-file', async (event, value: unknown) => {
+    const owner = mediaSender(event)
+    if (typeof value !== 'string') throw new Error('文件不可用。')
+    const source = await mediaPreview.resolve(owner, value)
+    if (!source || proc !== owner || source.mime === 'text/html') throw new Error('文件不可用或不属于当前会话。')
+    const uri = pathToFileURL(source.path).href
+    const type = process.platform === 'darwin' ? 'electron application/osclipboard;format="public.file-url"' : process.platform === 'win32' ? 'electron application/osclipboard;format="FileNameW"' : 'text/uri-list'
+    const valueBytes = process.platform === 'win32' ? Buffer.from(`${source.path}\0`, 'utf16le') : Buffer.from(process.platform === 'darwin' ? uri : `${uri}\r\n`)
+    await clipboard.write([new ClipboardItem({ [type]: new Blob([new Uint8Array(valueBytes)]) })])
+  })
+  ipcMain.handle('media:remote', async (event, input: unknown, name: unknown, kind: unknown, action: unknown) => {
+    const owner = mediaSender(event)
+    if (typeof input !== 'string' || input.length > 8192 || typeof name !== 'string' || !['image', 'video', 'file'].includes(String(kind)) || !['save', 'copy'].includes(String(action))) throw new Error('附件地址无效。')
+    const validateUrl = async (source: URL): Promise<void> => {
+      const localTest = !app.isPackaged && process.env.PI_DESKTOP_TEST_MEDIA_LOCAL === '1' && source.hostname === '127.0.0.1'
+      if ((!localTest && source.protocol !== 'https:') || source.username || source.password || (!localTest && (isIP(source.hostname) || /(^localhost$|\.local$|\.internal$)/i.test(source.hostname)))) throw new Error('附件地址不可用。')
+      if (localTest) return
+      const blocked = new BlockList()
+      for (const [address, prefix] of [['0.0.0.0',8],['10.0.0.0',8],['100.64.0.0',10],['127.0.0.0',8],['169.254.0.0',16],['172.16.0.0',12],['192.168.0.0',16],['198.18.0.0',15],['224.0.0.0',4],['240.0.0.0',4]] as const) blocked.addSubnet(address, prefix, 'ipv4')
+      for (const [address, prefix] of [['::',128],['::1',128],['fc00::',7],['fe80::',10],['::ffff:0:0',96]] as const) blocked.addSubnet(address, prefix, 'ipv6')
+      const addresses = await lookup(source.hostname, { all: true })
+      if (!addresses.length || addresses.some(({ address, family }) => blocked.check(address, family === 6 ? 'ipv6' : 'ipv4'))) throw new Error('附件地址不可用。')
+    }
+    let source = new URL(input)
+    await validateUrl(source)
+    const safeName = basename(name.replace(/[\\/\x00-\x1f]/g, '_')).slice(0, 180) || (kind === 'image' ? 'image.png' : 'video.mp4')
+    const destination = action === 'save' ? await mediaSavePath(safeName) : null
+    if (action === 'save' && !destination) return false
+    if (proc !== owner) throw new Error('会话已切换，请重试。')
+    const base = destination ? dirname(destination) : app.getPath('userData')
+    const temporary = await mkdtemp(join(base, action === 'copy' && kind !== 'image' ? 'media-clipboard-' : '.pi-media-'))
+    const file = join(temporary, safeName)
+    let keep = false
+    try {
+      const requestOnce = (url: URL): Promise<{ redirect?: string }> => new Promise((resolveRequest, rejectRequest) => {
+        const request = net.request({ url: url.href, redirect: 'manual' })
+        const timer = setTimeout(() => { request.abort(); rejectRequest(new Error('附件下载超时。')) }, MEDIA_TIMEOUT_MS)
+        request.once('redirect', (_status, _method, target) => { clearTimeout(timer); resolveRequest({ redirect: target }); request.abort() })
+        request.once('response', () => { clearTimeout(timer); resolveRequest({}); request.abort() })
+        request.once('error', (error) => { clearTimeout(timer); rejectRequest(error) })
+        request.end()
+      })
+      let result = await requestOnce(source)
+      for (let redirects = 0; result.redirect; redirects++) {
+        if (redirects >= MEDIA_MAX_REDIRECTS) throw new Error('附件重定向次数过多。')
+        source = new URL(result.redirect, source)
+        await validateUrl(source)
+        result = await requestOnce(source)
+      }
+      const response = await net.fetch(source.href, { redirect: 'error', signal: AbortSignal.timeout(MEDIA_TIMEOUT_MS) })
+      if (!response.ok || !response.body) throw new Error(`附件下载失败（HTTP ${response.status}）。`)
+      const mime = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() ?? ''
+      if (kind === 'file' && (mime === 'text/html' || mime === 'application/xhtml+xml')) throw new Error('附件地址返回了网页而不是文件。')
+      if (mime && mime !== 'application/octet-stream' && (kind === 'image' || kind === 'video') && !mime.startsWith(`${kind}/`)) throw new Error('附件类型与预期不符。')
+      const limit = kind === 'image' ? MEDIA_IMAGE_LIMIT_BYTES : MEDIA_FILE_LIMIT_BYTES
+      let total = 0
+      const limiter = new Transform({ transform(chunk: Buffer, _encoding, callback) { total += chunk.length; callback(total > limit ? new Error(`附件超过 ${limit / 1024 / 1024} MB 的大小限制。`) : null, chunk) } })
+      await pipeline(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream), limiter, createWriteStream(file, { flags: 'wx' }), { signal: AbortSignal.timeout(MEDIA_TIMEOUT_MS) })
+      if (!total || proc !== owner) throw new Error('会话已切换或附件为空。')
+      if (destination) { await rename(file, destination); return true }
+      if (kind === 'image') {
+        const image = safeName.toLowerCase().endsWith('.svg') && process.platform === 'darwin' ? nativeImage.createFromBuffer(await renderSvgPreview(file, temporary)) : nativeImage.createFromPath(file)
+        if (image.isEmpty()) throw new Error('无法复制此格式的图片。')
+        await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(image.toPNG())], { type: 'image/png' }) })])
+      } else {
+        const type = process.platform === 'darwin' ? 'electron application/osclipboard;format="public.file-url"' : process.platform === 'win32' ? 'electron application/osclipboard;format="FileNameW"' : 'text/uri-list'
+        const value = process.platform === 'win32' ? Buffer.from(`${file}\0`, 'utf16le') : Buffer.from(process.platform === 'darwin' ? pathToFileURL(file).href : `${pathToFileURL(file).href}\r\n`)
+        await clipboard.write([new ClipboardItem({ [type]: new Blob([new Uint8Array(value)]) })])
+        keep = true
+      }
+      return true
+    } finally { if (!keep) await rm(temporary, { recursive: true, force: true }) }
   })
 
   ipcMain.handle(
@@ -1570,7 +1866,10 @@ function createWindow(): void {
   let nativeScrollPhase = false
   if (process.platform === 'darwin' && process.env.PI_DISABLE_NATIVE_SCROLL_PHASE !== '1') {
     try {
-      const addonPath = app.isPackaged ? join(process.resourcesPath, 'scroll-phase.node') : join(app.getAppPath(), 'build', 'scroll-phase.node')
+      const bundledAddon = join(process.resourcesPath, 'scroll-phase.node')
+      const addonPath = app.isPackaged && existsSync(bundledAddon)
+        ? bundledAddon
+        : join(app.getAppPath(), 'build', 'scroll-phase.node')
       const addon = require(addonPath) as { start: (callback: (phase: 'begin' | 'end' | 'cancel') => void) => boolean }
       nativeScrollPhase = addon.start((phase) => {
         if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) mainWindow.webContents.send('app:scroll-phase', phase)
@@ -1672,6 +1971,7 @@ if (!gotLock) {
       }
     }
     mediaPreview.register(() => proc)
+    initPtyTerminal((channel, payload) => send(channel, payload))
     registerIpc()
     buildMenu()
     createWindow()
@@ -1727,6 +2027,7 @@ if (!gotLock) {
     cancelDictation?.()
     stopPackageTranslations()
     void stopBrowserBridge()
+    stopAllPtyTerminals()
     scheduler.shutdown()
     for (const process of new Set(processes.values())) process.stop()
     processes.clear()

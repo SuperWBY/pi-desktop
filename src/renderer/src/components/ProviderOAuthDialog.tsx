@@ -5,6 +5,7 @@ import { userFacingError } from '@shared/errors'
 import { useTranslation } from '../i18n'
 import { useApp } from '../store'
 import { Modal } from './ui'
+import { DesktopSelect } from './DesktopSelect'
 
 type Provider = { id: string; name: string; oauth: boolean; apiKey: boolean }
 type Prompt = { id: string; prompt: { type: 'text' | 'secret' | 'select' | 'manual_code'; message: string; placeholder?: string; options?: { id: string; label: string; description?: string }[] } }
@@ -14,10 +15,11 @@ function isUnavailableMessage(message: string): boolean {
   return /暂不支持账号登录|内置 Pi runtime|认证模块|OAUTH_UNAVAILABLE/i.test(message)
 }
 
-export function ProviderOAuthDialog({ open, onClose, onSaved, onUseApiKey }: {
+export function ProviderOAuthDialog({ open, onClose, onSaved, onUseApiKey, initialProvider }: {
   open: boolean
   onClose: () => void
-  onSaved: () => void
+  onSaved: (provider: string) => void
+  initialProvider?: string
   onUseApiKey?: () => void
 }): ReactNode {
   const t = useTranslation()
@@ -54,7 +56,7 @@ export function ProviderOAuthDialog({ open, onClose, onSaved, onUseApiKey }: {
         return
       }
       setProviders(oauth)
-      setProvider((current) => (oauth.some((item) => item.id === current) ? current : oauth[0]?.id ?? ''))
+      setProvider((current) => initialProvider && oauth.some((item) => item.id === initialProvider) ? initialProvider : (oauth.some((item) => item.id === current) ? current : oauth[0]?.id ?? ''))
       setPhase('ready')
     }).catch((reason: unknown) => {
       setProviders([])
@@ -68,7 +70,7 @@ export function ProviderOAuthDialog({ open, onClose, onSaved, onUseApiKey }: {
       setPhase('error')
       setError(message)
     })
-  }, [open, t])
+  }, [open, t, initialProvider])
 
   useEffect(() => {
     const unsubscribe = window.pi.onOAuthEvent((event) => {
@@ -92,7 +94,7 @@ export function ProviderOAuthDialog({ open, onClose, onSaved, onUseApiKey }: {
         setPhase('ready')
         setPrompt(null)
         actions.notify('success', t('登录成功'), t('正在重新读取模型。'))
-        onSaved()
+        onSaved(provider)
         window.setTimeout(onClose, 800)
       } else if (kind === 'error') {
         setPhase('ready')
@@ -101,7 +103,7 @@ export function ProviderOAuthDialog({ open, onClose, onSaved, onUseApiKey }: {
       }
     })
     return unsubscribe
-  }, [actions, onClose, onSaved, t])
+  }, [actions, onClose, onSaved, provider, t])
 
   const start = async (): Promise<void> => {
     if (!provider || phase === 'running') return
@@ -234,10 +236,8 @@ export function ProviderOAuthDialog({ open, onClose, onSaved, onUseApiKey }: {
                 <label className="form-field">
                   <span>{prompt.prompt.message}</span>
                   {prompt.prompt.type === 'select' ? (
-                    <select value={answer} onChange={(event) => setAnswer(event.target.value)}>
-                      <option value="">{t('请选择')}</option>
-                      {(prompt.prompt.options ?? []).map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                    </select>
+                    <DesktopSelect label={prompt.prompt.message} value={answer} onChange={setAnswer}
+                      options={[{ value: '', label: t('请选择') }, ...(prompt.prompt.options ?? []).map((option) => ({ value: option.id, label: option.label }))]} />
                   ) : (
                     <input
                       autoFocus

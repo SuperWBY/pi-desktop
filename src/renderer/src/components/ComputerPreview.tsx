@@ -7,20 +7,6 @@ import { useTranslation } from '../i18n'
 type Frame = Awaited<ReturnType<typeof window.pi.browserPreview>>
 type Page = { page?: string; sessionId?: string; documentId?: string; url?: string; title?: string; backend?: string; captureMode?: string; windowTitle?: string; app?: string; snapshotId?: string; previewGeneration?: string; pending?: boolean; failed?: boolean }
 
-// Only the message content needs clearance; its native scroll container stays full-width.
-function measurePreview(node: HTMLElement | null) {
-  const region = node?.parentElement
-  if (!node || !region) return
-  const update = () => region.style.setProperty('--preview-card-width', node.offsetWidth + 'px')
-  update()
-  const observer = new ResizeObserver(update)
-  observer.observe(node)
-  return () => {
-    observer.disconnect()
-    region.style.removeProperty('--preview-card-width')
-  }
-}
-
 function WebFrame({ doc, url, candidate, live, label, still = false, onSize }: { doc: string; url: string; candidate?: string; live: boolean; label: string; still?: boolean; onSize?: (ratio: number) => void }) {
   const [frame, setFrame] = useState<Frame>(null)
   const [checked, setChecked] = useState(false)
@@ -115,7 +101,6 @@ export function ComputerPreview({expandedDocument}: {expandedDocument: string | 
       nativeImage = image ? 'data:' + image.mimeType + ';base64,' + image.data : ''
     }
   }
-  if (run && !pages.size) { latest = 'pending'; pages.set(latest, { pending: run.status === 'running', failed: run.status === 'error' }) }
   const key = selection?.turn === state.turnStartedAt && pages.has(selection.key) ? selection.key : latest
   const keys = [...pages.keys()]
   const index = keys.indexOf(key)
@@ -164,7 +149,7 @@ export function ComputerPreview({expandedDocument}: {expandedDocument: string | 
   const phrases = toolPhrases(run.name)
   const status = state.uiRequests.length && run.status === 'running' ? '等待你确认' : run.status === 'error' ? phrases.failed : computerUseOutcome(run.name, run.resultDetails) || (run.status === 'running' ? phrases.running : phrases.done)
   const pending = state.uiRequests.length > 0 && state.streaming
-  return <section ref={measurePreview} className="cu-preview" style={style} data-moved={position ? 'true' : 'false'}
+  return <section className="cu-preview" style={style} data-moved={position ? 'true' : 'false'}
     onPointerDown={startDrag} onPointerMove={move} onPointerCancel={() => { drag.current = null }}
     onLostPointerCapture={() => { drag.current = null }} onPointerUp={e => {
       if (drag.current?.id !== e.pointerId) return
@@ -195,7 +180,7 @@ export function ComputerPreview({expandedDocument}: {expandedDocument: string | 
         return <div className="cu-picture" key={k} hidden={k !== key}>
           {d.backend === 'inapp' && d.documentId && d.url ? <WebFrame key={d.documentId + d.url} doc={d.documentId} url={d.url}
             label={title(d)} onSize={ratio => recordSize(d.documentId!, ratio)} candidate={latest === k && run.name === 'computer_use_session_act' && run.status === 'running' ? String(run.args.candidateId ?? '') : undefined}
-            live={open && k === key && state.streaming && !closed}/> : (d.backend === 'cdp' || d.backend === 'extension') && d.sessionId && d.documentId && d.url && d.previewGeneration ? <ExternalFrame key={d.sessionId + d.documentId + d.url + d.previewGeneration} sessionId={d.sessionId} backend={d.backend} doc={d.documentId} url={d.url} generation={d.previewGeneration} label={title(d)} onSize={ratio => recordSize(d.documentId!, ratio)} busy={state.streaming && (run.status === 'running' || !externalFresh)} live={open && k === key && state.streaming && !closed && externalFresh}/> : nativeImage && k === 'desktop' ? <img src={nativeImage} draggable={false} alt={title(d)} onLoad={e => recordSize(d.snapshotId ?? k, e.currentTarget.naturalWidth / e.currentTarget.naturalHeight)}/> : <div className="cu-placeholder" role="status"><Monitor size={22} aria-hidden="true"/><span>{t(d.failed ? '画面暂时不可用' : d.pending ? (state.streaming ? '正在准备画面…' : '画面暂时不可用') : d.backend === 'extension' ? '请确认任务标签页可见并重新观察；若仍无画面，请更新 Chrome 扩展。' : d.backend === 'cdp' ? '画面暂时不可用，请重新观察。' : d.backend === 'external' ? '当前浏览器暂不提供预览画面' : '画面暂时不可用')}</span></div>}
+            live={open && k === key && state.streaming && !closed}/> : (d.backend === 'cdp' || d.backend === 'extension') && d.sessionId && d.documentId && d.url && d.previewGeneration ? <ExternalFrame key={d.sessionId + d.documentId + d.url + d.previewGeneration} sessionId={d.sessionId} backend={d.backend} doc={d.documentId} url={d.url} generation={d.previewGeneration} label={title(d)} onSize={ratio => recordSize(d.documentId!, ratio)} busy={state.streaming && (run.status === 'running' || !externalFresh)} live={open && k === key && state.streaming && !closed && externalFresh}/> : nativeImage && k === 'desktop' ? <img src={nativeImage} draggable={false} alt={title(d)} onLoad={e => recordSize(d.snapshotId ?? k, e.currentTarget.naturalWidth / e.currentTarget.naturalHeight)}/> : <div className="cu-placeholder" role="status"><Monitor size={22} aria-hidden="true"/><span>{t(d.failed ? '无法获取画面，请查看执行步骤中的错误。' : d.pending ? (state.streaming ? '正在准备画面…' : '画面暂时不可用') : k === 'desktop' ? '本次观察未返回画面，请重新观察目标窗口。' : d.backend === 'extension' ? '请确认任务标签页可见并重新观察；若仍无画面，请更新 Chrome 扩展。' : d.backend === 'cdp' ? '画面暂时不可用，请重新观察。' : d.backend === 'external' ? '当前浏览器暂不提供预览画面' : '画面暂时不可用')}</span></div>}
         </div>
       })}
       <div className="cu-actions">

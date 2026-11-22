@@ -180,7 +180,7 @@ export function SlashMenu({
           {!connections.loading && (() => {
             const needle = query.toLowerCase()
             const entries = [
-              ...connections.mcp.map((item) => ({ key: `mcp:${item.id}`, name: item.name, status: t(item.enabled ? '未测试' : '已停用'), detail: t(item.transport === 'http' ? 'MCP 服务' : '本机 MCP 服务') })),
+              ...connections.mcp.map((item) => ({ key: `mcp:${item.id}`, name: item.name, status: t(item.enabled ? '已安装' : '已停用'), detail: t(item.transport === 'http' ? 'MCP 服务' : '本机 MCP 服务') })),
               ...connections.cli.map((item) => ({ key: `cli:${item.name}`, name: item.name === 'lark-cli' ? t('飞书') : item.name === 'gh' ? 'GitHub' : item.name, status: t(item.installed ? '已安装' : '未安装'), detail: t('本机依赖') }))
             ].filter((item) => `${item.name} ${item.detail}`.toLowerCase().includes(needle))
             return entries.length ? entries.map((item) => <div className="command-item slash-connector" key={item.key}><Cable className="command-icon" size={16} aria-hidden="true" /><span className="command-name">{item.name}</span><span className="command-desc">{item.detail}</span><span className="slash-source">{item.status}</span></div>) : !connections.error && <div className="slash-empty">{t(needle ? '没有匹配的连接' : '还没有连接器')}</div>

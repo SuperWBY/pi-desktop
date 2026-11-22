@@ -62,6 +62,19 @@ check('pi-coding-agent auth module is packaged', Boolean(authModule), authModule
 check('pi-coding-agent cli.js is packaged', Boolean(cliModule), cliModule || 'missing dist/bundle/cli.js')
 check('pi seed launcher is packaged', Boolean(launcher), launcher || 'missing pi launcher')
 
+// PTY terminal: node-pty's native binary and spawn-helper live outside asar
+// (app.asar.unpacked); the helper must keep its executable bit — posix_spawnp
+// fails without it (npm install scripts can strip the bit, electron-packager
+// only unpacks *.node by default).
+const nodePty = join(resources, 'app.asar.unpacked', 'node_modules', 'node-pty')
+const ptyBinaryDir = `${process.platform}-${process.arch}`
+const ptyBinary = join(nodePty, 'prebuilds', ptyBinaryDir, 'pty.node')
+const spawnHelper = join(nodePty, 'prebuilds', ptyBinaryDir, 'spawn-helper')
+check('node-pty native binary is packaged', existsSync(ptyBinary), ptyBinary)
+if (process.platform !== 'win32') {
+  check('node-pty spawn-helper is packaged executable', existsSync(spawnHelper) && (statSync(spawnHelper).mode & 0o111) !== 0, spawnHelper)
+}
+
 if (failures.length) {
   console.error(`\n${failures.length} pack auth check(s) failed.`)
   process.exit(1)

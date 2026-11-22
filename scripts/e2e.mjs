@@ -10,7 +10,7 @@
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { stripTypeScriptTypes } from 'node:module'
@@ -22,6 +22,7 @@ import { caseReadmeLocales } from './e2e-readme-locales.mjs'
 import { BrowserRouter } from '../extensions/computer-use/src/browser-router.ts'
 import { BrowserActionJournal } from '../extensions/computer-use/src/browser-action-journal.ts'
 import { judgeWithJev } from '../extensions/computer-use/src/jev.ts'
+import { CreatorWorkspace } from '../extensions/creator/workspace.ts'
 
 const root = resolve(import.meta.dirname, '..')
 const tmpRoot = join(root, 'output', 'e2e')
@@ -868,19 +869,22 @@ async function caseChatMedia() {
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160"><rect width="240" height="160" fill="#315878"/></svg>'
   writeFileSync(join(project, 'cover.svg'), svg)
   writeFileSync(join(project, 'cover-2.svg'), svg.replace('#315878', '#a77049'))
+  writeFileSync(join(project, 'report.pdf'), '%PDF-1.4\nfixture\n%%EOF')
   const outside = join(dirs.base, 'outside.svg')
   writeFileSync(outside, svg)
   if (process.platform !== 'win32') symlinkSync(outside, join(project, 'external.svg'), 'file')
   const session = seedSession(dirs.sessions, 'chat-media', '对话产物', 0, project)
   const rows = [
-    { role: 'user', content: [{ type: 'text', text: '生成图片、流程图和视频' }] },
+    { role: 'user', content: [{ type: 'text', text: '生成图片、流程图和视频' }, { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a9sAAAAASUVORK5CYII=' }] },
     { role: 'assistant', content: [{ type: 'toolCall', id: 'cover-write', name: 'write', arguments: { path: 'cover-2.svg', content: svg } }] },
     { role: 'toolResult', toolCallId: 'cover-write', toolName: 'write', isError: false, content: [{ type: 'text', text: 'Wrote cover-2.svg' }] },
-    { role: 'assistant', content: [{ type: 'text', text: [
+    { role: 'assistant', content: [{ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a9sAAAAASUVORK5CYII=' }, { type: 'text', text: [
       '已完成。',
       '![封面](./cover.svg)',
-      '[第二版](./cover-2.svg) · [视频](<./演示 视频.mp4>)',
+      '[第二版](./cover-2.svg) · [视频](<./演示 视频.mp4>) · [文档](./report.pdf)',
       `\`\`\`svg\n${svg}\n\`\`\``,
+      `\`\`\`xml\n<?xml version="1.0"?>\n${svg}\n\`\`\``,
+      '```xml\n<settings><enabled>true</enabled></settings>\n```',
       '```mermaid\nflowchart LR\nA[提交] --> B[审核]\n```',
       '```mermaid\nnot a diagram\n```'
     ].join('\n\n') }] }
@@ -890,7 +894,16 @@ async function caseChatMedia() {
     theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project, lastSessionPath: session
   }))
 
-  const { app, page, errors } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1' })
+  const exportDir = join(dirs.base, 'saved-media')
+  mkdirSync(exportDir)
+  const fixtureVideo = readFileSync(join(project, videoName))
+  const mediaServer = createServer((req, response) => {
+    if (req.url === '/redirect') { response.writeHead(302, { Location: '/clip.mp4' }); response.end(); return }
+    if (req.url === '/blocked') { response.writeHead(302, { Location: 'http://localhost/private' }); response.end(); return }
+    response.writeHead(200, { 'Content-Type': 'video/mp4' }); response.end(fixtureVideo)
+  })
+  await new Promise(resolve => mediaServer.listen(0, '127.0.0.1', resolve))
+  const { app, page, errors } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1', PI_DESKTOP_EXPORT_DIR: exportDir, PI_DESKTOP_TEST_MEDIA_LOCAL: '1' })
   try {
     const turn = page.locator('.turn').filter({ hasText: '生成图片、流程图和视频' })
     const video = turn.getByLabel(videoName, { exact: true })
@@ -911,8 +924,58 @@ async function caseChatMedia() {
     await page.waitForFunction(() => document.querySelector('.turn-image-open img')?.naturalWidth === 240)
     check('SVG 图集去重并可切换缩略图', await gallery.locator('.turn-image-thumbnails button').count() === 2 &&
       await svgImage.getAttribute('alt') === 'cover-2.svg')
+    await app.evaluate(async ({ clipboard }) => { globalThis.__oldClipboard = await clipboard.read() })
+    await gallery.getByRole('button', { name: '下载', exact: true }).click()
+    await page.getByText('已保存附件', { exact: true }).waitFor()
+    check('图片下载保留原始 SVG 文件', readFileSync(join(exportDir, 'cover-2.svg'), 'utf8') === svg.replace('#315878', '#a77049'))
+    await gallery.getByRole('button', { name: '复制图片', exact: true }).click()
+    await page.getByText('已复制图片', { exact: true }).waitFor()
+    check('图片复制写入系统图像剪贴板', await app.evaluate(async ({ clipboard }) => (await clipboard.read()).some(item => item.types.includes('image/png'))))
+    const videoCard = turn.locator('.turn-video')
+    await videoCard.getByRole('button', { name: '下载', exact: true }).click()
+    await page.waitForFunction((path) => window.pi && Boolean(path), videoName)
+    await page.waitForTimeout(300)
+    check('视频下载保留原始内容', readFileSync(join(exportDir, videoName)).equals(readFileSync(join(project, videoName))))
+    await videoCard.getByRole('button', { name: '复制视频文件', exact: true }).click()
+    await page.getByText('已复制视频文件', { exact: true }).waitFor()
+    check('视频复制写入文件剪贴板格式', await app.evaluate(async ({ clipboard }) => (await clipboard.read()).some(item => item.types.some(type => /public.file-url|FileNameW|text\/uri-list/i.test(type)))))
+    const remoteUrl = `http://127.0.0.1:${mediaServer.address().port}/clip.mp4`
+    if (!process.env.PI_E2E_APP) {
+      const remoteSaved = await page.evaluate(url => window.pi.remoteMedia(url, 'remote.mp4', 'video', 'save'), remoteUrl)
+      check('远程视频下载保存原始数据', remoteSaved && readFileSync(join(exportDir, 'remote.mp4')).equals(fixtureVideo))
+      const remoteCopied = await page.evaluate(url => window.pi.remoteMedia(url, 'remote.mp4', 'video', 'copy'), remoteUrl)
+      check('远程视频复制为文件', remoteCopied && await app.evaluate(async ({ clipboard }) => (await clipboard.read()).some(item => item.types.some(type => /public.file-url|FileNameW|text\/uri-list/i.test(type)))))
+      const redirected = await page.evaluate(url => window.pi.remoteMedia(url, 'redirected.mp4', 'video', 'save'), remoteUrl.replace('/clip.mp4', '/redirect'))
+      check('远程附件可跟随安全重定向', redirected && readFileSync(join(exportDir, 'redirected.mp4')).equals(fixtureVideo))
+    }
+    const rejected = await page.evaluate(() => window.pi.remoteMedia('http://localhost/private', 'private.mp4', 'video', 'save').then(() => false, () => true))
+    const rejectedRedirect = process.env.PI_E2E_APP ? true : await page.evaluate(url => window.pi.remoteMedia(url, 'private.mp4', 'video', 'save').then(() => false, () => true), remoteUrl.replace('/clip.mp4', '/blocked'))
+    check('远程附件及重定向拒绝不安全地址', rejected && rejectedRedirect)
+    const fileCard = turn.locator('.turn-file-result', { hasText: 'report.pdf' })
+    await fileCard.getByRole('button', { name: '下载', exact: true }).click()
+    await page.waitForTimeout(200)
+    check('文档附件可下载且内容不变', readFileSync(join(exportDir, 'report.pdf'), 'utf8') === '%PDF-1.4\nfixture\n%%EOF')
+    await fileCard.getByRole('button', { name: '复制文件', exact: true }).click()
+    await page.getByText('已复制文件', { exact: true }).waitFor()
+    check('文档附件可作为文件复制', await app.evaluate(async ({ clipboard }) => (await clipboard.read()).some(item => item.types.some(type => /public.file-url|FileNameW|text\/uri-list/i.test(type)))))
     await svgImage.click()
     check('SVG 可在对话内放大', await page.locator('.lightbox img').isVisible())
+    await page.keyboard.press('Escape')
+    await turn.locator('.assistant-body > .inline-image').first().click()
+    const lightbox = page.locator('.lightbox')
+    await lightbox.getByRole('button', { name: '复制图片', exact: true }).click()
+    let copiedInlineImage = false
+    for (let attempt = 0; attempt < 30 && !copiedInlineImage; attempt++) {
+      copiedInlineImage = await app.evaluate(async ({ clipboard }) => (await clipboard.read()).some(item => item.types.includes('image/png')))
+      if (!copiedInlineImage) await page.waitForTimeout(100)
+    }
+    check('对话内嵌图片放大后可复制', copiedInlineImage)
+    await lightbox.getByRole('button', { name: '下载', exact: true }).click()
+    await page.waitForTimeout(250)
+    check('对话内嵌图片放大后可下载', existsSync(join(exportDir, '图片.png')))
+    await page.keyboard.press('Escape')
+    await turn.locator('.user-images .inline-image').click()
+    check('用户发出的图片也能打开复制下载操作', await page.locator('.lightbox').getByRole('button', { name: '下载', exact: true }).isVisible() && await page.locator('.lightbox').getByRole('button', { name: '复制图片', exact: true }).isVisible())
     await page.keyboard.press('Escape')
 
     await page.waitForFunction(() => document.querySelector('[data-diagram-type="mermaid"] img')?.naturalWidth > 0)
@@ -930,8 +993,15 @@ async function caseChatMedia() {
     check('Mermaid 渲染为流程图，非法语法保留源码', renderedDiagram.width > 40 && renderedDiagram.height > 28 && renderedDiagram.colored &&
       renderedDiagram.displayWidth > 60 && renderedDiagram.displayHeight > 40 &&
       await turn.locator('.diagram-fallback pre').getByText('not a diagram').isVisible(), JSON.stringify(renderedDiagram))
-    await page.waitForFunction(() => document.querySelector('[data-diagram-type="svg"] img')?.naturalWidth === 240)
-    check('SVG 源码块在回答中可直接查看', await turn.locator('[data-diagram-type="svg"] img').isVisible())
+    await page.waitForFunction(() => Array.from(document.querySelectorAll('[data-diagram-type="svg"] img')).filter(img => img.naturalWidth === 240).length === 2)
+    check('SVG 与 XML 标记的 SVG 均可预览，普通 XML 保留源码', await turn.locator('[data-diagram-type="svg"] img').count() === 2 && await turn.locator('pre').filter({ hasText: 'enabled' }).count() === 1)
+    await turn.locator('[data-diagram-type="svg"] img').last().scrollIntoViewIfNeeded()
+    await page.screenshot({ path: join(dirs.base, 'xml-svg-preview.png') })
+    await turn.locator('[data-diagram-type="svg"] img').last().click()
+    await page.locator('.lightbox').getByRole('button', { name: '下载', exact: true }).click()
+    await page.waitForTimeout(250)
+    check('XML 中的 SVG 预览可下载为 SVG 文件', existsSync(join(exportDir, '图片.svg')))
+    await page.keyboard.press('Escape')
     const unauthorized = await page.evaluate(async ({ outside, project, session }) => Promise.all([
       window.pi.previewMedia({ path: outside, workspace: project, sessionPath: session }),
       window.pi.previewMedia({ path: 'external.svg', workspace: project, sessionPath: session }),
@@ -945,7 +1015,10 @@ async function caseChatMedia() {
     check('重开历史对话后视频仍能加载', await page.locator('.turn-video video').count() === 1)
     check('对话媒体无 renderer 异常', errors.length === 0, errors.join(' | '))
   } finally {
+    await app.evaluate(async ({ clipboard }) => { if (Array.isArray(globalThis.__oldClipboard)) { if (globalThis.__oldClipboard.length) await clipboard.write(globalThis.__oldClipboard); else clipboard.clear() } }).catch(() => {})
     await app.close()
+    mediaServer.closeAllConnections()
+    await new Promise(resolve => mediaServer.close(resolve))
   }
 }
 
@@ -1159,8 +1232,22 @@ async function casePolish() {
   const fileActions = await page.locator('.tool-body .file-action').count()
   check('工具卡提供在 Finder 中显示 / 打开', fileActions >= 2, `count=${fileActions}`)
 
-  const opened = await page.evaluate(() => window.pi.openPath('/Users/qm/Desktop/pi-desktop/package.json'))
-  check('shell:open-path 可用', opened === true, String(opened))
+  // Do not launch the user's default editor during automated checks. Exercise
+  // the real IPC handler while replacing only the OS handoff in this test app.
+  await app.evaluate(({ shell }) => {
+    globalThis.testOriginalOpenPath = shell.openPath
+    globalThis.testOpenedPaths = []
+    shell.openPath = async (path) => { globalThis.testOpenedPaths.push(path); return path.endsWith('missing.txt') ? 'test failure' : '' }
+  })
+  try {
+    const fixturePath = join(dirs.base, 'test-open.txt')
+    const opened = await page.evaluate((path) => window.pi.openPath(path), fixturePath)
+    const failed = await page.evaluate((path) => window.pi.openPath(path), join(dirs.base, 'missing.txt'))
+    const calls = await app.evaluate(() => globalThis.testOpenedPaths)
+    check('打开文件 IPC 正确转交路径并处理失败', opened === true && failed === false && calls[0] === fixturePath && calls.length === 2)
+  } finally {
+    await app.evaluate(({ shell }) => { shell.openPath = globalThis.testOriginalOpenPath; delete globalThis.testOriginalOpenPath; delete globalThis.testOpenedPaths })
+  }
 
   // notification IPC answers even when focused (false = suppressed).
   // Conversation notifications contain a single status line.
@@ -1204,16 +1291,12 @@ async function casePolish() {
   })
   check('图片 lightbox 可打开并关闭', lightbox.open && lightbox.closed, JSON.stringify(lightbox))
 
-  // export markdown last: switching the session reloads the transcript, so any
-  // check that needs tool cards has to run before this.
   await page.locator('.session-item').first().click()
   await page.waitForTimeout(1200)
   await page.locator('.session-item').first().click({ button: 'right' })
   await page.waitForSelector('.context-menu')
-  await page.locator('.context-menu .menu-item', { hasText: 'Markdown' }).click()
-  await page.waitForTimeout(1200)
-  const exported = readdirSync(exportDir)
-  check('导出 Markdown 落盘', exported.some((name) => name.endsWith('.md')), exported.join(','))
+  check('会话右键菜单不显示导出或历史提示分支', await page.locator('.context-menu .menu-item').filter({ hasText: /导出 Markdown|导出 HTML|从历史提示分支/ }).count() === 0)
+  await page.keyboard.press('Escape')
 
   const virtual = await page.evaluate(() => document.querySelectorAll('.turn').length)
   check('轮次数量统计正常', virtual >= 1, `turns=${virtual}`)
@@ -1371,6 +1454,37 @@ async function caseOperationDetails() {
   } finally {
     await app.close()
   }
+}
+
+async function caseStreamingScroll() {
+  const dirs = freshDirs('streaming-scroll')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_TRANSCRIPT: '8', MOCK_STREAM_INTERVAL: '100' })
+  try {
+    const input = page.locator('.composer-input')
+    await input.fill('scroll test')
+    await input.press('Enter')
+    await page.waitForFunction(async () => (await window.pi.command({ type: 'get_state' })).data?.isStreaming === true)
+    await page.getByText('mock reply', { exact: false }).first().waitFor()
+    await page.waitForTimeout(150)
+    const scroll = page.locator('.chat-scroll')
+    await scroll.hover({ position: { x: 300, y: 100 } })
+    await scroll.evaluate(el => { window.__scrollTrace = []; for (const name of ['wheel','scroll']) el.addEventListener(name, e => window.__scrollTrace.push([name, e.deltaY, el.scrollHeight - el.clientHeight - el.scrollTop])) })
+    await page.mouse.wheel(0, -24)
+    await page.waitForTimeout(700)
+    const distance = await scroll.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)
+    check('输出时轻微向上滚动不被自动拉回', distance >= 12, `distance=${distance} trace=${JSON.stringify(await page.evaluate(() => window.__scrollTrace))}`)
+    const before = await scroll.evaluate(el => el.scrollTop)
+    for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, -30); await page.waitForTimeout(100) }
+    const after = await scroll.evaluate(el => el.scrollTop)
+    check('连续向上滚动时可继续浏览历史', before - after >= 90, `before=${before} after=${after}`)
+    await page.mouse.wheel(0, 10000)
+    await page.waitForTimeout(150)
+    await scroll.evaluate(el => { const extra = document.createElement('div'); extra.style.height = '160px'; el.querySelector('.chat-inner').appendChild(extra) })
+    await page.waitForTimeout(150)
+    const bottom = await scroll.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)
+    check('返回底部后内容变高仍跟随最新内容', bottom <= 2, `distance=${bottom}`)
+  } finally { await app.close() }
 }
 
 async function caseVirtualization() {
@@ -1633,6 +1747,121 @@ async function caseAutoFoldOnAnswer() {
   await app.close()
 }
 
+async function caseSessionPins() {
+  const dirs = freshDirs('session-pins')
+  const sessionA = seedSession(dirs.sessions, 'pin-a', '置顶测试 A', 2)
+  const sessionB = seedSession(dirs.sessions, 'pin-b', '置顶测试 B', 1, '/tmp/pin-loose-project')
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [root], lastWorkspace: root, lastSessionPath: sessionA }))
+  let { app, page } = await launch(dirs)
+  try {
+    const projectRow = page.locator('.project-tree-sessions .session-item').filter({ hasText: '置顶测试 A' })
+    const recentRow = page.locator('.recent-sessions .session-item').filter({ hasText: '置顶测试 B' })
+    await projectRow.waitFor()
+    for (const row of [projectRow, recentRow]) {
+      await row.getByRole('button', { name: '会话操作' }).click()
+      const menu = page.locator('.popover:not(.popover-closing)')
+      check('当前和其他对话的菜单都不含三个移除的入口', await menu.locator('.menu-item').filter({ hasText: /导出 Markdown|导出 HTML|从历史提示分支/ }).count() === 0 && await menu.locator('.menu-item').filter({ hasText: '归档对话' }).count() === 1)
+      await page.keyboard.press('Escape')
+      await menu.waitFor({ state: 'detached' })
+    }
+    await projectRow.hover()
+    await projectRow.getByRole('button', { name: '置顶对话' }).click()
+    await page.locator('.pinned-sessions .session-item').filter({ hasText: '置顶测试 A' }).waitFor()
+    check('项目对话可以置顶且原项目入口保留', await projectRow.count() === 1)
+    await recentRow.hover()
+    await recentRow.getByRole('button', { name: '置顶对话' }).click()
+    await page.locator('.pinned-sessions .session-item').filter({ hasText: '置顶测试 B' }).waitFor()
+    const pinOrder = await page.locator('.pinned-sessions .session-title').allTextContents()
+    check('无项目对话也可置顶，新置顶排在前面', pinOrder[0] === '置顶测试 B' && pinOrder[1] === '置顶测试 A', JSON.stringify(pinOrder))
+    await page.locator('.search-box input').fill('测试 A')
+    check('搜索时置顶列表只显示匹配对话', await page.locator('.pinned-sessions .session-item').count() === 1 &&
+      await page.locator('.pinned-sessions').getByText('置顶测试 A', { exact: true }).count() === 1)
+    await page.locator('.search-box input').fill('')
+    await app.close()
+    ;({ app, page } = await launch(dirs))
+    await page.locator('.pinned-sessions .session-item').filter({ hasText: '置顶测试 B' }).waitFor()
+    check('重启后置顶顺序和状态保持', JSON.stringify(await page.locator('.pinned-sessions .session-title').allTextContents()) === JSON.stringify(pinOrder))
+    const pinnedB = page.locator('.pinned-sessions .session-item').filter({ hasText: '置顶测试 B' })
+    await pinnedB.getByRole('button', { name: '取消置顶' }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.pinned-sessions .session-item').length === 1)
+    check('取消置顶不会删除原对话', await page.locator('.recent-sessions .session-item').filter({ hasText: '置顶测试 B' }).count() === 1)
+    const settings = JSON.parse(readFileSync(join(dirs.userData, 'settings.json'), 'utf8'))
+    check('置顶状态持久化且取消结果正确', settings.pinnedSessionPaths?.length === 1 && settings.pinnedSessionPaths[0] === sessionA && !settings.pinnedSessionPaths.includes(sessionB))
+  } finally { await app.close() }
+}
+
+async function caseSessionArchive() {
+  const dirs = freshDirs('session-archive')
+  const sessionA = seedSession(dirs.sessions, 'archive-a', '归档项目 A', 2)
+  const sessionB = seedSession(dirs.sessions, 'archive-b', '归档无项目 B', 1, dirs.base)
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [root], lastWorkspace: root, lastSessionPath: sessionA, pinnedSessionPaths: [sessionB] }))
+  let { app, page } = await launch(dirs)
+  const menuAction = async (row, label) => {
+    await row.getByRole('button', { name: '会话操作' }).click()
+    await page.locator('.popover:not(.popover-closing) .menu-item').filter({ hasText: label }).click()
+  }
+  try {
+    const recent = page.locator('.recent-sessions .session-item').filter({ hasText: '归档无项目 B' })
+    await recent.waitFor()
+    await app.evaluate(({ BrowserWindow }, path) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', { type: 'desktop_running_sessions', paths: [path] }), sessionB)
+    await recent.locator('.session-running').waitFor()
+    await menuAction(recent, '归档对话')
+    check('执行中的对话不能被静默归档', await page.getByText('该对话正在执行或等待确认，请先处理完当前任务。').isVisible() && await recent.count() === 1)
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', { type: 'desktop_running_sessions', paths: [] }))
+    await recent.locator('.session-running').waitFor({ state: 'detached' })
+    await app.evaluate(({ BrowserWindow }, path) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', { type: 'desktop_background_ui_pending', sessions: [{ path, cwd: '/tmp/archive-loose-project' }] }), sessionB)
+    await page.getByText('后台任务等待确认').waitFor()
+    await menuAction(recent, '归档对话')
+    check('等待确认的对话不能归档', await recent.count() === 1)
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', { type: 'desktop_background_ui_pending', sessions: [] }))
+    await page.getByText('后台任务等待确认').waitFor({ state: 'detached' })
+    await menuAction(recent, '归档对话')
+    await recent.waitFor({ state: 'detached' })
+    check('归档后退出最近和置顶，但会话文件保留', await page.locator('.recent-sessions .session-item').filter({ hasText: '归档无项目 B' }).count() === 0 && await page.locator('.pinned-sessions .session-item').count() === 0 && existsSync(sessionB))
+    check('聊天侧栏没有已归档入口', await page.locator('.archived-sessions').count() === 0)
+    await page.locator('.search-box input').fill('归档无项目 B')
+    await page.locator('.session-search-hit').filter({ hasText: '归档无项目 B' }).first().waitFor()
+    check('侧栏搜索仍可找到并标识已归档对话', await page.locator('.session-search-hit').filter({ hasText: '归档无项目 B' }).first().innerText().then(text => text.includes('已归档')))
+    await page.locator('.search-box input').fill('')
+    await app.close()
+    ;({ app, page } = await launch(dirs))
+    check('重启后归档状态仍然保存', await page.locator('.recent-sessions .session-item').filter({ hasText: '归档无项目 B' }).count() === 0)
+    await page.keyboard.press('Meta+,')
+    await page.locator('.settings-nav').getByRole('button', { name: '已归档', exact: true }).click()
+    const archived = page.locator('.settings-archive-row').filter({ hasText: '归档无项目 B' })
+    await archived.waitFor()
+    check('已归档对话在设置中展示', await archived.isVisible())
+    await page.screenshot({ path: join(dirs.base, 'archived-settings.png') })
+    await page.getByPlaceholder('搜索已归档对话').fill('no-match')
+    check('设置中的归档列表支持搜索', await page.getByText('没有匹配的会话。').isVisible())
+    await page.getByPlaceholder('搜索已归档对话').fill('')
+    await archived.locator('.settings-archive-open').click()
+    await page.locator('.settings-page').waitFor({ state: 'detached' })
+    check('从设置中可以打开归档对话', await page.locator('.composer-input').isVisible())
+    await app.close()
+    ;({ app, page } = await launch(dirs))
+    await page.keyboard.press('Meta+,')
+    await page.locator('.settings-nav').getByRole('button', { name: '已归档', exact: true }).click()
+    await page.locator('.settings-archive-row').filter({ hasText: '归档无项目 B' }).getByRole('button', { name: '取消归档' }).click()
+    await page.locator('.settings-archive-row').filter({ hasText: '归档无项目 B' }).waitFor({ state: 'detached' })
+    await page.getByRole('button', { name: '返回对话' }).click()
+    await page.locator('.recent-sessions .session-item').filter({ hasText: '归档无项目 B' }).waitFor()
+    check('取消归档后回到原列表且不会重新置顶', await page.locator('.pinned-sessions .session-item').count() === 0)
+    const project = page.locator('.project-tree-sessions .session-item').filter({ hasText: '归档项目 A' })
+    await menuAction(project, '归档对话')
+    await project.waitFor({ state: 'detached' })
+    await page.keyboard.press('Meta+,')
+    await page.locator('.settings-nav').getByRole('button', { name: '已归档', exact: true }).click()
+    const archivedProject = page.locator('.settings-archive-row').filter({ hasText: '归档项目 A' })
+    await archivedProject.waitFor()
+    await archivedProject.getByRole('button', { name: '取消归档' }).click()
+    await archivedProject.waitFor({ state: 'detached' })
+    await page.getByRole('button', { name: '返回对话' }).click()
+    await page.locator('.project-tree-sessions .session-item').filter({ hasText: '归档项目 A' }).waitFor()
+    check('项目会话恢复后回到原项目', existsSync(sessionA))
+  } finally { await app.close() }
+}
+
 async function caseSidebarLayout() {
   const dirs = freshDirs('sidebar-layout')
   const sessionA = seedSession(dirs.sessions, 'layout-a', '布局会话 A', 2)
@@ -1846,21 +2075,72 @@ async function waitForScheduleRun(page, id, timeout = 20_000) {
 
 async function caseProjectRemoval() {
   const dirs = freshDirs('project-removal')
-  const session = seedSession(dirs.sessions, 'removal', '保留的会话', 1)
-  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root, lastSessionPath: session }))
-  const { app, page } = await launch(dirs)
-  await page.locator('.project-row.active').waitFor()
-  await page.locator('.project-row.active').hover()
-  await page.locator('.project-row.active .project-remove').click()
-  await page.getByRole('menuitem', { name: '从列表移除', exact: true }).click()
-  check('移除项目时说明文件和对话保留', await page.getByText(/文件夹和里面的文件仍保留/).isVisible())
-  await page.getByRole('button', { name: '从列表移除', exact: true }).click()
-  await page.waitForFunction(() => document.querySelectorAll('.project-row').length === 0)
-  await page.waitForFunction(() => [...document.querySelectorAll('.recent-sessions .session-title')].some((item) => item.textContent === '保留的会话'))
-  check('移除当前项目后历史对话仍在且文件未删除', existsSync(root) && existsSync(session))
-  const settings = JSON.parse(readFileSync(join(dirs.userData, 'settings.json'), 'utf8'))
-  check('项目从持久化列表移除', !settings.workspaces.includes(root))
-  await app.close()
+  const project = join(dirs.base, 'project')
+  const other = join(dirs.base, 'other-project')
+  mkdirSync(project, { recursive: true }); mkdirSync(other, { recursive: true })
+  const file = join(project, 'keep.txt'); writeFileSync(file, 'important project file')
+  const session = seedSession(dirs.sessions, 'removal', '项目当前对话', 2, project)
+  const archived = seedSession(dirs.sessions, 'removal-archived', '项目归档对话', 1, project)
+  const otherSession = seedSession(dirs.sessions, 'removal-other', '其他项目对话', 1, other)
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [project, other], lastWorkspace: project, lastSessionPath: session, pinnedSessionPaths: [session], archivedSessionPaths: [archived] }))
+  let { app, page } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1' })
+  try {
+    const projectRow = page.locator('.project-row').filter({ hasText: 'project' }).filter({ hasNotText: 'other-project' })
+    await projectRow.waitFor()
+    await projectRow.hover(); await projectRow.locator('.project-remove').click()
+    await page.getByRole('menuitem', { name: '删除项目', exact: true }).click()
+    check('删除项目明确说明对话进入回收站且保留文件', await page.getByText(/所有对话.*已归档对话.*回收站/).isVisible())
+    await page.getByRole('button', { name: '删除项目', exact: true }).click()
+    await projectRow.waitFor({ state: 'detached' })
+    await page.waitForFunction(() => ![...document.querySelectorAll('.session-title')].some(node => node.textContent?.includes('项目当前对话')))
+    check('项目的普通和已归档对话均已移出历史，其他项目保留', !existsSync(session) && !existsSync(archived) && existsSync(otherSession))
+    check('项目目录和文件保留', existsSync(file) && readFileSync(file, 'utf8') === 'important project file')
+    const settings = JSON.parse(readFileSync(join(dirs.userData, 'settings.json'), 'utf8'))
+    check('项目与置顶、归档索引同步清理', !settings.workspaces.includes(project) && !settings.pinnedSessionPaths.includes(session) && !settings.archivedSessionPaths.includes(archived) && settings.workspaces.includes(other))
+    const trash = readdirSync(join(dirs.sessions, '.trash'))
+    check('项目对话完整移至回收站', trash.some(name => name.includes('removal.jsonl')) && trash.some(name => name.includes('removal-archived.jsonl')))
+    await app.close(); ({ app, page } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1' }))
+    check('重启后项目和对话不会重新出现', await page.locator('.project-row').filter({ hasText: 'project' }).filter({ hasNotText: 'other-project' }).count() === 0 && await page.getByText('项目当前对话', { exact: true }).count() === 0)
+    check('其他项目仍在', await page.locator('.project-row').filter({ hasText: 'other-project' }).count() === 1)
+  } finally { await app.close() }
+}
+
+async function caseProjectRemovalBusy() {
+  const dirs = freshDirs('project-removal-busy')
+  const project = join(dirs.base, 'project'); mkdirSync(project, { recursive: true })
+  const session = seedSession(dirs.sessions, 'busy-removal', '执行中的项目对话', 1, project)
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project, lastSessionPath: session }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1', MOCK_STREAM_INTERVAL: '300' })
+  try {
+    await page.locator('.composer-input').fill('running project removal')
+    await page.keyboard.press('Enter')
+    await page.locator('.session-running').first().waitFor()
+    await page.locator('.project-row').first().hover(); await page.locator('.project-remove').first().click()
+    await page.getByRole('menuitem', { name: '删除项目', exact: true }).click()
+    check('项目运行中删除按钮不可操作且说明原因', await page.getByRole('button', { name: '删除项目', exact: true }).isDisabled() && await page.getByText('该项目有对话正在执行或等待确认，请先处理完当前任务。').isVisible())
+    const result = await page.evaluate(async path => { try { await window.pi.removeProject(path); return 'unexpected success' } catch (error) { return String(error) } }, project)
+    check('主进程拒绝删除运行中的项目', result.includes('正在执行或等待确认') && existsSync(session))
+  } finally { await app.close() }
+}
+
+async function caseProjectRemovalRollback() {
+  const dirs = freshDirs('project-removal-rollback')
+  const project = join(dirs.base, 'project'); mkdirSync(project, { recursive: true })
+  const first = seedSession(dirs.sessions, 'rollback-first', '可移动对话', 2, project)
+  const second = seedSession(dirs.sessions, 'rollback-second', '只读目录对话', 1, project)
+  const lockedDir = join(dirs.sessions, '--locked--'); mkdirSync(lockedDir, { recursive: true })
+  const locked = join(lockedDir, 'locked.jsonl'); renameSync(second, locked)
+  const newer = new Date(Date.now() + 10_000); utimesSync(first, newer, newer)
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project, lastSessionPath: first }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1' })
+  try {
+    await page.locator('.new-session').click()
+    await page.waitForTimeout(400)
+    chmodSync(lockedDir, 0o500)
+    const result = await page.evaluate(async path => { try { await window.pi.removeProject(path); return 'unexpected success' } catch (error) { return String(error) } }, project)
+    const settings = JSON.parse(readFileSync(join(dirs.userData, 'settings.json'), 'utf8'))
+    check('部分对话无法移动时回滚且保留项目', /EACCES|EPERM|permission denied/i.test(result) && existsSync(first) && existsSync(locked) && settings.workspaces.includes(project) && readdirSync(join(dirs.sessions, '.trash')).length === 0, result)
+  } finally { chmodSync(lockedDir, 0o700); await app.close() }
 }
 
 async function caseSchedules() {
@@ -2470,6 +2750,97 @@ async function caseScratchChat() {
   await app.close()
 }
 
+async function caseScratchIsolation() {
+  const dirs = freshDirs('scratch-isolation')
+  const { app, page } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1' })
+  let first
+  try {
+    first = await page.evaluate(() => window.pi.openSession({ cwd: '', scratch: true }))
+    const second = await page.evaluate(() => window.pi.openSession({ cwd: '', scratch: true }))
+    check('两个新对话获得不同的临时目录', first.ok && second.ok && first.scratch && second.scratch && first.cwd !== second.cwd && first.cwd.includes('/scratch/conversations/') && second.cwd.includes('/scratch/conversations/'), JSON.stringify({ first: first.cwd, second: second.cwd }))
+    writeFileSync(join(first.cwd, 'result.txt'), 'first')
+    writeFileSync(join(second.cwd, 'result.txt'), 'second')
+    check('同名产物各自保留', readFileSync(join(first.cwd, 'result.txt'), 'utf8') === 'first' && readFileSync(join(second.cwd, 'result.txt'), 'utf8') === 'second')
+    const draft = new CreatorWorkspace(first.cwd).create('mode', 'scratch-discovery')
+    const authored = await page.evaluate(() => window.pi.listCreatedPlugins())
+    check('其他临时对话中的插件草稿仍可发现', authored.plugins.some(plugin => plugin.id === draft.id && plugin.workspace === first.cwd))
+    const restored = await page.evaluate(({ cwd, sessionPath }) => window.pi.openSession({ cwd, sessionPath, scratch: true }), first)
+    check('切回对话仍使用原来的临时目录', restored.ok && restored.cwd === first.cwd && restored.sessionPath === first.sessionPath && restored.scratch)
+    const settings = await page.evaluate(async () => (await window.pi.bootstrap()).settings)
+    check('临时目录不会加入项目列表', !settings.workspaces.some(path => path === first.cwd || path === second.cwd))
+  } finally { await app.close() }
+  const settingsPath = join(dirs.userData, 'settings.json')
+  const settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
+  writeFileSync(settingsPath, JSON.stringify({ ...settings, lastSessionPath: first.sessionPath }))
+  const restarted = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1' })
+  try {
+    await restarted.page.locator('.topbar-path').getByText('新对话', { exact: true }).waitFor()
+    const restored = await restarted.page.evaluate(async () => (await window.pi.command({ type: 'get_state' })).data?.sessionFile)
+    check('重启后恢复同一对话与原临时目录', restored === first.sessionPath && readFileSync(join(first.cwd, 'result.txt'), 'utf8') === 'first')
+  } finally { await restarted.app.close() }
+}
+
+async function caseCreatorInline() {
+  const dirs = freshDirs('creator-inline')
+  const pi = process.env.PI_TEST_PI || join(root, 'build/pi-seed/1.5.2/pi')
+  const requests = []
+  const server = createServer(async (req, res) => {
+    let body = ''; for await (const chunk of req) body += chunk
+    requests.push(JSON.parse(body))
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    for (const [delta, finish] of [[{ role: 'assistant', content: 'fixture complete' }, null], [{}, 'stop']]) res.write(`data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'test', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`)
+    res.end('data: [DONE]\n\n')
+  })
+  await new Promise(resolveDone => server.listen(0, '127.0.0.1', resolveDone))
+  writeFileSync(join(dirs.agent, 'models.json'), JSON.stringify({ providers: { local: { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, api: 'openai-completions', apiKey: 'test', models: [{ id: 'test', contextWindow: 200000, maxTokens: 8192 }] } } }))
+  writeFileSync(join(dirs.agent, 'settings.json'), JSON.stringify({ defaultProvider: 'local', defaultModel: 'test' }))
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [dirs.base], lastWorkspace: dirs.base, sandboxEnabled: true, sandboxMode: 'workspace-write', sandboxNetwork: 'model' }))
+  const { app, page } = await launch(dirs, 'default', { PI_DESKTOP_PI_PATH: pi })
+  try {
+    await page.locator('.composer-input').fill('/create 做一个测试插件')
+    await page.locator('.composer-input').press('Enter')
+    await page.getByText('fixture complete', { exact: false }).waitFor({ timeout: 60000 })
+    const tools = (requests[0]?.tools ?? []).map(tool => tool.function?.name)
+    check('一行创作请求先启用创意模式并传入创作工具', tools.includes('creator_docs') && tools.includes('creator_package'), JSON.stringify(tools))
+    check('只发送创作想法而不发送模式切换命令', requests[0]?.messages?.some(message => message.role === 'user' && JSON.stringify(message.content).includes('做一个测试插件') && !JSON.stringify(message.content).includes('/create')))
+    check('创意草稿没有写入全局扩展目录', !existsSync(join(dirs.agent, 'extensions')))
+  } finally { await app.close(); server.closeAllConnections(); await new Promise(resolveDone => server.close(resolveDone)) }
+}
+
+async function caseSandboxRealBrowser() {
+  const dirs = freshDirs('sandbox-real-browser')
+  const pi = process.env.PI_TEST_PI || join(root, 'build/pi-seed/1.5.2/pi')
+  let calls = []
+  const server = createServer(async (req, res) => {
+    if (req.url === '/page') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<title>Fixture</title><main>Sandbox browser fixture</main>'); return }
+    let body = ''; for await (const chunk of req) body += chunk
+    const request = JSON.parse(body), results = (request.messages || []).filter(message => message.role === 'tool')
+    const name = results.length === 0 ? 'computer_use_session_open' : results.length === 1 ? 'computer_use_session_observe' : null
+    if (name) calls.push(name)
+    const args = name === 'computer_use_session_open' ? { backend: 'inapp' } : { url: `http://127.0.0.1:${server.address().port}/page` }
+    const delta = name ? { role: 'assistant', tool_calls: [{ index: 0, id: `fixture-${results.length}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } : { content: 'sandbox browser finished' }
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    for (const [part, finish] of [[delta, null], [{}, name ? 'tool_calls' : 'stop']]) res.write(`data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'test', choices: [{ index: 0, delta: part, finish_reason: finish }] })}\n\n`)
+    res.end('data: [DONE]\n\n')
+  })
+  await new Promise(resolveDone => server.listen(0, '127.0.0.1', resolveDone))
+  writeFileSync(join(dirs.agent, 'models.json'), JSON.stringify({ providers: { local: { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, api: 'openai-completions', apiKey: 'test', models: [{ id: 'test', contextWindow: 200000, maxTokens: 8192 }] } } }))
+  writeFileSync(join(dirs.agent, 'settings.json'), JSON.stringify({ defaultProvider: 'local', defaultModel: 'test' }))
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [dirs.base], lastWorkspace: dirs.base, sandboxEnabled: true, sandboxMode: 'workspace-write', sandboxNetwork: 'model' }))
+  const { app, page } = await launch(dirs, 'default', { PI_DESKTOP_PI_PATH: pi })
+  try {
+    await page.evaluate(() => { window.__browserResults = []; window.pi.onRecord(record => { if (record.type === 'tool_execution_end') window.__browserResults.push({ name: record.toolName, error: record.isError, details: record.result?.details }) }) })
+    await page.locator('.composer-input').fill('Open the local fixture page')
+    await page.locator('.composer-input').press('Enter')
+    await page.getByText('sandbox browser finished', { exact: false }).waitFor({ timeout: 60000 })
+    const results = await page.evaluate(() => window.__browserResults)
+    check('真实 Pi 在沙箱中打开并观察应用内浏览器', calls.includes('computer_use_session_open') && calls.includes('computer_use_session_observe') && results.some(row => row.name === 'computer_use_session_open' && !row.error) && results.some(row => row.name === 'computer_use_session_observe' && !row.error), JSON.stringify(results))
+    check('真实浏览器流程保留操作记录数据库', existsSync(join(dirs.base, '.pi', 'computer-use', 'browser-actions.sqlite')))
+  } finally {
+    await app.close(); server.closeAllConnections(); await new Promise(resolveDone => server.close(resolveDone))
+  }
+}
+
 async function caseScratchStartup() {
   const dirs = freshDirs('scratch-startup')
   writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({
@@ -2564,7 +2935,8 @@ async function caseSkillsPage() {
     JSON.stringify({ theme: 'dark', workspaces: [root], lastWorkspace: root })
   )
 
-  const { app, page } = await launch(dirs, 'default', { HOME: dirs.base })
+  const { app, page } = await launch(dirs, 'default', { HOME: dirs.base, MOCK_COMMANDS_JSON: JSON.stringify([{ name: 'skill:alpha', source: 'skill', description: '读取测试数据' }]) })
+  await page.locator('.composer-input').fill('保留原有草稿')
   const entryStyles = await page.evaluate(() => {
     const pick = (selector) => {
       const style = getComputedStyle(document.querySelector(selector))
@@ -2626,7 +2998,7 @@ async function caseSkillsPage() {
   await page.getByRole('button', { name: '在对话中使用' }).click()
   await page.waitForTimeout(200)
   const composer = await page.locator('.composer-input').inputValue()
-  check('「在对话中使用」填入 /alpha', composer.trim() === '/alpha', composer)
+  check('技能详情使用真实 Pi 命令并保留草稿', await page.locator('.composer-skill-chip').getByText('/alpha', { exact: true }).isVisible() && composer === '保留原有草稿', composer)
 
   await page.locator('.skills-page-entry').click()
   await page.waitForSelector('.skills-tab')
@@ -3322,10 +3694,28 @@ async function caseSandbox() {
     check('sandbox 内命令可以启动', result.success === true, JSON.stringify(result))
     check('sandbox 允许写入项目目录', existsSync(inside))
     check('sandbox 阻止写入项目外路径', !existsSync(outside))
+    const journal = join(dirs.base, '.pi', 'computer-use', 'browser-actions.sqlite')
+    const unrelated = join(dirs.base, '.pi', 'computer-use', 'unrelated.txt')
+    const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`
+    const journalModule = join(root, 'extensions/computer-use/src/browser-action-journal.ts')
+    const journalCode = `import { BrowserActionJournal } from ${JSON.stringify(journalModule)}; const j = new BrowserActionJournal(process.argv[1]); j.claim('cdp'); if (!j.pending('cdp')) throw new Error('missing journal'); j.close()`
+    const journalResult = await page.evaluate(command => window.pi.command({ type: 'bash', command }), `node --experimental-strip-types --input-type=module -e ${quote(journalCode)} ${quote(journal)}`)
+    check('沙箱中真实 SQLite 操作记录可写入', existsSync(journal), JSON.stringify(journalResult.data ?? journalResult.error))
+    await page.evaluate(command => window.pi.command({ type: 'bash', command }), `printf x > ${quote(unrelated)}`)
+    check('记录目录中的其他文件仍受沙箱保护', !existsSync(unrelated))
     await page.evaluate(() => window.pi.command({ type: 'bash', command: 'curl -sS --max-time 2 https://example.com' }))
     await page.waitForTimeout(600)
     const networkAudit = await page.evaluate(() => window.pi.sandboxAudit())
     check('沙箱记录被拒绝的网络请求', networkAudit.some((line) => line.includes('"type":"network_denied"')), JSON.stringify(networkAudit.slice(-3)))
+    const beforeNetworkPid = await page.evaluate(() => window.pi.command({ type: 'bash', command: 'printf %s "$PPID"' }))
+    await page.evaluate(() => window.pi.updateSettings({ sandboxNetwork: 'model' }))
+    const networkOn = await page.evaluate(() => window.pi.command({ type: 'bash', command: 'curl -sS -I --max-time 12 https://example.com' }))
+    const afterNetworkPid = await page.evaluate(() => window.pi.command({ type: 'bash', command: 'printf %s "$PPID"' }))
+    check('打开联网后当前会话无需逐站确认即可访问网站', /HTTP\/(?:1\.[01]|2) 200/.test(networkOn.data?.output ?? ''), JSON.stringify(networkOn))
+    check('联网切换不重启当前会话', beforeNetworkPid.data?.output === afterNetworkPid.data?.output && Boolean(beforeNetworkPid.data?.output))
+    await page.evaluate(() => window.pi.updateSettings({ sandboxNetwork: 'off' }))
+    const networkOff = await page.evaluate(() => window.pi.command({ type: 'bash', command: 'curl -sS -I --max-time 5 https://example.com' }))
+    check('再次关闭联网后阻止新的网络请求', !/HTTP\/(?:1\.[01]|2) 200/.test(networkOff.data?.output ?? ''), JSON.stringify(networkOff))
   } finally { await app.close() }
 }
 
@@ -3339,7 +3729,7 @@ async function caseConversationPermissions() {
     theme: 'dark', language: 'zh-CN', workspaces: [project], lastWorkspace: project,
     lastSessionPath: transcript, sandboxEnabled: false, sandboxNetwork: 'off', allowFullAccess: false
   }))
-  const { app, page } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1', MOCK_SANDBOX_PROBE: '1' })
+  const { app, page } = await launch(dirs, 'default', { MOCK_LOAD_SESSION: '1', MOCK_SANDBOX_PROBE: '1', MOCK_THINKING_MS: '8000' })
   try {
     const sandbox = await page.evaluate(() => window.pi.sandboxStatus())
     if (!sandbox.available) {
@@ -3389,28 +3779,33 @@ async function caseConversationPermissions() {
     await page.evaluate(() => window.pi.command({ type: 'bash', command: 'curl -sS --max-time 2 https://example.invalid' }))
     const block = page.locator('.conversation-network-block')
     await block.getByText('本次对话已关闭联网').waitFor()
-    check('拒绝联网后指出具体地址', await block.getByText('Pi 无法连接 example.invalid。').isVisible())
+    check('拒绝联网后指出具体地址', await block.getByText('example.invalid', { exact: true }).isVisible())
     check('联网提示出现时项目栏收起', await page.locator('.composer-project-slot').getAttribute('data-covered') === 'true')
-    await block.getByRole('button', { name: '开启本次联网并重试' }).click()
-    await page.getByText(/请从上次中断的地方继续/).first().waitFor()
+    const pidBefore = await page.evaluate(() => window.pi.command({ type: 'bash', command: 'printf %s "$PPID"' }))
+    await block.getByRole('button', { name: '开启本次联网', exact: true }).click()
+    await block.waitFor({ state: 'hidden' })
+    const pidAfter = await page.evaluate(() => window.pi.command({ type: 'bash', command: 'printf %s "$PPID"' }))
+    check('联网授权不会重启当前 Pi 进程', pidBefore.data?.output === pidAfter.data?.output && Boolean(pidBefore.data?.output))
     const restored = await security()
     check('联网恢复后项目栏重新显示', await page.locator('.composer-project-slot').getAttribute('data-covered') === 'false')
     check('本次联网重试保留手动确认和同一会话', restored.network === 'model' && restored.sandboxed &&
       restored.permission === 'ask' && restored.path === transcript)
     check('联网和模式的全局偏好保持原值', JSON.parse(readFileSync(settingsPath, 'utf8')).sandboxNetwork === 'off' &&
       JSON.parse(readFileSync(settingsPath, 'utf8')).toolApprovalMode === 'dangerous')
-    const activeRules = readdirSync(join(dirs.userData, 'sandbox')).filter((name) => /^[a-f\d-]{36}\.json$/.test(name))
-    check('保护模式允许配置好的 OpenCode 模型服务', activeRules.some((name) =>
-      JSON.parse(readFileSync(join(dirs.userData, 'sandbox', name), 'utf8')).network.allowedDomains.includes('opencode.ai')))
-
-    await page.locator('.composer .send-button.stop').waitFor({ state: 'hidden' })
+    await composer.fill('正在处理时测试联网授权')
+    await composer.press('Enter')
+    await page.locator('.composer .send-button.stop').waitFor()
+    await page.waitForFunction(async () => (await window.pi.command({ type: 'get_state' })).data?.isStreaming === true)
     await page.evaluate(() => window.pi.command({ type: 'bash', command: 'curl -sS --max-time 2 https://example.invalid' }))
-    await block.getByText('联网请求被拦截').waitFor()
-    await block.getByRole('button', { name: '允许此网站并重试' }).click()
+    await block.getByText('Pi 请求访问网站').waitFor()
+    check('任务运行中允许访问按钮可点击', await block.getByRole('button', { name: '允许访问', exact: true }).isEnabled())
+    if (process.env.PI_NETWORK_SCREENSHOT) await page.screenshot({ path: process.env.PI_NETWORK_SCREENSHOT })
+    await block.getByRole('button', { name: '允许访问', exact: true }).click()
     await block.waitFor({ state: 'hidden' })
-    const domainRules = readdirSync(join(dirs.userData, 'sandbox')).filter((name) => /^[a-f\d-]{36}\.json$/.test(name))
-    check('网站例外只写入当前对话的保护规则', domainRules.some((name) =>
-      JSON.parse(readFileSync(join(dirs.userData, 'sandbox', name), 'utf8')).network.allowedDomains.includes('example.invalid')) &&
+    check('授权后任务仍在运行', await page.locator('.composer .send-button.stop').isVisible())
+    await page.evaluate(() => window.pi.command({ type: 'bash', command: 'curl -sS --max-time 2 https://example.invalid' }))
+    const auditAfter = await page.evaluate(() => window.pi.sandboxAudit())
+    check('网站例外即时生效且不写入全局偏好', auditAfter.some(line => line.includes('network_allowed') && line.includes('example.invalid')) &&
       !JSON.parse(readFileSync(settingsPath, 'utf8')).sandboxAllowedDomains?.includes('example.invalid'))
     await page.locator('.composer .send-button.stop').waitFor({ state: 'hidden' })
     await composer.fill('')
@@ -3447,7 +3842,9 @@ async function caseProxyEnv() {
     networkProxy: proxyAddress, networkNoProxy: 'localhost,127.0.0.1'
   }))
   try {
-    const { app, page } = await launch(dirs, 'default', { MOCK_ENV_FILE: envFile, MOCK_SANDBOX_PROBE: '1' })
+    const rpcExecutable = join(project, 'rpc-executable.txt')
+    const rpcPid = join(project, 'rpc-pid.txt')
+    const { app, page } = await launch(dirs, 'default', { MOCK_ENV_FILE: envFile, MOCK_SANDBOX_PROBE: '1', MOCK_RPC_EXEC_PATH_FILE: rpcExecutable, MOCK_RPC_PID_FILE: rpcPid })
     try {
       const sandbox = await page.evaluate(() => window.pi.sandboxStatus())
       if (sandbox.available) {
@@ -3460,6 +3857,13 @@ async function caseProxyEnv() {
       await page.getByRole('button', { name: '完全访问', exact: true }).waitFor()
       const env = JSON.parse(readFileSync(envFile, 'utf8'))
       check('完全访问仍使用已设置的代理', env.proxy === proxyAddress && env.noProxy === 'localhost,127.0.0.1')
+      if (process.platform === 'darwin' && process.env.PI_E2E_APP) {
+        const actual = readFileSync(rpcExecutable, 'utf8')
+        check('完全访问的会话进程使用后台 Helper', /\/Frameworks\/Pi Desktop Helper\.app\/Contents\/MacOS\/Pi Desktop Helper$/.test(actual), actual)
+        const pid = Number(readFileSync(rpcPid, 'utf8'))
+        const policy = execFileSync('/usr/bin/swift', ['-e', `import AppKit; if let a = NSRunningApplication(processIdentifier: ${pid}) { print(a.activationPolicy.rawValue) } else { print("unregistered") }`], { encoding: 'utf8', timeout: 20000 }).trim()
+        check('会话进程未注册为普通 Dock 应用', policy !== '0', `macOS activation policy: ${policy}`)
+      }
     } finally { await app.close() }
   } finally { proxy.close() }
 }
@@ -3501,6 +3905,8 @@ async function caseWorkEditCommit() {
   mkdirSync(project, { recursive: true })
   const file = join(project, 'edit-me.txt')
   writeFileSync(file, 'before\n')
+  const doc = join(project, 'guide.md')
+  writeFileSync(doc, '# Guide\n\nOriginal text\n')
   execFileSync('git', ['init'], { cwd: project })
   execFileSync('git', ['config', 'user.email', 'e2e@example.com'], { cwd: project })
   execFileSync('git', ['config', 'user.name', 'E2E'], { cwd: project })
@@ -3510,13 +3916,28 @@ async function caseWorkEditCommit() {
     await page.keyboard.press('Meta+Shift+E')
     await page.waitForSelector('.work-panel')
     await page.locator('.work-tab-button', { hasText: '文件' }).click()
+    await page.locator('.tree-row', { hasText: 'guide.md' }).click()
+    await page.locator('.file-preview-document h1').waitFor()
+    check('Markdown 默认显示排版预览', await page.locator('.file-preview-document h1').innerText() === 'Guide')
+    await page.locator('.file-preview:visible [aria-label="编辑"]').click()
+    await page.locator('.file-preview-editor').fill('# Guide\n\nUpdated text\n')
+    await page.getByRole('button', { name: '查看修改', exact: true }).click()
+    check('编辑时可以对照修改', (await page.locator('.file-preview-diff .added').innerText()).includes('Updated text') && (await page.locator('.file-preview-diff .removed').innerText()).includes('Original text'))
+    await page.getByRole('button', { name: '预览', exact: true }).click()
+    check('编辑时可以预览修改', (await page.locator('.file-preview-document').innerText()).includes('Updated text'))
+    await page.locator('.file-preview:visible [aria-label="保存"]').click()
+    await page.waitForTimeout(200)
+    check('预览修改后可以保存', readFileSync(doc, 'utf8').includes('Updated text'))
+    await page.locator('.work-tab-button', { hasText: '文件' }).click()
     await page.locator('.tree-row', { hasText: 'edit-me.txt' }).click()
     await page.locator('.file-preview-editor').waitFor({ timeout: 5000 }).catch(() => undefined)
-    await page.locator('[aria-label="编辑"]').click()
+    await page.locator('.file-preview:visible [aria-label="编辑"]').click()
     await page.locator('.file-preview-editor').fill('after edit\nsecond line\n')
-    await page.locator('[aria-label="保存"]').click()
+    await page.locator('.file-preview:visible [aria-label="保存"]').click()
     await page.waitForTimeout(500)
     check('工作面板可以编辑并保存文件', readFileSync(file, 'utf8') === 'after edit\nsecond line\n', readFileSync(file, 'utf8'))
+    execFileSync('git', ['add', '--', 'guide.md'], { cwd: project })
+    execFileSync('git', ['commit', '-m', 'fixture'], { cwd: project })
     await page.locator('.work-tab-button', { hasText: '变更' }).click()
     await page.getByRole('button', { name: '工作区', exact: true }).click()
     await page.locator('.work-file').first().waitFor({ timeout: 5000 })
@@ -4038,10 +4459,58 @@ async function caseSlashMenu() {
     check('支持中文用途搜索并显示包来源', await active.getByText('@example/reports', { exact: true }).isVisible() &&
       await active.locator('.slash-match').innerText() === '运营数据')
     await input.press('Enter')
-    check('选择技能补全真实调用名', await input.inputValue() === '/skill:report-16 ')
+    check('选择技能后输入框显示技能标签', await page.locator('.composer-skill-chip').getByText('/report-16', { exact: true }).isVisible() && await input.inputValue() === '')
+    await input.fill('整理运营数据')
+    await input.press('Backspace')
+    check('删除任务中的文字不会移除所选技能', await input.inputValue() === '整理运营数' && await page.locator('.composer-skill-chip').getByText('/report-16', { exact: true }).isVisible())
+    await input.type('据')
+    const inlineLayout = () => page.evaluate(() => {
+      const chip = document.querySelector('.composer-skill-chip').getBoundingClientRect()
+      const input = document.querySelector('.composer-input').getBoundingClientRect()
+      const box = document.querySelector('.composer').getBoundingClientRect()
+      return { sameRow: Math.abs(chip.top - input.top) < 8, fits: chip.left >= box.left && input.right <= box.right && chip.right <= input.left + 1, background: getComputedStyle(document.querySelector('.composer-skill-chip')).backgroundColor }
+    })
+    const inlineWide = await inlineLayout()
+    check('技能命令与输入文字同行且没有背景框', inlineWide.sameRow && inlineWide.fits && inlineWide.background === 'rgba(0, 0, 0, 0)', JSON.stringify(inlineWide))
+    const originalSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize())
+    const originalMinimum = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getMinimumSize())
+    await app.evaluate(({ BrowserWindow }) => { const win = BrowserWindow.getAllWindows()[0]; win.setMinimumSize(600, 560); win.setSize(700, 720) })
+    await page.waitForFunction(() => window.innerWidth <= 700)
+    const inlineNarrow = await inlineLayout()
+    check('窄窗口中技能命令不遮挡输入', inlineNarrow.sameRow && inlineNarrow.fits, JSON.stringify(inlineNarrow))
+    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(...size), originalSize)
+    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setMinimumSize(...size), originalMinimum)
+    await page.waitForFunction(width => window.innerWidth >= width - 2, originalSize[0])
+    if (process.env.PI_SLASH_SELECTION_SCREENSHOT) await page.screenshot({ path: process.env.PI_SLASH_SELECTION_SCREENSHOT, animations: 'disabled' })
+    await page.getByRole('textbox', { name: /编辑命令显示名称/ }).fill('repor-16')
+    check('修改显示名称后标明实际调用', await page.locator('.composer-command-original').getByText('实际调用 /report-16', { exact: true }).isVisible())
+    if (process.env.PI_SLASH_EDITED_SCREENSHOT) await page.screenshot({ path: process.env.PI_SLASH_EDITED_SCREENSHOT, animations: 'disabled' })
+    await page.waitForFunction(() => Object.keys(localStorage).filter(key => key.startsWith('pi.composer.commandDisplay.')).some(key => {
+      try { const value = JSON.parse(localStorage.getItem(key)); return value?.name === 'skill:report-16' && value.label === 'repor-16' } catch { return false }
+    }))
+    check('编辑后的名称与实际调用标识一起保存在草稿中', true)
+    await page.reload()
+    try { await page.locator('.composer-skill-chip').getByText('/repor-16', { exact: true }).waitFor({ timeout: 10000 }) }
+    catch (error) {
+      console.log('draft restore diagnostic', await page.evaluate(() => ({ chip: document.querySelector('.composer-skill-chip')?.textContent, input: document.querySelector('.composer-input')?.value, drafts: Object.keys(localStorage).filter(key => key.startsWith('pi.composer.draft.') || key.startsWith('pi.composer.commandDisplay.')).map(key => [key, localStorage.getItem(key)]) })))
+      throw error
+    }
+    check('重新打开后恢复显示名称、实际技能和任务草稿', await page.locator('.composer-command-original').getByText('实际调用 /report-16', { exact: true }).isVisible() && await input.inputValue() === '整理运营数据')
+    await input.press('Enter')
+    await page.locator('.user-message').getByText('已选择技能 · report-16', { exact: true }).waitFor()
+    check('发送时保留技能命令并在对话里显示选择', await page.locator('.user-message').getByText('整理运营数据', { exact: true }).isVisible())
+    await page.locator('.composer .send-button.stop').waitFor({ state: 'hidden' })
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('pi:record', {
+      type: 'message_start', message: { role: 'user', timestamp: Date.now(), content: [{ type: 'text', text: '<skill name="report-16" location="/tmp/report-16/SKILL.md">\nfixture skill instructions\n</skill>\n\n真实任务' }] }
+    }))
+    await page.getByText('已加载技能 · report-16', { exact: true }).waitFor()
+    check('只有收到 Pi 展开的技能内容才显示已加载，隐藏内部指令', await page.getByText('真实任务', { exact: true }).isVisible() && await page.getByText('fixture skill instructions', { exact: true }).count() === 0)
     await open('/review-report')
     await input.press('Enter')
-    check('选择扩展命令先填入输入框', await input.inputValue() === '/review-report ')
+    check('扩展命令也显示选中标签', await page.locator('.composer-skill-chip').getByText('/review-report', { exact: true }).isVisible() && await input.inputValue() === '')
+    await input.fill('审核这份材料')
+    await page.getByRole('button', { name: '移除已选命令' }).click()
+    check('移除命令保留用户输入', await input.inputValue() === '审核这份材料')
 
     for (const removed of ['schedule', 'rename', 'usage', 'thinking']) {
       await open(`/${removed}`)
@@ -4054,7 +4523,7 @@ async function caseSlashMenu() {
     await connections.waitFor()
     await connections.getByText('加载中…').waitFor({ state: 'hidden' })
     check('连接器在原菜单内展示并保留输入焦点', await connections.isVisible() && await input.inputValue() === '/' && await input.evaluate((element) => document.activeElement === element))
-    check('连接器展示配置名称与真实已知状态', await connections.getByText('测试连接器').isVisible() && await connections.getByText('未测试').isVisible() && await connections.getByText('已停用').isVisible())
+    check('连接器展示配置名称与真实已知状态', await connections.getByText('测试连接器').isVisible() && await connections.getByText('已安装').first().isVisible() && await connections.getByText('已停用').isVisible())
     await page.screenshot({ path: join(dirs.base, 'slash-connectors.png'), animations: 'disabled' })
     await input.fill('/测试')
     check('连接器可在输入框中筛选', await connections.getByText('测试连接器').isVisible() && await connections.getByText('paused').count() === 0)
@@ -4587,13 +5056,141 @@ async function caseLanguage() {
   check('可切换回中文', await page.getByRole('heading', { name: '设置', exact: true }).count() === 1)
   await page.getByRole('button', { name: 'Steering 模式', exact: true }).click()
   await page.keyboard.press('Escape')
+  await page.waitForFunction(() => document.querySelectorAll('.popover').length === 0)
   check('Esc 只关闭下拉菜单并保留设置页', await page.locator('.popover').count() === 0 && await page.locator('.settings-page').count() === 1)
   await page.getByRole('button', { name: 'Steering 模式', exact: true }).click()
   await page.keyboard.press('End')
   await page.keyboard.press('Enter')
+  await page.waitForFunction(() => document.querySelectorAll('.popover').length === 0)
   check('设置下拉支持键盘选择并关闭', await page.locator('.popover').count() === 0)
   check('设置页没有原生下拉框', await page.locator('.settings-page select').count() === 0)
   } finally { await app.close().catch(() => undefined) }
+}
+
+async function caseProviderConnectionFlow() {
+  const dirs = freshDirs('provider-connection-flow')
+  const table = 'provider  model  context  max-out  thinking  images\nopencode-go  glm-5.3  1M  32K  yes  no\nopencode-go  deepseek-v4.1-flash  1M  384K  yes  yes'
+  const { app, page } = await launch(dirs, 'default', { MOCK_EXEC_PATH_FILE: join(dirs.base, 'runtime.txt'), MOCK_MODEL_TABLE: table })
+  try {
+    await page.keyboard.press('Meta+,')
+    await page.getByRole('button', { name: '模型', exact: true }).click()
+    await page.getByRole('button', { name: '添加服务商', exact: true }).click()
+    await page.getByRole('tab', { name: 'API Key' }).click()
+    await page.locator('.preset-chip').filter({ hasText: 'OpenCode Go' }).click()
+    await page.getByPlaceholder('输入新的 API Key').fill('test-fixture-key')
+    await page.locator('.provider-inline-key').getByRole('button', { name: '保存 API Key' }).click()
+    await page.locator('.model-service-item').filter({ hasText: 'opencode-go' }).waitFor()
+    await page.locator('.provider-model-list').getByText('glm-5.3', { exact: true }).waitFor()
+    check('连接套餐后直接展示 Pi 模型目录', await page.locator('.provider-model-list').getByText('deepseek-v4.1-flash', { exact: true }).isVisible())
+    check('连接后不暴露密钥且不要求逐个添加', !await page.getByText('test-fixture-key').count() && await page.locator('.model-service-content').getByRole('button', { name: '添加模型', exact: true }).count() === 0)
+    const stored = JSON.parse(readFileSync(join(dirs.agent, 'auth.json'), 'utf8'))
+    check('连接结果保存到正确服务商', stored['opencode-go']?.key === 'test-fixture-key')
+  } finally { await app.close() }
+}
+
+async function caseBackgroundModelProcess() {
+  const dirs = freshDirs('background-model-process')
+  const probe = join(dirs.base, 'runtime.txt')
+  const { app, page } = await launch(dirs, 'default', { MOCK_EXEC_PATH_FILE: probe })
+  try {
+    const list = await page.evaluate(() => window.pi.listPiModels())
+    const listRuntime = readFileSync(probe, 'utf8')
+    check('读取模型列表通过后台 Helper 运行', process.platform !== 'darwin' || /Helper\.app\/Contents\/MacOS\//.test(listRuntime), listRuntime)
+    check('后台模型列表返回真实运行结果', list.models.some((model) => model.provider === 'mock' && model.id === 'test'))
+    const refresh = await page.evaluate(() => window.pi.refreshModelCatalog())
+    const refreshRuntime = readFileSync(probe, 'utf8')
+    check('刷新模型目录通过后台 Helper 运行', refresh.ok && (process.platform !== 'darwin' || /Helper\.app\/Contents\/MacOS\//.test(refreshRuntime)), refreshRuntime)
+  } finally { await app.close() }
+}
+
+async function caseDesktopSelects() {
+  const dirs = freshDirs('desktop-selects')
+  writeFileSync(join(dirs.agent, 'auth.json'), JSON.stringify({ openai: { type: 'api_key', key: 'sk-test-private' }, 'opencode-go': { type: 'api_key', key: 'sk-test-private' } }))
+  writeFileSync(join(dirs.agent, 'models.json'), JSON.stringify({ providers: { 'fixture-provider': { name: 'Fixture Service', baseUrl: 'http://127.0.0.1:12345/v1', api: 'openai-completions', models: [{ id: 'fixture-model', contextWindow: 128000 }] } } }))
+  writeFileSync(join(dirs.userData, 'settings.json'), JSON.stringify({ theme: 'dark', language: 'zh-CN', workspaces: [root], lastWorkspace: root }))
+  const { app, page } = await launch(dirs, 'default', { MOCK_EXEC_PATH_FILE: join(dirs.base, 'runtime.txt'), MOCK_MODEL_TABLE: 'provider  model  context  max-out  thinking  images\nopencode-go  deepseek-v4.1-flash  1M  384K  yes  yes\nopencode-go  glm-5.3  1M  32K  yes  no' })
+  const checkAligned = async (button) => {
+    const trigger = await button.boundingBox()
+    const menu = await page.locator('.popover:not(.popover-closing)').last().boundingBox()
+    return Boolean(trigger && menu && Math.abs(trigger.width - menu.width) < 1 && Math.abs(trigger.x - menu.x) < 1)
+  }
+  try {
+    await page.keyboard.press('Meta+,')
+    await page.getByRole('button', { name: '模型', exact: true }).click()
+    check('模型设置说明服务商的用途', await page.getByText('管理模型服务商，配置后可在对话中选择使用。').isVisible())
+    const modelsWidth = (await page.locator('.settings-content-inner').boundingBox()).width
+    await page.getByRole('button', { name: '常规', exact: true }).click()
+    const generalWidth = (await page.locator('.settings-content-inner').boundingBox()).width
+    check('其他设置页与模型页等宽', Math.abs(modelsWidth - generalWidth) < 1, `model=${modelsWidth}, general=${generalWidth}`)
+    await page.getByRole('button', { name: '模型', exact: true }).click()
+    const sidebar = page.locator('.model-service-sidebar')
+    check('服务商列表位于配置区域左侧', await sidebar.isVisible() && await page.locator('.model-service-content').isVisible())
+    const customRow = sidebar.locator('.model-service-item').filter({ hasText: 'Fixture Service' })
+    await customRow.waitFor()
+    await customRow.click()
+    check('选择自定义服务商可查看已有模型', (await page.locator('.model-service-content').innerText()).includes('fixture-model'))
+    await page.locator('.model-service-content').getByRole('button', { name: '编辑', exact: true }).click()
+    check('编辑保留原有模型及服务地址', (await page.getByPlaceholder('http://localhost:11434/v1').inputValue()) === 'http://127.0.0.1:12345/v1' && (await page.getByPlaceholder('qwen2.5-coder:7b').inputValue()) === 'fixture-model')
+    await page.locator('.model-service-content').getByRole('button', { name: '取消', exact: true }).click()
+    await page.locator('.model-service-content').getByRole('button', { name: '添加模型', exact: true }).click()
+    await page.getByPlaceholder('例如：qwen3').fill('fixture-new')
+    await page.locator('.provider-model-add').getByRole('button', { name: '添加', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('.model-service-content')?.textContent?.includes('fixture-new'))
+    const stored = JSON.parse(readFileSync(join(dirs.agent, 'models.json'), 'utf8'))
+    check('自定义服务商可添加模型并保留原模型参数', stored.providers['fixture-provider'].models.some((m) => m.id === 'fixture-new') && stored.providers['fixture-provider'].models.find((m) => m.id === 'fixture-model')?.contextWindow === 128000)
+    const goRow = sidebar.locator('.model-service-item').filter({ hasText: 'opencode-go' })
+    await goRow.click()
+    check('OpenCode Go 直接展示 Pi 返回的模型，无需手动添加', (await page.locator('.provider-model-list').innerText()).includes('deepseek-v4.1-flash') && (await page.locator('.provider-model-list').innerText()).includes('glm-5.3') && await page.locator('.model-service-content').getByRole('button', { name: '添加模型', exact: true }).count() === 0)
+    await page.screenshot({ path: join(dirs.base, 'provider-models.png') })
+    await page.locator('.provider-model-row').filter({ hasText: 'glm-5.3' }).click()
+    await page.waitForFunction(() => document.querySelector('.provider-model-row[aria-pressed=true]')?.textContent?.includes('glm-5.3'))
+    const newDefaults = JSON.parse(readFileSync(join(dirs.agent, 'settings.json'), 'utf8'))
+    check('自动列出的模型可以设为新会话默认', newDefaults.defaultProvider === 'opencode-go' && newDefaults.defaultModel === 'glm-5.3')
+    const providerRow = sidebar.locator('.model-service-item').filter({ hasText: 'openai' })
+    await providerRow.waitFor()
+    check('已保存的服务商按凭据类型展示，密钥不会显示', (await providerRow.innerText()).includes('凭据已保存') && !await page.getByText('sk-test-private').count())
+    await providerRow.click()
+    check('服务商详情直接显示密钥输入框', await page.getByPlaceholder('输入新的 API Key').isVisible() && await page.getByRole('button', { name: '管理 API Key' }).count() === 0)
+    await page.getByRole('button', { name: '添加服务商', exact: true }).click()
+    check('添加入口显示横向接入分类', await page.getByRole('tab', { name: '账号授权' }).isVisible() && await page.getByRole('tab', { name: 'API Key' }).isVisible() && await page.getByRole('tab', { name: '本地模型' }).isVisible() && await page.getByRole('tab', { name: '自定义供应商' }).isVisible())
+    await page.getByRole('tab', { name: '账号授权' }).press('ArrowRight')
+    check('接入分类支持方向键切换', await page.getByRole('tab', { name: 'API Key' }).getAttribute('aria-selected') === 'true')
+    await page.locator('.preset-chip').filter({ hasText: 'DeepSeek' }).waitFor()
+    check('API Key 分类展示 Pi 支持的套餐', await page.locator('.preset-chip').filter({ hasText: 'OpenCode Go' }).isVisible() && await page.locator('.preset-chip').filter({ hasText: 'MiniMax CN' }).isVisible())
+    await page.getByPlaceholder('搜索服务商', { exact: true }).fill('no-such-provider-xyz')
+    check('服务商搜索无结果时显示说明', await page.getByText('没有匹配的服务商。').isVisible())
+    await page.getByPlaceholder('搜索服务商', { exact: true }).fill('')
+    check('常用服务商显示真实品牌标识', await page.locator('.preset-chip').filter({ hasText: 'DeepSeek' }).locator('img.provider-brand-logo').count() === 1)
+    await page.screenshot({ path: join(dirs.base, 'provider-presets.png') })
+    await page.locator('.preset-chip').filter({ hasText: 'DeepSeek' }).click()
+    check('选择服务商直接进入密钥配置', await page.getByPlaceholder('输入新的 API Key').isVisible() && await page.getByRole('dialog').count() === 0)
+    check('模型页移除重复默认模型选择', await page.getByRole('button', { name: '默认模型', exact: true }).count() === 0 && await page.getByRole('button', { name: '默认思考程度', exact: true }).count() === 0)
+    await page.getByRole('button', { name: '常规', exact: true }).click()
+    const thinking = page.getByRole('button', { name: '默认思考程度', exact: true })
+    await thinking.click()
+    check('常规页的思考程度菜单与按钮等宽对齐', await checkAligned(thinking))
+    await page.getByRole('menuitemradio', { name: '高', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('[aria-label="默认思考程度"]')?.textContent?.includes('高'))
+    const savedThinking = JSON.parse(readFileSync(join(dirs.agent, 'settings.json'), 'utf8'))
+    check('常规页思考程度保存到 Pi 设置', savedThinking.defaultThinkingLevel === 'high')
+    await page.getByRole('button', { name: '模型', exact: true }).click()
+    await page.getByRole('button', { name: '常规', exact: true }).click()
+    check('切换设置页后思考程度保持', (await thinking.innerText()).includes('高'))
+    await page.keyboard.press('Escape')
+    await page.locator('.skills-page-entry').click()
+    const source = page.getByRole('button', { name: '来源' })
+    await source.click()
+    check('技能来源使用应用选择菜单且等宽', await checkAligned(source) && await page.locator('.skills-page select').count() === 0)
+    await page.getByRole('menuitemradio', { name: '个人', exact: true }).click()
+    check('技能来源可以切换', (await source.innerText()).includes('个人'))
+    await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.setMinimumSize(600, 560); window.setSize(600, 620) })
+    await page.waitForFunction(() => innerWidth <= 600)
+    await source.click()
+    check('窄窗口选择菜单仍等宽且处于屏幕内', await checkAligned(source) && await page.locator('.popover:not(.popover-closing)').last().evaluate(el => {
+      const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight
+    }))
+    await page.keyboard.press('Escape')
+  } finally { await app.close() }
 }
 
 async function caseChromeBridgeGuide() {
@@ -5243,7 +5840,7 @@ async function caseBundledSeed() {
     await page.getByRole('button', { name: '连接模型', exact: true }).click()
     await page.locator('.connect-model').waitFor({ timeout: 5000 })
     check('连接面板留在当前页', await page.locator('.settings-page').count() === 0)
-    check('连接面板提供 API Key 与账号登录', await page.getByRole('tab', { name: 'API Key' }).count() === 1 && await page.getByRole('tab', { name: '用账号登录' }).count() === 1)
+    check('连接面板提供 API Key 与账号登录', await page.getByRole('tab', { name: '通过 API Key 连接' }).count() === 1 && await page.getByRole('tab', { name: '通过账号连接' }).count() === 1)
   } finally {
     await app.close()
     rmSync(tempSeedRoot, { recursive: true, force: true })
@@ -5284,6 +5881,8 @@ async function caseProviderOAuth() {
     }
     check('OAuth 服务商列表来自 pi ModelRuntime', providers.some((provider) => provider.id === 'openai' && provider.oauth))
     check('OAuth 列表只显示支持账号授权的服务商', providers.every((provider) => provider.oauth))
+    const runtimeProviders = await page.evaluate(() => window.pi.listRuntimeAuthProviders())
+    check('服务商分类来自 Pi 运行时，包括 API Key 服务', runtimeProviders.some((provider) => provider.id === 'opencode-go' && provider.apiKey) && runtimeProviders.some((provider) => provider.oauth))
     const invalid = await page.evaluate(() => window.pi.startOAuth('unknown-provider-xyz'))
     check('未知 OAuth 服务商不会启动', invalid.ok === false)
   } finally { await app.close() }
@@ -5311,7 +5910,7 @@ async function caseOAuthUnavailableUi() {
     const page = launched.page
     await page.getByRole('button', { name: '连接模型', exact: true }).click()
     await page.locator('.connect-model').waitFor()
-    await page.getByRole('tab', { name: '用账号登录' }).click()
+    await page.getByRole('tab', { name: '通过账号连接' }).click()
     await page.getByText('当前版本暂不支持账号登录，请用 API Key').waitFor({ timeout: 8000 })
     check('连接面板账号页无空下拉', await page.locator('.connect-model select').count() === 0)
     const message = await page.evaluate(async () => {
@@ -5355,8 +5954,7 @@ async function caseSessionBranching() {
     await page.waitForTimeout(800)
     const cloned = readdirSync(dirs.sessions, { recursive: true }).filter((name) => String(name).includes('clone'))
     check('侧栏菜单可以复制当前会话', cloned.length > 0, JSON.stringify(cloned))
-    await page.locator('.session-menu-button').first().click()
-    await page.getByText('从历史提示分支…', { exact: true }).click()
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('pi:fork-current-session')))
     await page.getByRole('heading', { name: '从历史提示分支' }).waitFor()
     check('分支弹窗列出历史提示', await page.getByText('first prompt', { exact: true }).isVisible())
     await page.locator('.fork-message-item').first().click()
@@ -5585,6 +6183,9 @@ const CASES = [
   { tags: ['chrome-bridge-guide'], label: 'Chrome bridge setup guide', run: caseChromeBridgeGuide },
   { tags: ['browser-router'], label: 'browser router status', run: caseBrowserRouter },
   { tags: ['chrome-bridge-upgrade'], label: 'Chrome bridge upgrade', run: caseChromeBridgeUpgrade },
+  { tags: ['desktop-selects'], label: 'desktop select controls', run: caseDesktopSelects },
+  { tags: ['background-model-process'], label: 'background model process', run: caseBackgroundModelProcess },
+  { tags: ['provider-connection-flow'], label: 'provider connection flow', run: caseProviderConnectionFlow },
   { tags: ['language', 'settings'], label: 'language / settings menu', run: caseLanguage },
   { tags: ['composer'], label: 'composer safety (IME, draft)', run: caseComposerSafety },
   { tags: ['command-registry'], label: 'command registry unavailable', run: caseCommandRegistryUnavailable },
@@ -5598,6 +6199,7 @@ const CASES = [
   { tags: ['chat-media'], label: 'chat: inline video, SVG images and diagrams', run: caseChatMedia },
   { tags: ['historical-page'], label: 'chat: inline preview for historical HTML artifacts', run: caseHistoricalPage },
   { tags: ['project-deliverables'], label: 'chat: project selection and turn deliverables', run: caseProjectDeliverables },
+  { tags: ['streaming-scroll'], label: 'streaming scroll', run: caseStreamingScroll },
   { tags: ['virtual', 'scroll'], label: 'virtualization', run: caseVirtualization },
   { tags: ['fold', 'turns'], label: 'turns / folding', run: caseTurnsFold },
   { tags: ['fold', 'steps', 'tools'], label: 'process steps (merged tool calls)', run: caseProcessSteps },
@@ -5617,6 +6219,7 @@ const CASES = [
   { tags: ['package-inspection'], label: 'package permission preview', run: casePackageInspection },
   { tags: ['update-download'], label: 'update download entry', run: caseUpdateDownload },
   { tags: ['jev-settings'], label: 'Jev settings + key storage', run: caseJevSettings },
+  { tags: ['creator-inline'], label: 'inline creator activation with real Pi', run: caseCreatorInline },
   { tags: ['creator'], label:'Pi creator mode and real package lifecycle', run:()=>caseCreator({freshDirs,launch,check}) },
   { tags: ['package-catalog'], label: 'npm plugin catalog', run: casePackageCatalog },
   { tags: ['navigation-gestures'], label: 'Mac trackpad navigation', run: () => caseNavigationGestures({ freshDirs, launch, check }) },
@@ -5643,14 +6246,20 @@ const CASES = [
   { tags: ['schedules', 'schedules-failures'], label: 'consecutive failures pause', run: caseScheduleFailures },
   { tags: ['schedules', 'schedules-event'], label: 'file-change trigger', run: caseScheduleEvent },
   { tags: ['sidebar', 'scratch'], label: 'new chat without project', run: caseScratchChat },
+  { tags: ['scratch-isolation'], label: 'independent temporary workspaces', run: caseScratchIsolation },
+  { tags: ['sandbox-real-browser'], label: 'real Pi in-app browser under sandbox', run: caseSandboxRealBrowser },
   { tags: ['scratch-startup'], label: 'new chat startup surface', run: caseScratchStartup },
   { tags: ['scratch-trust'], label: 'new chat restoration and project trust', run: caseScratchRestoreTrust },
   { tags: ['schedules', 'schedules-slash'], label: '/schedule composer command', run: caseScheduleSlash },
   { tags: ['schedules', 'schedules-bridge'], label: 'chat scheduling bridge CLI', run: caseScheduleBridge },
   { tags: ['schedules', 'schedules-notice'], label: 'one-time completion notice', run: caseScheduleNotice },
+  { tags: ['session-pins'], label: 'sidebar: pinned conversations', run: caseSessionPins },
+  { tags: ['session-archive'], label: 'sidebar: archived conversations', run: caseSessionArchive },
   { tags: ['sidebar', 'sidebar-layout'], label: 'sidebar: projects + recent', run: caseSidebarLayout },
   { tags: ['sidebar', 'background-session-status'], label: 'sidebar: background session status', run: caseBackgroundSessionStatus },
   { tags: ['sidebar', 'project-removal'], label: 'remove project from sidebar', run: caseProjectRemoval },
+  { tags: ['project-removal'], label: 'prevent removing running projects', run: caseProjectRemovalBusy },
+  { tags: ['project-removal'], label: 'project removal rollback', run: caseProjectRemovalRollback },
   { tags: ['fold', 'autofold'], label: 'auto fold on answer', run: caseAutoFoldOnAnswer },
   { tags: ['menu', 'wheel', 'scroll'], label: 'wheel isolation', run: caseWheelIsolation },
   { tags: ['menu', 'typing'], label: 'menu typing', run: caseMenuTyping },

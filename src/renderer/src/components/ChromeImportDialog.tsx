@@ -4,6 +4,7 @@ import type { ChromeDomain, ChromeImportResult, ChromeProfile } from '@shared/ty
 import { useTranslation } from '../i18n'
 import { useApp } from '../store'
 import { Modal } from './ui'
+import { DesktopSelect } from './DesktopSelect'
 
 export function ChromeImportDialog({
   open,
@@ -145,18 +146,10 @@ export function ChromeImportDialog({
       {profiles.length > 1 && (
         <label className="chrome-import-field">
           <span>{t('Chrome 配置文件')}</span>
-          <select
-            className="chrome-profile-select"
-            value={profileId}
-            onChange={(event) => setProfileId(event.target.value)}
-            disabled={importing}
-          >
-            {profiles.map((profile) => (
-              <option key={profile.id} value={profile.id}>
-                {profile.name}{profile.account ? ` · ${profile.account}` : ''}
-              </option>
-            ))}
-          </select>
+          <DesktopSelect className="chrome-profile-select" label={t('Chrome 配置文件')} value={profileId}
+            onChange={setProfileId} disabled={importing} options={profiles.map((profile) => ({
+              value: profile.id, label: `${profile.name}${profile.account ? ` · ${profile.account}` : ''}`
+            }))} />
         </label>
       )}
 

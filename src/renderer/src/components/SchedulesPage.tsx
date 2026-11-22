@@ -13,6 +13,7 @@ import type {
 import { useApp, type ScheduleDraft } from '../store'
 import { baseName, formatDuration } from '../lib/format'
 import { Modal } from './ui'
+import { DesktopSelect } from './DesktopSelect'
 import { useNavigationHistory } from '../lib/use-navigation-history'
 
 const DEFAULT_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
@@ -275,10 +276,9 @@ function ScheduleEditor({ task, draft, onClose, onSaved }: {
           <div className="schedule-advanced">
             <label className="schedule-adv-row">
               <span>{t('运行方式')}</span>
-              <select value={runMode} disabled={saving} onChange={(event) => setRunMode(event.target.value === 'continue-session' ? 'continue-session' : 'new-session')}>
-                <option value="new-session">{t('每次新会话')}</option>
-                <option value="continue-session">{t('继续同一会话')}</option>
-              </select>
+              <DesktopSelect label={t('运行方式')} value={runMode} disabled={saving}
+                onChange={(value) => setRunMode(value === 'continue-session' ? 'continue-session' : 'new-session')}
+                options={[{ value: 'new-session', label: t('每次新会话') }, { value: 'continue-session', label: t('继续同一会话') }]} />
             </label>
             <div className="schedule-adv-row">
               <span>{t('完成通知')}</span>

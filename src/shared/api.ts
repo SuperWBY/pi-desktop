@@ -55,6 +55,7 @@ export interface PiDesktopApi {
   validateApiKey(provider: string, key: string): Promise<{ ok: true } | { ok: false; error: string }>
   removeAuthProvider(provider: string): Promise<import('./types').AuthProviderStatus[]>
   listOAuthProviders(): Promise<{ id: string; name: string; oauth: boolean; apiKey: boolean }[]>
+  listRuntimeAuthProviders(): Promise<{ id: string; name: string; oauth: boolean; apiKey: boolean }[]>
   startOAuth(provider: string): Promise<{ ok: boolean; error?: string }>
   respondOAuth(id: string, value: string, cancelled?: boolean): void
   cancelOAuth(): void
@@ -75,6 +76,7 @@ export interface PiDesktopApi {
   updatePiSettings(patch: PiSettings): Promise<PiSettings>
   pickFolder(): Promise<string | null>
   addProject(input: { cwd: string; name: string; trust?: boolean }): Promise<AddProjectResult>
+  removeProject(cwd: string): Promise<{ removedSessions: number }>
   pickFile(options?: { title?: string; defaultPath?: string }): Promise<string | null>
   getPathForFile(file: File): string
   listSessions(): Promise<SessionSummary[]>
@@ -145,6 +147,12 @@ export interface PiDesktopApi {
     maxBytes?: number
   ): Promise<{ ok: boolean; content?: string; truncated?: boolean; size?: number; error?: string }>
   previewMedia(context: { path: string; workspace: string; sessionPath: string | null }): Promise<{ url: string; path: string } | null>
+  saveMediaFile(url: string): Promise<boolean>
+  copyMediaFile(url: string): Promise<void>
+  saveMediaBytes(name: string, bytes: Uint8Array): Promise<boolean>
+  copyMediaImage(bytes: Uint8Array): Promise<void>
+  copyMediaImageFile(url: string): Promise<void>
+  remoteMedia(url: string, name: string, kind: 'image' | 'video' | 'file', action: 'save' | 'copy'): Promise<boolean>
   platform: string
   onScrollPhase(callback: (phase: 'begin' | 'end' | 'cancel') => void): () => void
   gitStatus(cwd: string): Promise<GitStatus>
@@ -153,6 +161,13 @@ export interface PiDesktopApi {
   gitCommit(cwd: string, message: string, paths: string[]): Promise<{ ok: boolean; output: string; error?: string }>
   listSkills(cwd: string): Promise<SkillEntry[]>
   countSkills(cwd: string): Promise<number>
+  /** PTY terminal: create returns { id } or { error } (caller falls back to the runner). */
+  createTerminal(workspace: string): Promise<{ id: string; buffer?: string } | { error: string }>
+  writeTerminal(id: string, data: string): Promise<void>
+  resizeTerminal(id: string, cols: number, rows: number): Promise<void>
+  killTerminal(id: string): Promise<void>
+  onTerminalData(callback: (payload: { id: string; data: string }) => void): () => void
+  onTerminalExit(callback: (payload: { id: string; exitCode: number }) => void): () => void
   listConnectors(cwd: string): Promise<ConnectorEntry[]>
   listMcpConnectors(): Promise<McpConnector[]>
   saveMcpConnector(input: McpConnectorInput): Promise<McpConnector>

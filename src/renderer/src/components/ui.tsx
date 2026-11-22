@@ -104,7 +104,7 @@ export function Popover({
   const place = (): void => {
     const node = rootRef.current
     if (!node) return
-    const rect = node.getBoundingClientRect()
+    const rect = (matchTriggerWidth ? node.querySelector('button') ?? node : node).getBoundingClientRect()
     const gap = requestedGap
     const edge = 8
     const menuWidth = matchTriggerWidth ? rect.width : width
@@ -120,10 +120,11 @@ export function Popover({
     const below = Math.max(0, window.innerHeight - anchorBottom - gap - edge)
     const openUp = Boolean(composer) || (below < 220 && above >= below)
     const maxHeight = Math.min(460, openUp ? above : below)
+    const modalLayer = node.closest('.modal') ? { zIndex: 210 } : {}
     if (openUp) {
-      setStyle({ bottom: window.innerHeight - anchorTop + gap, left, width: menuWidth, maxHeight, ...(matchTriggerWidth ? { transformOrigin: 'bottom center' } : {}) })
+      setStyle({ bottom: window.innerHeight - anchorTop + gap, left, width: menuWidth, maxHeight, ...modalLayer, ...(matchTriggerWidth ? { transformOrigin: 'bottom center' } : {}) })
     } else {
-      setStyle({ top: anchorBottom + gap, left, width: menuWidth, maxHeight, ...(matchTriggerWidth ? { transformOrigin: 'top center' } : {}) })
+      setStyle({ top: anchorBottom + gap, left, width: menuWidth, maxHeight, ...modalLayer, ...(matchTriggerWidth ? { transformOrigin: 'top center' } : {}) })
     }
   }
 
@@ -142,7 +143,8 @@ export function Popover({
       }
     }
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && !event.defaultPrevented) {
+        event.preventDefault()
         event.stopPropagation()
         close()
       }
@@ -173,14 +175,15 @@ export function Popover({
       if (column) observer.observe(column)
     }
     document.addEventListener('mousedown', onPointer)
-    document.addEventListener('keydown', onKey)
+    const captureKeys = Boolean(rootRef.current?.closest('.modal'))
+    document.addEventListener('keydown', onKey, captureKeys)
     window.addEventListener('resize', schedulePlacement)
     window.addEventListener('scroll', onScroll, true)
     return () => {
       if (frame) cancelAnimationFrame(frame)
       observer?.disconnect()
       document.removeEventListener('mousedown', onPointer)
-      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('keydown', onKey, captureKeys)
       window.removeEventListener('resize', schedulePlacement)
       window.removeEventListener('scroll', onScroll, true)
     }

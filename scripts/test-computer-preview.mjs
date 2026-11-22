@@ -53,8 +53,20 @@ try {
   const cdpSession = randomUUID(), chromeSession = randomUUID()
   const jpeg = await app.evaluate(({nativeImage}) => 'data:image/jpeg;base64,' + nativeImage.createFromBitmap(Buffer.alloc(16, 255), {width:2, height:2}).toJPEG(55).toString('base64'))
   await send({type:'agent_start'})
+  const dimensions = () => page.evaluate(() => ({
+    transcript: document.querySelector('.chat-inner')?.getBoundingClientRect().width,
+    scroll: document.querySelector('.chat-scroll')?.getBoundingClientRect().width,
+    composer: document.querySelector('.composer-input')?.getBoundingClientRect().width
+  }))
+  await page.waitForTimeout(400) // Let the work-panel close transition finish before measuring.
+  const beforePreview = await dimensions()
+  await send({type:'tool_execution_start',toolCallId:'apps-only',toolName:'computer_use_apps'})
+  await send({type:'tool_execution_end',toolCallId:'apps-only',toolName:'computer_use_apps',result:{details:{result:{apps:[]}},content:[{type:'text',text:'No apps'}]}})
+  await page.waitForTimeout(120)
+  assert.equal(await page.locator('.cu-preview').count(), 0, 'listing applications must not create an unavailable preview')
   await send({type:'tool_execution_start',toolCallId:'external-open',toolName:'computer_use_session_open',args:{backend:'cdp'}})
   await page.getByText('正在准备画面…').waitFor()
+  assert.deepEqual(await dimensions(), beforePreview, 'opening the preview must not resize the chat or composer')
   await send({type:'tool_execution_end',toolCallId:'external-open',toolName:'computer_use_session_open',result:{details:{backend:'cdp',id:'external'}}})
   const cdpGeneration = await post('/external-preview',{sessionId:cdpSession,backend:'cdp',image:null})
   await send({type:'tool_execution_start',toolCallId:'external-observe',toolName:'computer_use_session_observe'})
@@ -174,11 +186,16 @@ try {
     win.setMinimumSize(510,500)
     win.setSize(510,680)
   })
-  await page.waitForFunction(() => {
-    const card = document.querySelector('.cu-preview')?.getBoundingClientRect()
-    const transcript = document.querySelector('.conversation-region > .chat-scroll, .conversation-region > .chat-wrap')?.getBoundingClientRect()
-    return card && transcript && card.bottom <= transcript.top + 1
-  },undefined,{timeout:5000})
+  await card.waitFor()
+  await page.waitForFunction(() => innerWidth <= 510)
+  await page.waitForTimeout(400) // Wait for responsive layout and resize transitions.
+  const narrowExpanded = await dimensions()
+  await card.locator('.cu-summary').click()
+  await card.locator('.cu-summary[aria-expanded="false"]').waitFor()
+  assert.deepEqual(await dimensions(), narrowExpanded, 'narrow preview collapse must not resize the chat or composer')
+  await card.locator('.cu-summary').click()
+  await card.locator('.cu-summary[aria-expanded="true"]').waitFor()
+  assert.deepEqual(await dimensions(), narrowExpanded, 'narrow preview expansion must overlay without resizing content')
   await post('/navigate',{url:url+'/another'})
   await card.locator('.cu-picture:not([hidden]) img').waitFor({state:'hidden'})
   await card.getByText('画面暂时不可用').waitFor()
@@ -188,7 +205,7 @@ try {
   await send({type:'tool_execution_start',toolCallId:'desktop-observe',toolName:'computer_use_observe'})
   await card.getByText('正在准备画面…').waitFor()
   await send({type:'tool_execution_end',toolCallId:'desktop-observe',toolName:'computer_use_observe',result:{details:{captureMode:'unavailable',app:'Fixture'}}})
-  await card.getByText('画面暂时不可用').waitFor()
+  await card.getByText('本次观察未返回画面，请重新观察目标窗口。').waitFor()
   await send({type:'tool_execution_start',toolCallId:'desktop-image',toolName:'computer_use_observe'})
   await send({type:'tool_execution_end',toolCallId:'desktop-image',toolName:'computer_use_observe',result:{details:{captureMode:'window',snapshotId:'desktop-fixture',app:'Fixture'},content:[{type:'image',mimeType:'image/png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY1sAAAAASUVORK5CYII='}]}})
   await card.locator('img[alt="Fixture"]').waitFor()

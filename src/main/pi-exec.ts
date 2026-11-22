@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { augmentedPath, locatePi } from './pi-locate'
 import { seedPiPath, seedRoot } from './pi-runtime'
@@ -19,16 +19,29 @@ export type PiExecResult = { stdout: string; stderr: string }
  * exists (Windows without cli.js) — callers must fail closed with an
  * actionable message instead of falling back to a shell.
  */
+/** Run non-interactive Electron-as-Node tasks using the accessory helper on macOS. */
+export function backgroundNodeExecutable(): string {
+  if (process.platform !== 'darwin') return process.execPath
+  const name = basename(process.execPath)
+  const helper = join(dirname(dirname(process.execPath)), 'Frameworks', `${name} Helper.app`, 'Contents', 'MacOS', `${name} Helper`)
+  return existsSync(helper) ? helper : process.execPath
+}
+
 export function directPiSpawn(
   piPath: string,
-  args: string[]
+  args: string[],
+  _options: { background?: boolean } = {}
 ): { executable: string; args: string[]; env: Record<string, string> } | null {
   const cli = resolvePiCliJs(piPath)
   if (cli) {
-    return { executable: process.execPath, args: [cli, ...args], env: { ELECTRON_RUN_AS_NODE: '1' } }
+    // A macOS app executable can register each short-lived Node process as a
+    // regular application. Its Electron Helper is an accessory process and
+    // runs the same embedded Node runtime without a separate Dock presence.
+    const executable = backgroundNodeExecutable()
+    return { executable, args: [cli, ...args], env: { ELECTRON_RUN_AS_NODE: '1' } }
   }
   if (process.platform === 'win32') return null
-  return { executable: piPath, args, env: {} }
+  return { executable: piPath, args, env: { PI_DESKTOP_ELECTRON: backgroundNodeExecutable() } }
 }
 
 /** Resolve the bundled/managed CLI entry that seed launchers invoke via ELECTRON_RUN_AS_NODE. */
@@ -115,14 +128,14 @@ export async function execPi(
   const baseEnv = {
     ...process.env,
     PATH: augmentedPath(),
-    PI_DESKTOP_ELECTRON: process.env.PI_DESKTOP_ELECTRON || process.execPath
+    PI_DESKTOP_ELECTRON: backgroundNodeExecutable()
   }
 
   const errors: string[] = []
   const cli = resolvePiCliJs(piPath)
   if (cli) {
     try {
-      return await run(process.execPath, [cli, ...args], {
+      return await run(backgroundNodeExecutable(), [cli, ...args], {
         cwd,
         timeout,
         maxBuffer,

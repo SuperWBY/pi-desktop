@@ -1,7 +1,8 @@
 import { useTranslation } from '../i18n'
 import { useNavigationHistory } from '../lib/use-navigation-history'
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
+  Archive,
   ArrowLeft,
   ArrowUpRight,
   BarChart3,
@@ -30,6 +31,7 @@ import type {
   CustomProviderEntry,
   ModelsConfig,
   PiModelRow,
+  SessionSummary,
   PiSettings,
   ThinkingLevel,
   BrowserRouterStatus,
@@ -38,6 +40,7 @@ import type {
   UsageRange,
   UsageSummary
 } from '@shared/types'
+import type { AuthProviderStatus } from '@shared/types'
 import { useApp } from '../store'
 import { formatCost, formatTokens, shortenPath } from '../lib/format'
 import { isMac, shortcutParts } from '../lib/platform'
@@ -48,6 +51,31 @@ import { ChromeBridgeDialog } from './ChromeBridgeDialog'
 import { DesktopPermissionSettings } from './DesktopPermissionSettings'
 import { ProviderAuthDialog } from './ProviderAuthDialog'
 import { ProviderOAuthDialog } from './ProviderOAuthDialog'
+import bedrockLogo from '../assets/providers/bedrock.svg?raw'
+import azureLogo from '../assets/providers/azure.svg?raw'
+import basetenLogo from '../assets/providers/baseten.svg?raw'
+import cerebrasLogo from '../assets/providers/cerebras.svg?raw'
+import cloudflareLogo from '../assets/providers/cloudflare.svg?raw'
+import fireworksLogo from '../assets/providers/fireworks.svg?raw'
+import volcengineLogo from '../assets/providers/volcengine.svg?raw'
+import zaiLogo from '../assets/providers/zai.svg?raw'
+import qwenLogo from '../assets/providers/qwen.svg?raw'
+import deepseekLogo from '../assets/providers/deepseek.svg?raw'
+import kimiLogo from '../assets/providers/kimi.svg?raw'
+import minimaxLogo from '../assets/providers/minimax.svg?raw'
+import alibabacloudLogo from '../assets/providers/alibabacloud.svg?raw'
+import zhipuLogo from '../assets/providers/zhipu.svg?raw'
+import openaiLogo from '../assets/providers/openai.svg?raw'
+import anthropicLogo from '../assets/providers/anthropic.svg?raw'
+import geminiLogo from '../assets/providers/gemini.svg?raw'
+import ollamaLogo from '../assets/providers/ollama.svg?raw'
+import openrouterLogo from '../assets/providers/openrouter.svg?raw'
+import lmstudioLogo from '../assets/providers/lmstudio.svg?raw'
+import opencodeLogo from '../assets/providers/opencode.svg?raw'
+import githubLogo from '../assets/providers/github.svg?raw'
+import groqLogo from '../assets/providers/groq.svg?raw'
+import xaiLogo from '../assets/providers/xai.svg?raw'
+import mistralLogo from '../assets/providers/mistral.svg?raw'
 
 const SHORTCUTS: { keys: string; label: string }[] = [
   { keys: '⌘N', label: '新建会话' },
@@ -97,7 +125,23 @@ interface ProviderPreset {
   apiKey: string
 }
 
+const PROVIDER_LOGOS: Record<string, string> = { bedrock: bedrockLogo, azure: azureLogo, baseten: basetenLogo, cerebras: cerebrasLogo, cloudflare: cloudflareLogo, fireworks: fireworksLogo, volcengine: volcengineLogo, zai: zaiLogo, claude: anthropicLogo, gemini: geminiLogo, glm: zhipuLogo, qwen: qwenLogo, gpt: openaiLogo, opencode: opencodeLogo, github: githubLogo, groq: groqLogo, xai: xaiLogo, mistral: mistralLogo, deepseek: deepseekLogo, kimi: kimiLogo, moonshot: kimiLogo, minimax: minimaxLogo, alibaba: alibabacloudLogo, dashscope: alibabacloudLogo, bigmodel: zhipuLogo, zhipu: zhipuLogo, openai: openaiLogo, anthropic: anthropicLogo, google: geminiLogo, ollama: ollamaLogo, openrouter: openrouterLogo, lmstudio: lmstudioLogo }
+function ProviderLogo({ name }: { name: string }): ReactNode {
+  const key = name.toLowerCase()
+  const match = Object.keys(PROVIDER_LOGOS).find((item) => key.includes(item))
+  if (!match) return <span className="provider-brand-fallback" aria-hidden="true"><Globe size={17} /></span>
+  const svg = PROVIDER_LOGOS[match].replaceAll('currentColor', '#8ca6ef')
+  return <img className="provider-brand-logo" alt="" src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`} />
+}
+
 const PRESETS: ProviderPreset[] = [
+  // Endpoints below follow the providers' official OpenAI-compatible documentation.
+  { key: 'deepseek', label: 'DeepSeek API', provider: 'deepseek-custom', api: 'openai-completions', baseUrl: 'https://api.deepseek.com', apiKey: '' },
+  { key: 'bigmodel', label: '智谱 BigModel API', provider: 'bigmodel-custom', api: 'openai-completions', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: '' },
+  { key: 'alibaba-api', label: '阿里云百炼（北京）', provider: 'dashscope-beijing', api: 'openai-completions', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey: '' },
+  { key: 'alibaba-coding', label: '阿里云百炼 Coding Plan', provider: 'dashscope-coding', api: 'openai-completions', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1', apiKey: '' },
+  { key: 'minimax', label: 'MiniMax API（中国）', provider: 'minimax-custom', api: 'openai-completions', baseUrl: 'https://api.minimax.cn/v1', apiKey: '' },
+  { key: 'kimi', label: 'Kimi API（中国）', provider: 'kimi-cn', api: 'openai-completions', baseUrl: 'https://api.moonshot.cn/v1', apiKey: '' },
   { key: 'custom', label: '自定义', provider: '', api: 'openai-completions', baseUrl: '', apiKey: '' },
   {
     key: 'ollama',
@@ -225,7 +269,7 @@ function draftToEntry(draft: ProviderDraft, existing?: CustomProviderEntry): Cus
   return entry
 }
 
-type CategoryId = 'general' | 'models' | 'tools' | 'network' | 'appearance' | 'sessions' | 'computer-use' | 'browser' | 'usage' | 'shortcuts' | 'about'
+type CategoryId = 'archived' | 'general' | 'models' | 'tools' | 'network' | 'appearance' | 'sessions' | 'computer-use' | 'browser' | 'usage' | 'shortcuts' | 'about'
 
 const NAV: {
   group: string
@@ -238,7 +282,7 @@ const NAV: {
         id: 'general',
         label: '常规',
         icon: SlidersHorizontal,
-        keywords: ['pi', '路径', '可执行文件', '版本', '重启', 'steering', 'follow', '压缩', '重试', '自动', '运行时', '语言', 'language']
+        keywords: ['pi', '路径', '可执行文件', '版本', '重启', 'steering', 'follow', '压缩', '重试', '自动', '运行时', '语言', 'language', '默认思考程度', 'thinking']
       },
       {
         id: 'models',
@@ -276,6 +320,7 @@ const NAV: {
         icon: Palette,
         keywords: ['主题', '深色', '浅色', '跟随系统', '外观', 'theme', 'system']
       },
+      { id: 'archived', label: '已归档', icon: Archive, keywords: ['归档', '历史对话', '恢复', 'archived'] },
       {
         id: 'sessions',
         label: '会话',
@@ -386,10 +431,12 @@ function Select({
   return (
     <Popover
       align="right"
-      width={menuWidth}
+      matchTriggerWidth
+      gap={2}
+      animateExit
       className="settings-select"
       trigger={(_open, toggle, expanded) => (
-        <button type="button" className="settings-select-button" aria-label={label} title={selected?.label} onClick={toggle} {...expanded}>
+        <button type="button" className="settings-select-button" style={{ width: menuWidth, maxWidth: 'min(320px, 55vw)' }} aria-label={label} title={selected?.label} onClick={toggle} {...expanded}>
           <span>{selected?.label ?? value}</span>
           <ChevronDown size={13} />
         </button>
@@ -474,13 +521,29 @@ export function SettingsPage(): ReactNode {
   const { state, actions } = useApp()
   const open = state.settingsOpen
   const [query, setQuery] = useState('')
+  const [archiveQuery, setArchiveQuery] = useState('')
+  const [archiveBusy, setArchiveBusy] = useState(false)
+  const [archiveDelete, setArchiveDelete] = useState<SessionSummary | null>(null)
   const [active, setActive] = useState<CategoryId>('general')
   const [piModels, setPiModels] = useState<PiModelRow[] | null>(null)
-  const [modelSearch, setModelSearch] = useState('')
+  const [savedProviders, setSavedProviders] = useState<AuthProviderStatus[] | null>(null)
+  const [providersError, setProvidersError] = useState(false)
+  const [inlineApiKey, setInlineApiKey] = useState('')
+  const [inlineKeyBusy, setInlineKeyBusy] = useState(false)
+  const [inlineKeyError, setInlineKeyError] = useState<string | null>(null)
   const [modelsBusy, setModelsBusy] = useState(false)
-  const [modelsMessage, setModelsMessage] = useState<string | null>(null)
+  const [modelListError, setModelListError] = useState<string | null>(null)
+  const [connectTab, setConnectTab] = useState<'account' | 'api' | 'local' | 'custom'>('account')
+  const [providerSearch, setProviderSearch] = useState('')
+  const [runtimeChoices, setRuntimeChoices] = useState<{ id: string; name: string; oauth: boolean; apiKey: boolean }[] | null>(null)
+  const [oauthChoicesError, setOauthChoicesError] = useState(false)
+  const [initialOAuthProvider, setInitialOAuthProvider] = useState<string | undefined>()
+  const [addingModel, setAddingModel] = useState(false)
+  const [manualModelId, setManualModelId] = useState('')
+  const [manualModelBusy, setManualModelBusy] = useState(false)
   const [customConfig, setCustomConfig] = useState<ModelsConfig | null>(null)
   const [showAdd, setShowAdd] = useState(false)
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
   const [choosingProvider, setChoosingProvider] = useState(true)
   const [editingProvider, setEditingProvider] = useState<string | null>(null)
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT)
@@ -632,8 +695,8 @@ export function SettingsPage(): ReactNode {
           window.pi.listPiModels()
         ])
         setCustomConfig(config)
-        setPiModels(list.models)
-        setModelsMessage(list.error ?? config.error ?? null)
+        setPiModels(list.error ? null : list.models)
+        setModelListError(list.error ?? null)
       } finally {
         setModelsBusy(false)
       }
@@ -641,10 +704,25 @@ export function SettingsPage(): ReactNode {
     []
   )
 
+  const loadSavedProviders = useCallback(async (): Promise<void> => {
+    try { setSavedProviders(await window.pi.listAuthProviders()); setProvidersError(false) }
+    catch { setSavedProviders(null); setProvidersError(true) }
+  }, [])
+
   useEffect(() => {
     if (!open || active !== 'models') return
     void loadModels()
-  }, [open, active, loadModels])
+    void loadSavedProviders()
+  }, [open, active, loadModels, loadSavedProviders])
+
+  useEffect(() => {
+    if (!open || active !== 'models' || !showAdd || (connectTab !== 'account' && connectTab !== 'api')) return
+    let live = true
+    setRuntimeChoices(null)
+    setOauthChoicesError(false)
+    void window.pi.listRuntimeAuthProviders().then((items) => { if (live) setRuntimeChoices(items) }).catch(() => { if (live) setOauthChoicesError(true) })
+    return () => { live = false }
+  }, [open, active, showAdd, connectTab])
 
   const modelGroups = useMemo(() => {
     const groups = new Map<string, { id: string; name: string }[]>()
@@ -655,8 +733,9 @@ export function SettingsPage(): ReactNode {
     }
     // No live session (or it has not answered yet): fall back to pi's own
     // `--list-models` output so the default model can still be chosen.
-    if (groups.size === 0) {
-      for (const row of piModels ?? []) {
+    if (piModels !== null) {
+      groups.clear()
+      for (const row of piModels) {
         const list = groups.get(row.provider) ?? []
         if (!list.some((model) => model.id === row.id)) list.push({ id: row.id, name: row.id })
         groups.set(row.provider, list)
@@ -667,6 +746,8 @@ export function SettingsPage(): ReactNode {
 
   useNavigationHistory({ value: active, key: active, enabled: open,
     busy: showAdd || Boolean(editingProvider), restore: (next) => { setActive(next); setQuery('') }, animate: '.settings-content-inner' })
+  useEffect(() => { setInlineApiKey(''); setInlineKeyError(null) }, [selectedProvider, open])
+
   if (!open) return null
 
   const close = (): void => actions.openSettings(false)
@@ -707,21 +788,6 @@ export function SettingsPage(): ReactNode {
       ? `${piSettings.defaultProvider}\u0000${piSettings.defaultModel}`
       : ''
 
-  const refreshCatalog = async (): Promise<void> => {
-    setModelsBusy(true)
-    try {
-      const result = await window.pi.refreshModelCatalog()
-      actions.notify(
-        result.ok ? 'success' : 'error',
-        result.ok ? t('模型目录已更新') : t('模型目录更新失败'),
-        result.output.slice(0, 240) || undefined
-      )
-      await loadModels()
-    } finally {
-      setModelsBusy(false)
-    }
-  }
-
   const saveProviderDraft = async (): Promise<void> => {
     if (!draft.id.trim()) {
       actions.notify('error', t('缺少服务商 ID'), t('例如 ollama、my-gateway。'))
@@ -739,6 +805,7 @@ export function SettingsPage(): ReactNode {
     try {
       const next = await window.pi.saveProvider(draft.id, draftToEntry(draft, editingProvider ? customConfig?.providers[editingProvider] : undefined))
       setCustomConfig(next)
+      setSelectedProvider(draft.id.trim())
       setShowAdd(false)
       setDraft(EMPTY_DRAFT)
       setEditingProvider(null)
@@ -750,6 +817,36 @@ export function SettingsPage(): ReactNode {
     } finally {
       setSaving(false)
     }
+  }
+
+  const credentialsSaved = (provider: string): void => {
+    setSelectedProvider(`auth:${provider}`)
+    setShowAdd(false)
+    void (async () => {
+      await loadSavedProviders()
+      if (!state.streaming) await actions.restartSession()
+      else actions.notify('info', t('凭据已保存'), t('当前任务结束后，重启会话以加载修改。'))
+      await loadModels()
+    })().catch((error: unknown) => actions.notify('error', t('无法读取模型列表，请刷新重试。'), error instanceof Error ? error.message : String(error)))
+  }
+
+  const addManualModel = async (): Promise<void> => {
+    if (!selectedProvider || manualModelBusy) return
+    const provider = customConfig?.providers[selectedProvider]
+    const id = manualModelId.trim()
+    if (!provider || !id || /[\s,;]/.test(id)) { actions.notify('error', t('请输入一个有效的模型 ID')); return }
+    if (provider.models?.some((model) => model.id === id)) { actions.notify('error', t('这个模型已存在')); return }
+    setManualModelBusy(true)
+    try {
+      const next = await window.pi.saveProvider(selectedProvider, { ...provider, models: [...(provider.models ?? []), { id }] })
+      setCustomConfig(next)
+      setAddingModel(false)
+      setManualModelId('')
+      if (!state.streaming) await actions.restartSession()
+      else actions.notify('info', t('模型已保存'), t('当前任务结束后，重启会话以加载修改。'))
+      await loadModels()
+    } catch (error) { actions.notify('error', t('保存失败'), error instanceof Error ? error.message : String(error)) }
+    finally { setManualModelBusy(false) }
   }
 
   const deleteProvider = async (id: string): Promise<void> => {
@@ -789,6 +886,34 @@ export function SettingsPage(): ReactNode {
             value={state.settings.language ?? 'zh-CN'}
             onChange={(language) => void actions.updateSettings({ language: language as 'zh-CN' | 'en' })}
             options={[{ value: 'zh-CN', label: '简体中文' }, { value: 'en', label: 'English' }]}
+          />
+        </Row>
+      </Block>
+      <Block title={t("新会话默认值")} query={query} terms={['默认思考程度', 'thinking']}>
+        <Row
+          title={t("默认思考程度")}
+          query={query}
+        >
+          <Select
+            label={t("默认思考程度")}
+            value={thinkingValue}
+            onChange={(value) =>
+              void actions.updatePiSettings({
+                defaultThinkingLevel: (value || undefined) as ThinkingLevel | undefined
+              })
+            }
+            options={[
+              { value: '', label: t('自动') },
+              ...thinkingOptionsFor(
+                thinkingValue && !ALL_THINKING_LEVELS.includes(thinkingValue as ThinkingLevel)
+                  ? [thinkingValue, ...ALL_THINKING_LEVELS]
+                  : ALL_THINKING_LEVELS,
+                state.settings.language ?? 'zh-CN'
+              ).map((option) => ({
+                value: option.value,
+                label: option.label
+              }))
+            ]}
           />
         </Row>
       </Block>
@@ -1005,15 +1130,6 @@ export function SettingsPage(): ReactNode {
 
   const renderModels = (): ReactNode => {
     const customEntries = Object.entries(customConfig?.providers ?? {})
-    const text = modelSearch.trim().toLowerCase()
-    const rows = (piModels ?? []).filter(
-      (row) => !text || `${row.provider}/${row.id}`.toLowerCase().includes(text)
-    )
-    const current = state.piState?.model
-    const hasModels = (piModels?.length ?? 0) > 0
-    const searching = Boolean(modelSearch.trim())
-    const listEmpty = piModels !== null && rows.length === 0
-
     const refreshModels = async (): Promise<void> => {
       setModelsBusy(true)
       try {
@@ -1027,130 +1143,55 @@ export function SettingsPage(): ReactNode {
 
     return (
       <>
-        <div className="model-setup-empty">
-          <div className="model-setup-empty-copy">
-            <p>{t('密钥只保存在本机')}</p>
-          </div>
-          <div className="model-setup-empty-actions">
-            <button className="settings-button primary" onClick={() => setOauthOpen(true)}>{t('用账号登录')}</button>
-            <button className="settings-button" onClick={() => setAuthOpen(true)}>{t('粘贴 API Key')}</button>
+        <div className="model-services-header">
+          <p>{t('管理模型服务商，配置后可在对话中选择使用。')}</p>
+          <div className="model-services-header-actions">
+            <button className="settings-button" disabled={modelsBusy} onClick={() => void refreshModels()} aria-label={t('刷新')} title={t('刷新')}><RefreshCw size={15}/></button>
+            <button className="settings-button primary" onClick={() => { setSelectedProvider(null); setEditingProvider(null); setChoosingProvider(true); setShowAdd(true) }}><Plus size={15}/>{t('添加服务商')}</button>
           </div>
         </div>
-        <Block title={t("新会话默认值")} query={query} terms={['默认模型', '思考程度', 'thinking']}>
-        <Row
-          title={t("默认模型")}
-          query={query}
-        >
-          <Select label={t("默认模型")} value={modelValue} onChange={(value) => void saveDefaultModel(value)}
-            options={[{ value: '', label: t('自动') }, ...modelGroups.flatMap(([provider, models]) => models.map((model) => ({ value: `${provider}\u0000${model.id}`, label: model.name, group: provider })))]}
-          />
-        </Row>
-        <Row
-          title={t("默认思考程度")}
-          query={query}
-        >
-          <Select
-            label={t("默认思考程度")}
-            value={thinkingValue}
-            onChange={(value) =>
-              void actions.updatePiSettings({
-                defaultThinkingLevel: (value || undefined) as ThinkingLevel | undefined
-              })
-            }
-            options={[
-              { value: '', label: t('自动') },
-              ...thinkingOptionsFor(
-                thinkingValue && !ALL_THINKING_LEVELS.includes(thinkingValue as ThinkingLevel)
-                  ? [thinkingValue, ...ALL_THINKING_LEVELS]
-                  : ALL_THINKING_LEVELS,
-                state.settings.language ?? 'zh-CN'
-              ).map((option) => ({
-                value: option.value,
-                label: option.label
-              }))
-            ]}
-          />
-        </Row>
-      </Block>
-
-      <details className="settings-advanced" open>
-        <summary>{t("查看可用模型列表")}</summary>
-      <Block title={t("可用模型")} query={query} terms={['模型列表', '目录', '刷新', '可用']}>
-        <div className="model-catalog-head">
-          <div className="settings-search model-search">
-            <Search size={13} />
-            <input
-              value={modelSearch}
-              placeholder={t("搜索模型或服务商")}
-              onChange={(event) => setModelSearch(event.target.value)}
-            />
-            {modelSearch && (
-              <button className="search-clear" onClick={() => setModelSearch('')} aria-label={t("清除")}>
-                <X size={11} />
-              </button>
-            )}
-          </div>
-          <button className="settings-button" disabled={modelsBusy} onClick={() => void refreshModels()}>
-            <RefreshCw size={12} />{t("刷新")}</button>
-        </div>
-        {hasModels && (
-          <p className="settings-note model-note">
-            {rows.length} / {piModels?.length ?? 0}
-            {state.settings.language === 'en' ? ' models' : ` ${t('个模型')}`}
-          </p>
-        )}
-        {modelsMessage && (
-          <div className="model-error-row">
-            <p className="settings-note model-error">{modelsMessage}</p>
-            <button className="settings-button" disabled={modelsBusy} onClick={() => void refreshModels()}>
-              {t('重试')}
-            </button>
-          </div>
-        )}
-        <div className="model-list">
-          {rows.map((row) => {
-            const isCurrent = current?.provider === row.provider && current?.id === row.id
-            return (
-              <div
-                className={clsx('model-row', isCurrent && 'current')}
-                key={`${row.provider}/${row.id}`}
-              >
-                <span className="model-row-id">{row.id}</span>
-                <span className="model-row-provider">{row.provider}</span>
-                <span className="model-badges">
-                  <span className="model-badge">{row.context}</span>
-                  {row.thinking && <span className="model-badge">{t("思维")}</span>}
-                  {row.images && <span className="model-badge">{t("图片")}</span>}
-                </span>
-              </div>
-            )
-          })}
-          {listEmpty && searching && (
-            <div className="model-empty">{t("没有匹配的模型。")}</div>
-          )}
-          {listEmpty && !searching && (
-            <div className="model-empty model-empty-cta">
-              <div>{t('还没有可用模型')}</div>
-              <button className="settings-button primary" onClick={() => setOauthOpen(true)}>{t('用账号登录')}</button>
-              <button className="settings-button" onClick={() => setAuthOpen(true)}>{t('粘贴 API Key')}</button>
-            </div>
-          )}
-        </div>
-      </Block>
-
-      </details>
+        <div className="model-service-layout">
+          <aside className="model-service-sidebar" aria-label={t('服务商')}>
+            <div className="model-service-sidebar-title">{t('已添加的服务商')}</div>
+            {providersError && <p className="model-service-message">{t('无法读取已保存的服务商。')}</p>}
+            {!providersError && savedProviders === null && <p className="model-service-message">{t('正在读取…')}</p>}
+            {savedProviders?.map((item) => <button type="button" key={`auth:${item.provider}`} className={clsx('model-service-item', selectedProvider === `auth:${item.provider}` && 'active')} onClick={() => { setSelectedProvider(`auth:${item.provider}`); setShowAdd(false); setAddingModel(false) }}><ProviderLogo name={item.provider}/><span>{item.provider}</span><small>{t('凭据已保存')}</small></button>)}
+            {customEntries.map(([id, provider]) => <button type="button" key={`custom:${id}`} className={clsx('model-service-item', selectedProvider === id && 'active')} onClick={() => { setSelectedProvider(id); setShowAdd(false); setAddingModel(false) }}><ProviderLogo name={id}/><span>{provider.name ?? id}</span></button>)}
+          </aside>
+          <div className="model-service-content">
       <Block
-        title={t("自定义服务商与模型")}
+        title={t(showAdd ? '添加服务商' : '服务商详情')}
         query={query}
         terms={['添加模型', 'models.json', 'baseurl', 'api key', 'ollama', 'lmstudio', 'vllm', '端点']}
       >
-        <div className="custom-provider-list">
+        {selectedProvider?.startsWith('auth:') ? <div className="model-credential-detail">
+          <div className="model-credential-title"><ProviderLogo name={selectedProvider.slice(5)}/><strong>{selectedProvider.slice(5)}</strong></div>
+          <p className="setting-desc">{savedProviders?.some((item) => item.provider === selectedProvider.slice(5)) ? t('凭据已保存；连接状态尚未验证。') : t('输入 API Key 连接此服务商。')}</p>
+          {savedProviders?.find((item) => item.provider === selectedProvider.slice(5))?.type === 'oauth' ? <button className="settings-button" onClick={() => { setInitialOAuthProvider(selectedProvider.slice(5)); setOauthOpen(true) }}>{t('管理账号授权')}</button> : <form className="provider-inline-key" onSubmit={(event) => {
+            event.preventDefault()
+            if (!inlineApiKey.trim() || inlineKeyBusy) return
+            const provider = selectedProvider.slice(5)
+            setInlineKeyBusy(true); setInlineKeyError(null)
+            void window.pi.saveApiKey(provider, inlineApiKey.trim()).then(() => { setInlineApiKey(''); actions.notify('success', t('API Key 已保存')); credentialsSaved(provider) }).catch((error: unknown) => setInlineKeyError(error instanceof Error ? error.message : String(error))).finally(() => setInlineKeyBusy(false))
+          }}><label className="form-field"><span>API Key</span><input type="password" autoComplete="off" value={inlineApiKey} placeholder={t('输入新的 API Key')} onChange={(event) => setInlineApiKey(event.target.value)} /></label><button className="settings-button primary" disabled={inlineKeyBusy || !inlineApiKey.trim()}>{inlineKeyBusy ? t('保存中…') : t('保存 API Key')}</button>{inlineKeyError && <p role="alert" className="model-error">{inlineKeyError}</p>}</form>}
+          <div className="provider-model-head"><strong>{t('模型列表')}</strong><span className="setting-desc">{t('点击模型，将其设为新会话默认。')}</span></div>
+          {modelsBusy && piModels === null ? <p className="setting-desc">{t('正在读取模型…')}</p>
+            : modelListError ? <p className="setting-desc">{t('无法读取模型列表，请刷新重试。')}</p>
+              : (modelGroups.find(([provider]) => provider === selectedProvider.slice(5))?.[1] ?? []).length === 0 ? <p className="setting-desc">{t('Pi 暂未返回此服务商的可用模型。')}</p>
+                : <div className="provider-model-list">{(modelGroups.find(([provider]) => provider === selectedProvider.slice(5))?.[1] ?? []).map((model) => {
+                  const provider = selectedProvider.slice(5)
+                  const row = piModels?.find((item) => item.provider === provider && item.id === model.id)
+                  const isDefault = modelValue === `${provider}\u0000${model.id}`
+                  return <button type="button" className={clsx('provider-model-row', isDefault && 'current')} aria-pressed={isDefault} key={model.id} onClick={() => void saveDefaultModel(`${provider}\u0000${model.id}`)}><ProviderLogo name={model.id}/><span className="provider-model-name">{model.name}</span><span className="model-badges">{row?.context && <span className="model-badge">{row.context}</span>}{row?.thinking && <span className="model-badge">{t('思维')}</span>}{row?.images && <span className="model-badge">{t('图片')}</span>}{isDefault && <span className="provider-default-label">{t('默认')}</span>}</span></button>
+                })}</div>}
+        </div> : <>
+        {!showAdd && <div className="custom-provider-list">
           {customEntries.length === 0 && (
             <div className="model-empty">{t("还没有自定义服务商。需要对接自己的接口时再添加。")}</div>
           )}
-          {customEntries.map(([id, provider]) => (
+          {customEntries.filter(([id]) => !selectedProvider || selectedProvider === id).map(([id, provider]) => (
             <div className="custom-provider" key={id}>
-              <div className="custom-provider-main">
+              <ProviderLogo name={id}/><div className="custom-provider-main">
                 <div className="setting-title">
                   {provider.name ?? id}
                   {provider.name && <code className="custom-provider-id">{id}</code>}
@@ -1161,12 +1202,11 @@ export function SettingsPage(): ReactNode {
                 </div>
                 <div className="model-badges">
                   {(provider.models ?? []).map((model) => (
-                    <span className="model-badge" key={model.id}>
-                      {model.id}
-                    </span>
+                    <button type="button" className={clsx('model-badge', 'custom-model-option', modelValue === `${id}\u0000${model.id}` && 'current')} aria-pressed={modelValue === `${id}\u0000${model.id}`} key={model.id} onClick={() => void saveDefaultModel(`${id}\u0000${model.id}`)}>{model.id}{modelValue === `${id}\u0000${model.id}` && ` · ${t('默认')}`}</button>
                   ))}
                 </div>
               </div>
+              <button className="settings-button" onClick={() => { setManualModelId(''); setAddingModel(true) }}>{t('添加模型')}</button>
               <button className="settings-button" onClick={() => {
                 setEditingProvider(id)
                 setDraft({ ...EMPTY_DRAFT, id, name: provider.name ?? '', baseUrl: provider.baseUrl ?? '', api: provider.api ?? '', apiKey: provider.apiKey ?? '', modelIds: (provider.models ?? []).map((model) => model.id).join('\n') })
@@ -1181,44 +1221,42 @@ export function SettingsPage(): ReactNode {
                 <Trash2 size={12} />{t("移除")}</button>
             </div>
           ))}
-        </div>
+          {addingModel && selectedProvider && customConfig?.providers[selectedProvider] && <div className="provider-model-add">
+            <label className="form-field"><span>{t('模型 ID')}</span><input autoFocus value={manualModelId} placeholder="例如：qwen3" onChange={(event) => setManualModelId(event.target.value)} /></label>
+            <button className="settings-button primary" disabled={manualModelBusy || !manualModelId.trim()} onClick={() => void addManualModel()}>{manualModelBusy ? t('保存中…') : t('添加')}</button>
+            <button className="settings-button" disabled={manualModelBusy} onClick={() => setAddingModel(false)}>{t('取消')}</button>
+          </div>}
+        </div>}
 
-        {!showAdd && (
+        {!showAdd && !selectedProvider && (
           <div className="custom-provider-actions">
             <button className="settings-button primary" onClick={() => { setEditingProvider(null); setChoosingProvider(true); setShowAdd(true) }}>
               <Plus size={12} />{t("添加服务商 / 模型")}</button>
-            <span className="setting-desc">
-              {state.settings.language === 'en' ? 'Writes to ' : '写入 '}<code>{customConfig?.file ?? '~/.pi/agent/models.json'}</code>{state.settings.language === 'en' ? ' in models.json format.' : '，格式即 models.json'}
-            </span>
+
           </div>
         )}
 
         {showAdd && (
           <div className="provider-form">
             {choosingProvider ? <>
-            <div className="provider-step-title">{state.settings.language === 'en' ? 'Choose a service' : '选择模型服务商'}</div>
-            <p className="setting-desc provider-step-desc">{state.settings.language === 'en' ? 'Select a service to start, or configure a custom endpoint.' : '选择常用服务，或配置自定义接口。'}</p>
-            <div className="preset-row">
-              {PRESETS.map((preset) => (
-                <button
-                  key={preset.key}
-                  className={clsx('preset-chip', draft.preset === preset.key && 'active')}
-                  onClick={() => {
-                    setDraft({
-                      ...EMPTY_DRAFT,
-                      preset: preset.key,
-                      id: preset.provider,
-                      baseUrl: preset.baseUrl,
-                      api: preset.api,
-                      apiKey: preset.apiKey
-                    })
-                    setChoosingProvider(false)
-                  }}
-                >
-                        {t(preset.label)}
-                </button>
-              ))}
+            <div className="provider-connect-tabs" role="tablist" aria-label={t('接入方式')}>
+              {([['account', '账号授权'], ['api', 'API Key'], ['local', '本地模型'], ['custom', '自定义供应商']] as const).map(([id, label]) => <button type="button" role="tab" aria-selected={connectTab === id} key={id} onClick={() => setConnectTab(id)} onKeyDown={(event) => {
+                if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+                event.preventDefault()
+                const ids = ['account', 'api', 'local', 'custom'] as const
+                const index = ids.indexOf(id)
+                const next = event.key === 'Home' ? 0 : event.key === 'End' ? ids.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + ids.length) % ids.length
+                setConnectTab(ids[next])
+                event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus()
+              }}>{t(label)}</button>)}
             </div>
+            {(connectTab === 'account' || connectTab === 'api') && <label className="provider-choice-search"><Search size={15}/><input value={providerSearch} aria-label={t('搜索服务商')} placeholder={t('搜索服务商')} onChange={(event) => setProviderSearch(event.target.value)} /></label>}
+            {connectTab === 'account' && <><p className="setting-desc provider-step-desc">{t('选择 Pi 支持的账号进行授权。')}</p>
+              {oauthChoicesError ? <p className="setting-desc">{t('读取服务商失败，请重试')}</p> : runtimeChoices === null ? <p className="setting-desc">{t('正在读取…')}</p> : runtimeChoices.filter((item) => item.oauth).length === 0 ? <p className="setting-desc">{t('当前版本暂不支持账号登录，请用 API Key')}</p> : !runtimeChoices.some((item) => item.oauth && `${item.name} ${item.id}`.toLowerCase().includes(providerSearch.trim().toLowerCase())) ? <p className="setting-desc">{t('没有匹配的服务商。')}</p> : <div className="preset-row provider-choices">{runtimeChoices.filter((item) => item.oauth && `${item.name} ${item.id}`.toLowerCase().includes(providerSearch.trim().toLowerCase())).map((provider) => <button type="button" className="preset-chip" key={provider.id} onClick={() => { setInitialOAuthProvider(provider.id); setOauthOpen(true) }}><ProviderLogo name={provider.id}/><span>{provider.name}</span><span className="preset-chevron" aria-hidden="true">›</span></button>)}</div>}
+            </>}
+            {connectTab === 'api' && <><p className="setting-desc provider-step-desc">{t('选择服务商，然后使用 API Key 连接。')}</p>{oauthChoicesError ? <p className="setting-desc">{t('读取服务商失败，请重试')}</p> : runtimeChoices === null ? <p className="setting-desc">{t('正在读取…')}</p> : !runtimeChoices.some((provider) => provider.apiKey && `${provider.name} ${provider.id}`.toLowerCase().includes(providerSearch.trim().toLowerCase())) ? <p className="setting-desc">{t('没有匹配的服务商。')}</p> : <div className="preset-row provider-choices">{runtimeChoices.filter((provider) => provider.apiKey && `${provider.name} ${provider.id}`.toLowerCase().includes(providerSearch.trim().toLowerCase())).map((provider) => <button type="button" className="preset-chip" key={provider.id} onClick={() => { setSelectedProvider(`auth:${provider.id}`); setShowAdd(false) }}><ProviderLogo name={provider.id}/><span>{provider.name}</span><span className="preset-chevron" aria-hidden="true">›</span></button>)}</div>}</>}
+            {connectTab === 'local' && <><p className="setting-desc provider-step-desc">{t('先在本机启动模型服务，再填写模型 ID。')}</p><div className="preset-row provider-choices">{PRESETS.filter((preset) => ['ollama', 'lmstudio', 'vllm'].includes(preset.key)).map((preset) => <button type="button" className="preset-chip" key={preset.key} onClick={() => { setDraft({ ...EMPTY_DRAFT, preset: preset.key, id: preset.provider, baseUrl: preset.baseUrl, api: preset.api, apiKey: preset.apiKey }); setChoosingProvider(false) }}><ProviderLogo name={preset.key}/><span>{t(preset.label)}</span><span className="preset-chevron" aria-hidden="true">›</span></button>)}</div></>}
+            {connectTab === 'custom' && <><p className="setting-desc provider-step-desc">{t('为其他服务填写地址、协议和模型。')}</p><div className="provider-custom-actions"><button type="button" className="settings-button primary" onClick={() => { setDraft(EMPTY_DRAFT); setChoosingProvider(false) }}><Plus size={14}/>{t('创建自定义供应商')}</button></div></>}
             <button className="settings-button" onClick={() => setShowAdd(false)}>{t('取消')}</button>
             </> : <>
             <div className="provider-form-heading">
@@ -1342,14 +1380,22 @@ export function SettingsPage(): ReactNode {
             </>}
           </div>
         )}
+        </>}
       </Block>
+
+          </div>
+        </div>
+
+
+
+
     </>
   )
   }
 
   const renderNetwork = (): ReactNode => (
     <>
-      <Block title={t('新对话默认')} query={query} terms={['审批', '权限', '联网', '沙箱', '网络访问']}>
+      <Block title={t('执行与联网')} query={query} terms={['审批', '权限', '联网', '沙箱', '网络访问']}>
         <Row
           title={t('新对话的执行方式')}
           desc={t('当前对话的执行方式可以在输入框下方切换。')}
@@ -1365,7 +1411,7 @@ export function SettingsPage(): ReactNode {
             ]}
           />
         </Row>
-        <Row title={t('联网')} desc={t('允许 Pi 连接在线模型和使用联网工具。关闭后，在线模型也不可用。')} query={query}>
+        <Row title={t('联网')} desc={t('开启后，Pi 可访问所有网站，无需逐个确认。关闭后，在线模型和联网工具不可用。')} query={query}>
           <Switch
             label={t('联网')}
             checked={state.settings.sandboxNetwork !== 'off'}
@@ -2228,7 +2274,25 @@ export function SettingsPage(): ReactNode {
     )
   }
 
+  const renderArchived = (): ReactNode => {
+    const paths = state.settings.archivedSessionPaths ?? []
+    const search = archiveQuery.trim().toLowerCase()
+    const items = paths.map(path => state.sessions.find(session => session.path === path)).filter((session): session is SessionSummary => Boolean(session)).filter(session => !search || `${session.name} ${session.preview} ${session.cwd}`.toLowerCase().includes(search))
+    return <Block title={t('已归档的对话')} query={query} terms={['归档', '已归档', 'archived', '恢复']}>
+      <div className="settings-archive">
+        <p className="setting-desc">{t('归档的对话仍然保留，可以查看或恢复到原来的列表。')}</p>
+        <label className="settings-search settings-archive-search"><Search size={14}/><input value={archiveQuery} placeholder={t('搜索已归档对话')} aria-label={t('搜索已归档对话')} onChange={event => setArchiveQuery(event.target.value)} /></label>
+        {items.length === 0 ? <div className="settings-archive-empty">{search ? t('没有匹配的会话。') : t('还没有归档对话。')}</div> : <div className="settings-archive-list">{items.map(session => <div className="settings-archive-row" key={session.path}>
+          <button className="settings-archive-open" title={session.name} onClick={() => { void actions.openSession(session.cwd, session.path).then(opened => { if (opened) actions.openSettings(false) }) }}><span>{session.name || t('未命名会话')}</span><small>{shortenPath(session.cwd, state.boot?.home)}</small></button>
+          <button className="settings-button" disabled={archiveBusy} onClick={() => { setArchiveBusy(true); void actions.updateSettings({ archivedSessionPaths: paths.filter(path => path !== session.path) }).then(() => actions.notify('success', t('对话已恢复'), t('已回到原来的对话列表。'))).catch(() => actions.notify('error', t('无法保存归档状态'))).finally(() => setArchiveBusy(false)) }}>{t('取消归档')}</button>
+          <button className="settings-button" aria-label={`${t('删除')} ${session.name}`} title={t('删除')} onClick={() => setArchiveDelete(session)}><Trash2 size={14}/></button>
+        </div>)}</div>}
+      </div>
+    </Block>
+  }
+
   const CONTENT: Record<CategoryId, { title: string; render: () => ReactNode }> = {
+    archived: { title: '已归档', render: renderArchived },
     general: { title: '常规', render: renderGeneral },
     'computer-use': { title: '电脑操作', render: renderComputerUse },
     browser: { title: '网页浏览', render: renderBrowser },
@@ -2311,13 +2375,15 @@ export function SettingsPage(): ReactNode {
           )}
         </div>
       </main>
+      <Modal open={Boolean(archiveDelete)} title={t('Delete session?')} subtitle={archiveDelete?.name} onClose={() => setArchiveDelete(null)} footer={<><button className="button ghost" onClick={() => setArchiveDelete(null)}>{t('取消')}</button><button className="button danger" onClick={() => { if (archiveDelete) void actions.deleteSession(archiveDelete.path); setArchiveDelete(null) }}>{t('删除')}</button></>}><p className="modal-text">{t('会话记录会被移到回收站，24 小时内可以撤销。项目文件不受影响。')}</p></Modal>
       <ChromeImportDialog open={chromeOpen} onClose={() => setChromeOpen(false)} />
       <ChromeBridgeDialog open={chromeBridgeOpen} onClose={() => setChromeBridgeOpen(false)} />
-      <ProviderAuthDialog open={authOpen} onClose={() => setAuthOpen(false)} onSaved={() => { void loadModels(); void refreshCatalog().catch(() => undefined) }} />
+      <ProviderAuthDialog open={authOpen} runtimeProviders={runtimeChoices ?? undefined} onClose={() => setAuthOpen(false)} onSaved={credentialsSaved} />
       <ProviderOAuthDialog
         open={oauthOpen}
         onClose={() => setOauthOpen(false)}
-        onSaved={() => { void loadModels(); void refreshCatalog().catch(() => undefined) }}
+        initialProvider={initialOAuthProvider}
+        onSaved={credentialsSaved}
         onUseApiKey={() => { setOauthOpen(false); setAuthOpen(true) }}
       />
     </div>

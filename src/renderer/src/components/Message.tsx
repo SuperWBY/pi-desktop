@@ -1,7 +1,7 @@
 import { useTranslation } from '../i18n'
 import { useApp } from '../store'
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, Pencil } from 'lucide-react'
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, Pencil, Sparkles } from 'lucide-react'
 import clsx from 'clsx'
 import type {
   AssistantMessage,
@@ -170,6 +170,7 @@ export const UserMessageView = memo(function UserMessageView({
   optimistic?: boolean
 }): ReactNode {
   const t = useTranslation()
+  const { state } = useApp()
   const content = message.content
   const blocks: ContentBlock[] =
     typeof content === 'string' ? [{ type: 'text', text: content }] : (content ?? [])
@@ -180,6 +181,15 @@ export const UserMessageView = memo(function UserMessageView({
   const images = blocks.filter(
     (block): block is Extract<ContentBlock, { type: 'image' }> => block.type === 'image'
   )
+  // Pi expands a successfully loaded skill into this block before emitting
+  // the user message; the slash form only records the user's selection.
+  const loadedSkill = /^<skill name="([^"\n]+)" location="[^"\n]+">\n[\s\S]*?\n<\/skill>(?:\n\n([\s\S]*))?$/u.exec(text)
+  const selectedSkill = loadedSkill ? null : /^\/skill:([^\s/]+)(?:\s+([\s\S]*))?$/u.exec(text)
+  const commandMatch = !loadedSkill && !selectedSkill ? /^\/([^\s/]+)(?:\s+([\s\S]*))?$/u.exec(text) : null
+  const selectedCommand = commandMatch && state.commands.some((item) => item.name === commandMatch[1] && (item.source === 'extension' || item.source === 'prompt')) ? commandMatch : null
+  const itemName = loadedSkill?.[1] ?? selectedSkill?.[1] ?? selectedCommand?.[1]
+  const visibleText = loadedSkill ? loadedSkill[2] ?? '' : selectedSkill ? selectedSkill[2] ?? '' : selectedCommand ? selectedCommand[2] ?? '' : text
+  const editableText = loadedSkill ? `/skill:${loadedSkill[1]}${visibleText ? ` ${visibleText}` : ''}` : text
 
   return (
     <div className={clsx('message user-message', optimistic && 'optimistic')}>
@@ -187,7 +197,7 @@ export const UserMessageView = memo(function UserMessageView({
         {images.length > 0 && (
           <div className="user-images">
             {images.map((image, index) => (
-              <img
+              <InlineImage
                 key={index}
                 src={`data:${image.mimeType};base64,${image.data}`}
                 alt="attachment"
@@ -195,9 +205,10 @@ export const UserMessageView = memo(function UserMessageView({
             ))}
           </div>
         )}
-        {text && <div className="user-text">{text}</div>}
+        {itemName && <div className="user-skill-indicator"><Sparkles size={13} aria-hidden="true" /> {t(loadedSkill ? '已加载技能' : selectedSkill ? '已选择技能' : '已选择命令')} · {itemName}</div>}
+        {visibleText && <div className="user-text">{visibleText}</div>}
       </div>
-      {text ? <MessageActions text={text} time={optimistic ? t('sending…') : timeOfDay(message.timestamp)} align="end" editable /> : null}
+      {text ? <MessageActions text={editableText} time={optimistic ? t('sending…') : timeOfDay(message.timestamp)} align="end" editable /> : null}
     </div>
   )
 })

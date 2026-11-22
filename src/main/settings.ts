@@ -1,5 +1,6 @@
 import { app } from 'electron'
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { canonicalWorkspacePath, pathsEqual } from '@shared/paths'
 import type { Settings } from '@shared/types'
@@ -70,6 +71,12 @@ export function loadSettings(): Settings {
       ...(parsed.workPanelTabs ? { workPanelTabs: parsed.workPanelTabs.filter(tab => tab !== 'creator') } : {}),
       toolApprovalMode: parsed.toolApprovalMode === 'all' ? 'all' : 'dangerous',
       computerUseEnabled: parsed.computerUseEnabled === true,
+      pinnedSessionPaths: Array.isArray(parsed.pinnedSessionPaths)
+        ? [...new Set(parsed.pinnedSessionPaths.filter((path): path is string => typeof path === 'string' && Boolean(path.trim())))]
+        : [],
+      archivedSessionPaths: Array.isArray(parsed.archivedSessionPaths)
+        ? [...new Set(parsed.archivedSessionPaths.filter((path): path is string => typeof path === 'string' && Boolean(path.trim())))]
+        : [],
       language: parsed.language === 'en' ? 'en' : 'zh-CN',
       workspaces,
       workspaceNames: remapWorkspaceNames(parsed.workspaceNames, workspaces)
@@ -81,6 +88,14 @@ export function loadSettings(): Settings {
 }
 
 export function saveSettings(patch: Partial<Settings>): Settings {
+  if (patch.pinnedSessionPaths !== undefined && (!Array.isArray(patch.pinnedSessionPaths) ||
+    patch.pinnedSessionPaths.some(path => typeof path !== 'string' || !path.trim()))) {
+    throw new Error('Invalid pinned session paths')
+  }
+  if (patch.archivedSessionPaths !== undefined && (!Array.isArray(patch.archivedSessionPaths) ||
+    patch.archivedSessionPaths.some(path => typeof path !== 'string' || !path.trim()))) {
+    throw new Error('Invalid archived session paths')
+  }
   const next: Settings = {
     ...loadSettings(),
     ...patch
@@ -93,7 +108,9 @@ export function saveSettings(patch: Partial<Settings>): Settings {
   }
   const file = settingsFile()
   if (!existsSync(dirname(file))) mkdirSync(dirname(file), { recursive: true })
-  writeFileSync(file, JSON.stringify(next, null, 2), 'utf8')
+  const temporary = `${file}.${randomUUID()}.tmp`
+  writeFileSync(temporary, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 })
+  renameSync(temporary, file)
   cached = next
   return next
 }

@@ -137,6 +137,24 @@ export function Composer(): ReactNode {
     !state.messages.some((message) => message.role === 'user' || message.role === 'assistant'))
   const [initialDraft] = useState(() => readDraft(key))
   const [text, setText] = useState(initialDraft.text)
+  const selectedCommand = useMemo(() => {
+    const match = /^\/([^\s/]+)[ \t]+/u.exec(text)
+    if (!match) return null
+    const command = state.commands.find((item) => item.name === match[1] && item.name !== CREATOR_COMMAND && ['skill', 'extension', 'prompt'].includes(item.source ?? ''))
+    if (!command) return null
+    return { prefix: match[0], name: command.name, label: command.name.replace(/^skill:/, ''), source: command.source }
+  }, [text, state.commands])
+  const lastSelectedCommand = useRef(selectedCommand)
+  if (selectedCommand) lastSelectedCommand.current = selectedCommand
+  const [commandDisplayName, setCommandDisplayName] = useState(initialDraft.commandDisplay?.label ?? '')
+  const commandNameRef = useRef<HTMLSpanElement>(null)
+  useLayoutEffect(() => {
+    if (!selectedCommand) return
+    const stored = readDraft(key).commandDisplay
+    const label = stored?.name === selectedCommand.name ? stored.label : selectedCommand.label
+    setCommandDisplayName(label)
+    if (commandNameRef.current) commandNameRef.current.textContent = label
+  }, [selectedCommand?.name, key])
   const [attachments, setAttachments] = useState<Attachment[]>(initialDraft.attachments)
   const draftRef = useRef({ key, requestKey, workspace, scratch, draftOnly, sessionPath: state.sessionPath, draft: initialDraft })
   const skipDraftWrite = useRef(false)
@@ -162,7 +180,7 @@ export function Composer(): ReactNode {
     state.settings.language === 'en' ? 'en-US' : 'zh-CN',
     textareaRef,
     (value) => {
-      setText(value)
+      setText(`${selectedCommand?.prefix ?? ''}${value}`)
       setMention(null)
       setMentionFiles([])
       setDismissedSlash(value)
@@ -240,9 +258,13 @@ export function Composer(): ReactNode {
     if (skipDraftWrite.current) { skipDraftWrite.current = false; return }
     const owner = draftRef.current
     if (owner.key !== key) return
-    owner.draft = { text, attachments }
+    const previousDisplay = owner.draft.commandDisplay
+    const commandDisplay = selectedCommand
+      ? { name: selectedCommand.name, label: commandNameRef.current?.textContent ?? commandDisplayName }
+      : previousDisplay && text.startsWith(`/${previousDisplay.name} `) ? previousDisplay : undefined
+    owner.draft = { text, attachments, commandDisplay }
     saveDraft(key, owner.draft, owner)
-  }, [key, text, attachments, workspace, scratch, draftOnly])
+  }, [key, text, attachments, workspace, scratch, draftOnly, selectedCommand?.name, commandDisplayName])
 
   useLayoutEffect(() => {
     const node = textareaRef.current
@@ -261,9 +283,14 @@ export function Composer(): ReactNode {
   const previousSuggestion = useRef<{ key: string; value: string } | null>(null)
   useEffect(() => {
     if (!state.editorText) return
-    const { value, append, nonce, suggestion } = state.editorText
+    const { value, append, nonce, suggestion, prepend } = state.editorText
     const old = previousSuggestion.current?.key === key ? previousSuggestion.current.value : null
     setText((current) => {
+      if (prepend) {
+        const match = /^\/([^\s/]+)[ \t]+/u.exec(current)
+        const existing = match && state.commands.some((item) => item.name === match[1] && ['skill', 'extension', 'prompt'].includes(item.source ?? ''))
+        return `${value}${existing && match ? current.slice(match[0].length) : current}`
+      }
       const index = suggestion && old ? current.lastIndexOf(old) : -1
       return index >= 0 && old
         ? `${current.slice(0, index)}${value}${current.slice(index + old.length)}`
@@ -276,7 +303,7 @@ export function Composer(): ReactNode {
       node?.focus()
       node?.setSelectionRange(node.value.length, node.value.length)
     })
-  }, [state.editorText, actions, key])
+  }, [state.editorText, actions, key, state.commands])
 
   useEffect(() => {
     if (state.addProjectOpen || state.settingsOpen) return
@@ -394,7 +421,7 @@ export function Composer(): ReactNode {
     setText(next)
     setMention(null)
     setMentionFiles([])
-    const caret = mention.start + path.length + 2
+    const caret = mention.start + path.length + 2 - (selectedCommand?.prefix.length ?? 0)
     window.requestAnimationFrame(() => {
       const input = textareaRef.current
       if (input) {
@@ -402,7 +429,7 @@ export function Composer(): ReactNode {
         input.setSelectionRange(caret, caret)
       }
     })
-  }, [mention, text])
+  }, [mention, text, selectedCommand])
 
   const addFiles = useCallback(
     async (files: FileList | File[]) => {
@@ -479,10 +506,27 @@ export function Composer(): ReactNode {
       actions.notify('warning', t('附件无法读取'), t('附件没有可用路径或文本内容，请重新选择文件。'))
       return
     }
-    const message = `${value}${attachmentContext(files)}`.trim()
+    // "/create <idea>" typed in one line: enter Creator mode first, then send the idea,
+    // so the model gets the creator tools instead of improvising a global extension.
+    const creatorIdea = /^\/(?:create|creative|creator|创意|创建插件)\s+([\s\S]+)$/iu.exec(value)
+    const creatorCommand = creatorIdea ? desktopCommands.find((item) => item.name === 'create') : undefined
+    if (creatorIdea && !creatorCommand) {
+      actions.notify('warning', t('创意模式'), t('暂时无法进入创意模式，请稍后再试。'))
+      return
+    }
+    if (creatorIdea && creatorCommand?.disabled) {
+      actions.notify('warning', creatorCommand.label, creatorCommand.description)
+      return
+    }
+    const message = `${creatorCommand && creatorIdea ? creatorIdea[1].trim() : value}${attachmentContext(files)}`.trim()
 
     const owner = draftRef.current
     setSending(true)
+    if (creatorCommand && !await actions.beginCreator()) {
+      setSending(false)
+      actions.notify('warning', creatorCommand.label, t('暂时无法进入创意模式，请稍后再试。'))
+      return
+    }
     const ok = await actions.sendMessage(message, images)
     setSending(false)
     if (ok && draftRef.current === owner) {
@@ -507,6 +551,11 @@ export function Composer(): ReactNode {
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
+    if (selectedCommand && event.key === 'Backspace' && event.currentTarget.selectionStart === 0 && event.currentTarget.selectionEnd === 0) {
+      event.preventDefault()
+      setText((current) => current.slice(selectedCommand.prefix.length))
+      return
+    }
     if (mention && mentionFiles.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -816,11 +865,32 @@ export function Composer(): ReactNode {
           page={slashPage} workspace={workspace} onBack={() => { setSlashPage('commands'); setText('/'); textareaRef.current?.focus() }} />
 
         <div className="composer-editor-slot" inert={dictation.busy && !text}>
-          <div>
+          <div className="composer-editor-line">
+            {lastSelectedCommand.current && <span className="composer-skill-chip" hidden={!selectedCommand} inert={!selectedCommand}>
+                {lastSelectedCommand.current.source === 'skill' ? <Sparkles size={14} aria-hidden="true" /> : <FileText size={14} aria-hidden="true" />}
+                <span className="composer-command-name" title={`${t('实际调用')} /${lastSelectedCommand.current.label}`}>
+                  <span aria-hidden="true">/</span>
+                  <span ref={commandNameRef} contentEditable suppressContentEditableWarning role="textbox" aria-label={`${t('编辑命令显示名称')} (${t('实际调用')} /${lastSelectedCommand.current.label})`}
+                    spellCheck={false} onInput={(event) => setCommandDisplayName(event.currentTarget.textContent ?? '')}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === 'Escape') { event.preventDefault(); textareaRef.current?.focus() }
+                    }}
+                    onPaste={(event) => {
+                      event.preventDefault()
+                      const value = event.clipboardData.getData('text/plain').replace(/[\r\n]+/g, ' ')
+                      document.execCommand('insertText', false, value)
+                    }} />
+                </span>
+                {selectedCommand && commandDisplayName !== selectedCommand.label && <span className="composer-command-original" title={`${t('实际调用')} /${selectedCommand.label}`}>{t('实际调用')} /{selectedCommand.label}</span>}
+                <button type="button" aria-label={t('移除已选命令')} title={t('移除已选命令')} onClick={() => {
+                  if (selectedCommand) setText((current) => current.slice(selectedCommand.prefix.length))
+                  requestAnimationFrame(() => textareaRef.current?.focus())
+                }}><X size={13} /></button>
+              </span>}
             <textarea
               ref={textareaRef}
               className="composer-input"
-              value={text}
+              value={selectedCommand ? text.slice(selectedCommand.prefix.length) : text}
               rows={1}
               spellCheck={false}
               aria-label={t("输入消息")}
@@ -829,11 +899,12 @@ export function Composer(): ReactNode {
               aria-activedescendant={slashOpen && slashPage === 'commands' && flatSlash.length > 0 ? `${slashId}-${activeSlashIndex}` : undefined}
               placeholder={t('问点什么…')}
               onChange={(event: ChangeEvent<HTMLTextAreaElement>) => {
-                setText(event.target.value)
-                if (slashQueryOf(event.target.value) === null) setSlashPage('commands')
+                const value = `${selectedCommand?.prefix ?? ''}${event.target.value}`
+                setText(value)
+                if (slashQueryOf(value) === null) setSlashPage('commands')
                 setDismissedSlash(null)
                 setCommandIndex(0)
-                updateMention(event.target.value, event.target.selectionStart ?? event.target.value.length)
+                updateMention(value, (event.target.selectionStart ?? event.target.value.length) + (selectedCommand?.prefix.length ?? 0))
               }}
               onKeyDown={onKeyDown}
               onPaste={onPaste}

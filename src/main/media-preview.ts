@@ -34,6 +34,18 @@ export function registerMediaScheme(): void {
 export class MediaPreview {
   private readonly entries = new Map<string, Entry>()
 
+  async resolve(owner: object, url: string): Promise<{ path: string; mime: string } | null> {
+    try {
+      const parsed = new URL(url)
+      if (parsed.protocol !== `${mediaScheme}:` || parsed.hostname !== 'file' || parsed.search || parsed.hash) return null
+      const entry = this.entries.get(parsed.pathname.slice(1))
+      if (!entry || entry.owner !== owner) return null
+      const path = await realpath(entry.path)
+      if (path !== entry.path || !within(entry.root, path) || !(await stat(path)).isFile()) return null
+      return { path, mime: entry.mime }
+    } catch { return null }
+  }
+
   async issue(owner: object, workspace: string, requested: string): Promise<{ url: string; path: string } | null> {
     if (typeof requested !== 'string' || !requested || requested.length > 8192) return null
     try {
